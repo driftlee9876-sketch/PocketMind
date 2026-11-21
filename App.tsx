@@ -15,6 +15,7 @@ import {
   ScrollView,
   StatusBar,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -25,9 +26,32 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { initLlama, LlamaContext } from 'llama.rn';
 
+let NetInfoModule: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  NetInfoModule = require('@react-native-community/netinfo').default;
+} catch {
+  NetInfoModule = null;
+}
+
 type ModelKey = 'allrounder' | 'math' | 'korean';
 type SelectionMode = 'auto' | ModelKey;
 type PromptFormat = 'chatml' | 'exaone';
+type PluginKey = 'calculator' | 'url_reader' | 'datetime_tool' | 'clipboard_reader';
+
+interface WebSearchSource {
+  title: string;
+  snippet: string;
+  url: string;
+}
+
+interface PluginSpec {
+  key: PluginKey;
+  icon: string;
+  title: string;
+  desc: string;
+  requiresInternet: boolean;
+}
 
 interface SuggestionItem {
   badge: string;
@@ -58,6 +82,8 @@ interface ChatMessage {
   content: string;
   timestamp: number;
   orchestrationLabel?: string;
+  pluginBadges?: string[];
+  webSources?: WebSearchSource[];
   stage1Title?: string;
   stage1Content?: string;
 }
@@ -95,7 +121,7 @@ const MODELS: Record<ModelKey, ModelSpec> = {
     url: 'https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf',
     promptFormat: 'chatml',
     systemPrompt:
-      '당신은 아이폰 16 Pro 온디바이스 환경에서 오프라인으로 동작하는 플래그십 AI 어시스턴트 PocketMind입니다. 한국어로 명확하고 깊이 있게 답변하며, 코드는 마크다운 코드 블록으로 감싸서 제공하세요.',
+      '당신은 아이폰 16 Pro 온디바이스 환경에서 동작하는 플래그십 AI 어시스턴트 PocketMind입니다. 한국어로 명확하고 깊이 있게 답변하며, 코드는 마크다운 코드 블록으로 감싸서 제공하세요.',
   },
   math: {
     key: 'math',
@@ -133,7 +159,44 @@ const MODELS: Record<ModelKey, ModelSpec> = {
 
 const MODEL_ORDER: ModelKey[] = ['allrounder', 'math', 'korean'];
 
+const PLUGINS: PluginSpec[] = [
+  {
+    key: 'calculator',
+    icon: '🧮',
+    title: '정밀 수식 계산기',
+    desc: '사칙연산·거듭제곱·삼각함수·로그를 오차 없이 선계산해 AI 추론 정확도 보강',
+    requiresInternet: false,
+  },
+  {
+    key: 'url_reader',
+    icon: '🔗',
+    title: '웹페이지 URL 요약기',
+    desc: '메시지에 포함된 https:// 링크의 본문을 직접 읽어 요약·분석 (온라인 전용)',
+    requiresInternet: true,
+  },
+  {
+    key: 'datetime_tool',
+    icon: '📅',
+    title: '현재 시각 · D-Day 엔진',
+    desc: '정확한 한국 표준시(KST) 날짜·요일 및 D-Day 일수 계산 제공',
+    requiresInternet: false,
+  },
+  {
+    key: 'clipboard_reader',
+    icon: '📋',
+    title: '클립보드 스마트 분석',
+    desc: '복사해 둔 텍스트를 입력창에 원탭으로 불러와 요약·번역·교정',
+    requiresInternet: false,
+  },
+];
+
 const AUTO_SUGGESTIONS: SuggestionItem[] = [
+  {
+    badge: '🌐 웹 검색 + EXAONE 7.8B',
+    title: '실시간 최신 이슈 검색 및 요약',
+    desc: '인터넷 연결 시 최신 웹 정보를 검색해 한국어로 깔끔하게 정리',
+    prompt: '오늘 대한민국 주요 IT 및 경제 뉴스 핵심 이슈 3가지를 검색해서 요약해 줘.',
+  },
   {
     badge: '복합 협업 · Math + EXAONE',
     title: '수리 분석 + 한국어 결과 보고서',
@@ -149,26 +212,20 @@ const AUTO_SUGGESTIONS: SuggestionItem[] = [
       '대용량 CSV 로그에서 이상 징후를 탐지하는 파이썬 코드 구조를 설계하고, 팀장에게 제출할 한국어 도입 제안서 형식으로 깔끔하게 정리해 줘.',
   },
   {
-    badge: '자동 특화 · Math 7B',
-    title: '고난도 미적분 · 극값 증명 풀이',
-    desc: '수학 질문 감지 시 Qwen2.5-Math 7B가 자동으로 전담 풀이',
+    badge: '플러그인 · 정밀 계산 + Math 7B',
+    title: '복합 수식 계산 및 미적분 풀이',
+    desc: '정밀 계산기 플러그인과 Math 7B가 결합해 오차 없는 수리 풀이 제공',
     prompt:
       '함수 f(x) = x^4 - 4x^3 + 4x^2 + 3의 극댓값과 극솟값을 미분을 이용해 단계별로 구하고 그래프의 개형을 설명해 줘.',
   },
-  {
-    badge: '자동 특화 · EXAONE 7.8B',
-    title: '비즈니스 협상 이메일 · 정밀 윤문',
-    desc: '한국어 작문 감지 시 LG EXAONE 7.8B가 자연스럽게 집필',
-    prompt:
-      '중요 파트너사에 일정 지연에 대한 정중한 양해를 구하면서도 신뢰를 지키는 격식 있는 한국어 비즈니스 이메일 초안을 작성해 줘.',
-  },
 ];
 
-const STORAGE_SESSIONS_KEY = '@pocketmind_sessions_v3';
-const STORAGE_MODE_KEY = '@pocketmind_selection_mode_v3';
+const STORAGE_SESSIONS_KEY = '@pocketmind_sessions_v4';
+const STORAGE_MODE_KEY = '@pocketmind_selection_mode_v4';
+const STORAGE_SETTINGS_KEY = '@pocketmind_settings_v4';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
-const DRAWER_WIDTH = Math.min(290, SCREEN_WIDTH * 0.78);
+const DRAWER_WIDTH = Math.min(295, SCREEN_WIDTH * 0.8);
 
 interface ContentBlock {
   type: 'text' | 'code';
@@ -182,6 +239,187 @@ function formatMB(bytes: number): string {
 
 function cleanModelOutput(raw: string): string {
   return raw.replace(/<think>\s*<\/think>/g, '').trim();
+}
+
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stripHtmlTags(html: string): string {
+  return decodeHtmlEntities(html.replace(/<[^>]*>/g, ' '));
+}
+
+function safeEvaluateMath(promptText: string): string | null {
+  const candidates = promptText.match(/[0-9().+\-*/%^ ]{3,}/g);
+  if (!candidates) return null;
+
+  const validExpr = candidates
+    .map((c) => c.trim())
+    .find((c) => /\d+\s*[+\-*/%^]\s*\d+/.test(c));
+  if (!validExpr) return null;
+
+  const sanitized = validExpr.replace(/\^/g, '**').replace(/%/g, '/100');
+  if (!/^[0-9().+\-*/\s]+$/.test(sanitized)) return null;
+
+  try {
+    // eslint-disable-next-line no-new-func
+    const fn = new Function(`"use strict"; return (${sanitized});`);
+    const result = fn();
+    if (typeof result === 'number' && Number.isFinite(result)) {
+      const rounded = Number.isInteger(result)
+        ? String(result)
+        : Number(result.toFixed(6)).toString();
+      return `${validExpr} = ${rounded}`;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function getKoreanDateTimeContext(): string {
+  const now = new Date();
+  const kstMs = now.getTime() + 9 * 60 * 60 * 1000;
+  const kst = new Date(kstMs);
+  const days = ['일', '월', '화', '수', '목', '금', '토'];
+  const y = kst.getUTCFullYear();
+  const m = String(kst.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(kst.getUTCDate()).padStart(2, '0');
+  const hh = String(kst.getUTCHours()).padStart(2, '0');
+  const mm = String(kst.getUTCMinutes()).padStart(2, '0');
+  const dayName = days[kst.getUTCDay()];
+  return `${y}년 ${m}월 ${d}일 (${dayName}요일) ${hh}:${mm} KST`;
+}
+
+async function performLiveWebSearch(query: string): Promise<WebSearchSource[]> {
+  const results: WebSearchSource[] = [];
+  const cleanedQuery = query
+    .replace(/(검색해서|검색해\s*줘|검색해|알려줘|알려\s*줘|요약해\s*줘|찾아줘)/g, '')
+    .trim();
+  const searchQuery = cleanedQuery.length >= 2 ? cleanedQuery : query;
+
+  // 1. DuckDuckGo HTML 검색
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`;
+    const res = await fetch(ddgUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (res.ok) {
+      const html = await res.text();
+      const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
+      const snippetRegex = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+
+      const titles: Array<{ url: string; title: string }> = [];
+      const snippets: string[] = [];
+
+      let tMatch: RegExpExecArray | null;
+      while ((tMatch = titleRegex.exec(html)) !== null && titles.length < 4) {
+        titles.push({
+          url: decodeHtmlEntities(tMatch[1]),
+          title: stripHtmlTags(tMatch[2]),
+        });
+      }
+
+      let sMatch: RegExpExecArray | null;
+      while ((sMatch = snippetRegex.exec(html)) !== null && snippets.length < 4) {
+        snippets.push(stripHtmlTags(sMatch[1]));
+      }
+
+      for (let i = 0; i < titles.length; i++) {
+        if (titles[i].title && snippets[i]) {
+          results.push({
+            title: titles[i].title,
+            snippet: snippets[i],
+            url: titles[i].url,
+          });
+        }
+      }
+    }
+  } catch {
+    // DuckDuckGo 실패 시 위키백과 API 폴백으로 이어짐
+  }
+
+  // 2. 한국어 위키백과 검색 API (보강 및 폴백)
+  if (results.length < 2) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const wikiUrl = `https://ko.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(
+        searchQuery,
+      )}&srlimit=3&utf8=&format=json`;
+      const res = await fetch(wikiUrl, { signal: controller.signal });
+      clearTimeout(timer);
+
+      if (res.ok) {
+        const json = await res.json();
+        const items = json?.query?.search ?? [];
+        for (const item of items) {
+          if (results.length >= 4) break;
+          const cleanSnippet = stripHtmlTags(item.snippet || '');
+          if (item.title && cleanSnippet) {
+            results.push({
+              title: `${item.title} (위키백과)`,
+              snippet: cleanSnippet,
+              url: `https://ko.wikipedia.org/wiki/${encodeURIComponent(item.title)}`,
+            });
+          }
+        }
+      }
+    } catch {
+      // 무시
+    }
+  }
+
+  return results.slice(0, 4);
+}
+
+async function fetchUrlReadableText(url: string): Promise<{ url: string; text: string } | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+
+    const rawHtml = await res.text();
+    const noScript = rawHtml
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ');
+    const plain = stripHtmlTags(noScript).slice(0, 3200);
+    if (plain.length < 40) return null;
+    return { url, text: plain };
+  } catch {
+    return null;
+  }
+}
+
+function shouldTriggerWebSearch(promptText: string): boolean {
+  return /(검색|최신|오늘|현재|지금|요즘|뉴스|날씨|주가|환율|실시간|순위|결과|발표|출시|근황|2025|2026|누구|어디|가격|시세)/i.test(
+    promptText,
+  );
 }
 
 function parseMessageBlocks(raw: string): ContentBlock[] {
@@ -228,7 +466,7 @@ function analyzeAutonomousPlan(
   const mathRegex =
     /(수학|방정식|미분|적분|극댓값|극솟값|확률|통계|기댓값|복리|단리|연리|이율|원리금|행렬|벡터|기하|삼각함수|로그|지수|수열|점화식|극한|순열|조합|경우의\s*수|증명|연립방정식|계산해|풀어\s*줘|풀이|sin|cos|tan|log|sqrt|\^2|\^3|\d+\s*[+\-*/=]\s*\d+)/i;
   const koreanWritingRegex =
-    /(이메일|메일|초안|자기소개서|자소서|에세이|윤문|교정|맞춤법|띄어쓰기|보고서|제안서|기획서|안내문|공지문|사과문|편지|작문|문장|다듬어|사자성어|어휘|뉘앙스|소설|시\s*써|기사|번역)/i;
+    /(이메일|메일|초안|자기소개서|자소서|에세이|윤문|교정|맞춤법|띄어쓰기|보고서|제안서|기획서|안내문|공지문|사과문|편지|작문|문장|다듬어|사자성어|어휘|뉘앙스|소설|시\s*써|기사|번역|요약해)/i;
   const codeTechRegex =
     /(코드|파이썬|python|javascript|typescript|react|sql|html|css|알고리즘|함수|클래스|버그|에러|디버깅|api|아키텍처|스크립트|자동화|프로그램)/i;
 
@@ -243,7 +481,6 @@ function analyzeAutonomousPlan(
     return 'allrounder';
   };
 
-  // 1. 복합 협업: 수리·논리 계산 + 한국어 보고서/해설 작성
   if (hasMath && hasKoreanWriting && installed.math && (installed.korean || installed.allrounder)) {
     const writerKey: ModelKey = installed.korean ? 'korean' : 'allrounder';
     return {
@@ -264,7 +501,6 @@ function analyzeAutonomousPlan(
     };
   }
 
-  // 2. 복합 협업: 코드/기술 설계 + 한국어 제안서/보고서 문서화
   if (hasCodeTech && hasKoreanWriting && installed.allrounder && installed.korean) {
     return {
       summaryLabel: `복합 협업 · ${MODELS.allrounder.shortTitle} 기술 설계 → ${MODELS.korean.shortTitle} 한국어 문서화`,
@@ -284,7 +520,6 @@ function analyzeAutonomousPlan(
     };
   }
 
-  // 3. 수학·논리 단독 전문 처리 (Math 7B가 있으면 수학 풀이 후 EXAONE이 있으면 자연스러운 한국어 보강 가능)
   if (hasMath) {
     const primary = pickAvailable(['math', 'allrounder', 'korean']);
     return {
@@ -299,7 +534,6 @@ function analyzeAutonomousPlan(
     };
   }
 
-  // 4. 한국어 작문·교정·문맥 전문 처리
   if (hasKoreanWriting) {
     const primary = pickAvailable(['korean', 'allrounder', 'math']);
     return {
@@ -314,7 +548,6 @@ function analyzeAutonomousPlan(
     };
   }
 
-  // 5. 코딩·일반 지식·다목적 추론
   const primary = pickAvailable(['allrounder', 'korean', 'math']);
   return {
     summaryLabel: `능동 선택 · ${MODELS[primary].shortTitle} (${MODELS[primary].badge})`,
@@ -591,6 +824,20 @@ export default function App(): React.JSX.Element {
   const [engineBannerText, setEngineBannerText] = useState<string>('');
   const [qwenThinkingMode, setQwenThinkingMode] = useState<boolean>(false);
 
+  // 네트워크 상태 및 설정 토글 상태
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [networkType, setNetworkType] = useState<'wifi' | 'cellular' | 'none' | 'unknown'>(
+    'unknown',
+  );
+  const [webSearchEnabled, setWebSearchEnabled] = useState<boolean>(true);
+  const [allowCellularDownload, setAllowCellularDownload] = useState<boolean>(false);
+  const [enabledPlugins, setEnabledPlugins] = useState<Record<PluginKey, boolean>>({
+    calculator: true,
+    url_reader: true,
+    datetime_tool: true,
+    clipboard_reader: true,
+  });
+
   const [downloadingKey, setDownloadingKey] = useState<ModelKey | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [downloadStatusText, setDownloadStatusText] = useState<string>('');
@@ -599,6 +846,9 @@ export default function App(): React.JSX.Element {
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>('');
+  const activeSessionIdRef = useRef<string>('');
+  activeSessionIdRef.current = activeSessionId;
+
   const [inputText, setInputText] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -606,6 +856,8 @@ export default function App(): React.JSX.Element {
 
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
   const [modelModalVisible, setModelModalVisible] = useState<boolean>(false);
+  const [pluginModalVisible, setPluginModalVisible] = useState<boolean>(false);
+
   const drawerAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const backdropAnim = useRef(new Animated.Value(0)).current;
 
@@ -616,13 +868,146 @@ export default function App(): React.JSX.Element {
   const sessionsRef = useRef<ChatSession[]>([]);
   sessionsRef.current = sessions;
   const stopRequestedRef = useRef<boolean>(false);
+  const allowCellularRef = useRef<boolean>(false);
+  allowCellularRef.current = allowCellularDownload;
 
   const showToast = (msg: string) => {
     setToastText(msg);
     setTimeout(() => {
       setToastText((prev) => (prev === msg ? '' : prev));
-    }, 1800);
+    }, 2000);
   };
+
+  const persistSettings = async (nextSettings: {
+    webSearchEnabled: boolean;
+    allowCellularDownload: boolean;
+    enabledPlugins: Record<PluginKey, boolean>;
+  }) => {
+    try {
+      await AsyncStorage.setItem(STORAGE_SETTINGS_KEY, JSON.stringify(nextSettings));
+    } catch {
+      // 무시
+    }
+  };
+
+  const toggleWebSearch = async () => {
+    if (!isConnected) {
+      showToast('인터넷에 연결되어 있지 않아 웹 검색을 켤 수 없습니다');
+      return;
+    }
+    const next = !webSearchEnabled;
+    setWebSearchEnabled(next);
+    await persistSettings({
+      webSearchEnabled: next,
+      allowCellularDownload,
+      enabledPlugins,
+    });
+    showToast(next ? '🌐 실시간 웹 검색 활성화됨' : '웹 검색 꺼짐 (순수 로컬 추론)');
+  };
+
+  const toggleAllowCellular = async (val: boolean) => {
+    setAllowCellularDownload(val);
+    await persistSettings({
+      webSearchEnabled,
+      allowCellularDownload: val,
+      enabledPlugins,
+    });
+    showToast(
+      val
+        ? '📶 셀룰러 데이터 모델 다운로드 허용됨'
+        : 'Wi-Fi 전용 다운로드 보호 활성화됨',
+    );
+  };
+
+  const togglePlugin = async (key: PluginKey) => {
+    const nextPlugins = { ...enabledPlugins, [key]: !enabledPlugins[key] };
+    setEnabledPlugins(nextPlugins);
+    await persistSettings({
+      webSearchEnabled,
+      allowCellularDownload,
+      enabledPlugins: nextPlugins,
+    });
+  };
+
+  const handlePasteFromClipboard = async () => {
+    if (!enabledPlugins.clipboard_reader) {
+      showToast('플러그인 허브에서 클립보드 분석을 먼저 켜주세요');
+      return;
+    }
+    try {
+      const clip = await Clipboard.getString();
+      if (!clip || !clip.trim()) {
+        showToast('클립보드에 복사된 텍스트가 없습니다');
+        return;
+      }
+      const trimmed = clip.trim().slice(0, 1500);
+      setInputText((prev) =>
+        prev.trim()
+          ? `${prev.trim()}\n\n[클립보드 내용]\n${trimmed}`
+          : `다음 클립보드 내용을 핵심 요약하고 자연스럽게 정리해 줘:\n\n${trimmed}`,
+      );
+      showToast('📋 클립보드 내용을 불러왔습니다');
+    } catch {
+      showToast('클립보드를 읽지 못했습니다');
+    }
+  };
+
+  // 실시간 네트워크 연결 감지 (NetInfo + Apple Captive Check 폴백)
+  useEffect(() => {
+    let unsubscribe: (() => void) | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    const probeConnectivity = async () => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+        const res = await fetch('https://www.apple.com/library/test/success.html', {
+          method: 'HEAD',
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        setIsConnected(res.ok);
+        setNetworkType((prev) => (prev === 'none' || prev === 'unknown' ? 'wifi' : prev));
+      } catch {
+        setIsConnected(false);
+        setNetworkType('none');
+      }
+    };
+
+    if (NetInfoModule && typeof NetInfoModule.addEventListener === 'function') {
+      unsubscribe = NetInfoModule.addEventListener((state: any) => {
+        const online = Boolean(state.isConnected && state.isInternetReachable !== false);
+        const typeStr = String(state.type || 'unknown').toLowerCase();
+        setIsConnected(online);
+        if (!online || typeStr === 'none') {
+          setNetworkType('none');
+        } else if (typeStr === 'cellular') {
+          setNetworkType('cellular');
+          // Wi-Fi에서 셀룰러로 전환되었는데 허용 토글이 꺼져 있고 다운로드 중이면 자동 중단
+          if (!allowCellularRef.current && downloadJobIdRef.current !== null) {
+            RNFS.stopDownload(downloadJobIdRef.current);
+            downloadJobIdRef.current = null;
+            setDownloadingKey(null);
+            setDownloadStatusText('');
+            Alert.alert(
+              '다운로드 자동 일시중지',
+              'Wi-Fi 연결이 끊기고 셀룰러 데이터로 전환되어 대용량 모델 다운로드를 안전하게 중단했습니다.',
+            );
+          }
+        } else {
+          setNetworkType('wifi');
+        }
+      });
+    } else {
+      probeConnectivity();
+      pollTimer = setInterval(probeConnectivity, 12000);
+    }
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, []);
 
   const getModelPath = (key: ModelKey) =>
     `${RNFS.DocumentDirectoryPath}/${MODELS[key].filename}`;
@@ -691,22 +1076,20 @@ export default function App(): React.JSX.Element {
     try {
       await AsyncStorage.setItem(STORAGE_SESSIONS_KEY, JSON.stringify(updated));
     } catch {
-      // 저장 실패 시 메모리 상태 유지
+      // 무시
     }
   };
 
   const createNewSession = useCallback(async () => {
     const currentList = sessionsRef.current;
-    const currentActive = currentList.find((s) => s.id === activeSessionId);
+    const currentActive = currentList.find((s) => s.id === activeSessionIdRef.current);
 
-    // 현재 보고 있는 채팅이 아직 비어 있으면 새 채팅을 늘리지 않음
     if (currentActive && currentActive.messages.length === 0) {
       Keyboard.dismiss();
       showToast('이미 새 채팅 화면입니다');
       return currentActive;
     }
 
-    // 목록에 이미 비어 있는 새 채팅방이 있다면 중복 생성 대신 해당 채팅방으로 이동
     const existingEmpty = currentList.find((s) => s.messages.length === 0);
     if (existingEmpty) {
       const reordered = [
@@ -729,18 +1112,31 @@ export default function App(): React.JSX.Element {
     await persistSessions(updated);
     setActiveSessionId(newSession.id);
     return newSession;
-  }, [activeSessionId]);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
     const bootstrap = async () => {
       try {
+        const savedSettingsRaw = await AsyncStorage.getItem(STORAGE_SETTINGS_KEY);
+        if (savedSettingsRaw && mounted) {
+          const parsed = JSON.parse(savedSettingsRaw);
+          if (typeof parsed.webSearchEnabled === 'boolean') {
+            setWebSearchEnabled(parsed.webSearchEnabled);
+          }
+          if (typeof parsed.allowCellularDownload === 'boolean') {
+            setAllowCellularDownload(parsed.allowCellularDownload);
+          }
+          if (parsed.enabledPlugins) {
+            setEnabledPlugins((prev) => ({ ...prev, ...parsed.enabledPlugins }));
+          }
+        }
+
         const savedSessionsRaw = await AsyncStorage.getItem(STORAGE_SESSIONS_KEY);
         let parsedSessions: ChatSession[] = savedSessionsRaw
           ? JSON.parse(savedSessionsRaw)
           : [];
 
-        // 중복된 빈 새 대화 정리 (최대 1개만 유지)
         let seenEmpty = false;
         parsedSessions = parsedSessions.filter((s) => {
           if (s.messages.length === 0) {
@@ -854,6 +1250,23 @@ export default function App(): React.JSX.Element {
 
   const handleDownloadModel = async (key: ModelKey) => {
     if (downloadingKey) return;
+
+    if (!isConnected) {
+      Alert.alert(
+        '오프라인 상태',
+        '인터넷에 연결되어 있지 않습니다. Wi-Fi 또는 셀룰러 데이터를 켠 뒤 다시 시도해 주세요.',
+      );
+      return;
+    }
+
+    if (networkType === 'cellular' && !allowCellularDownload) {
+      Alert.alert(
+        '셀룰러 데이터 다운로드 제한됨',
+        `현재 셀룰러(LTE/5G) 환경입니다.\n${MODELS[key].title}(${MODELS[key].sizeLabel})을 내려받으려면 상단의 '셀룰러 데이터 다운로드 허용' 스위치를 켜거나 Wi-Fi에 연결해 주세요.`,
+      );
+      return;
+    }
+
     const spec = MODELS[key];
     const targetPath = getModelPath(key);
 
@@ -876,7 +1289,7 @@ export default function App(): React.JSX.Element {
         discretionary: false,
         cacheable: false,
         headers: {
-          'User-Agent': 'PocketMind-iOS/2.0',
+          'User-Agent': 'PocketMind-iOS/3.0',
         },
         progressInterval: 250,
         begin: (res) => {
@@ -921,7 +1334,7 @@ export default function App(): React.JSX.Element {
       }
       Alert.alert(
         '다운로드 실패',
-        `모델을 내려받지 못했습니다. Wi-Fi 연결 상태와 여유 저장공간을 확인해 주세요.\n(${String(error)})`,
+        `모델을 내려받지 못했습니다. 네트워크 연결 상태와 여유 저장공간을 확인해 주세요.\n(${String(error)})`,
       );
     }
   };
@@ -976,12 +1389,16 @@ export default function App(): React.JSX.Element {
     spec: ModelSpec,
     history: ChatMessage[],
     userPrompt: string,
+    externalContextBlock: string,
     forceThinking?: boolean,
   ): { prompt: string; stop: string[]; penaltyRepeat: number } => {
     const contextSlice = history.slice(-6);
+    const enrichedSystem = externalContextBlock
+      ? `${spec.systemPrompt}\n\n[실시간 도구 및 검색 참조 데이터]\n${externalContextBlock}\n위 검증된 데이터를 우선 근거로 삼아 정확하게 답변하세요.`
+      : spec.systemPrompt;
 
     if (spec.promptFormat === 'exaone') {
-      let prompt = `[|system|]${spec.systemPrompt}[|endofturn|]\n`;
+      let prompt = `[|system|]${enrichedSystem}[|endofturn|]\n`;
       for (const msg of contextSlice) {
         if (msg.role === 'user') {
           prompt += `[|user|]${msg.content}\n`;
@@ -1003,7 +1420,7 @@ export default function App(): React.JSX.Element {
         ? `${userPrompt} /no_think`
         : userPrompt;
 
-    let prompt = `<|im_start|>system\n${spec.systemPrompt}<|im_end|>\n`;
+    let prompt = `<|im_start|>system\n${enrichedSystem}<|im_end|>\n`;
     for (const msg of contextSlice) {
       prompt += `<|im_start|>${msg.role}\n${msg.content}<|im_end|>\n`;
     }
@@ -1077,13 +1494,84 @@ export default function App(): React.JSX.Element {
     await persistSessions(initialSessions);
     setIsGenerating(true);
 
+    // 1. 플러그인 및 실시간 웹 검색 컨텍스트 수집
+    const pluginBadges: string[] = [];
+    const contextSections: string[] = [];
+    let fetchedSources: WebSearchSource[] = [];
+
+    if (enabledPlugins.datetime_tool) {
+      const kstStr = getKoreanDateTimeContext();
+      contextSections.push(`- 현재 시각: ${kstStr}`);
+      if (/(오늘|내일|모레|며칠|날짜|요일|시간|디데이|d-day|몇\s*년)/i.test(userText)) {
+        pluginBadges.push(`📅 현재 시각 (${kstStr.split(' ')[0]})`);
+      }
+    }
+
+    if (enabledPlugins.calculator) {
+      const calcResult = safeEvaluateMath(userText);
+      if (calcResult) {
+        contextSections.push(`- 정밀 계산기 검증값: ${calcResult}`);
+        pluginBadges.push(`🧮 계산기 (${calcResult})`);
+      }
+    }
+
+    if (isConnected && enabledPlugins.url_reader) {
+      const urlMatch = userText.match(/https?:\/\/[^\s)]+/i);
+      if (urlMatch) {
+        setEngineBannerText('🔗 웹페이지 본문을 읽어오는 중...');
+        const pageData = await fetchUrlReadableText(urlMatch[0]);
+        if (pageData) {
+          contextSections.push(
+            `- 웹페이지 본문 (${pageData.url}):\n${pageData.text}`,
+          );
+          pluginBadges.push('🔗 URL 본문 추출');
+        }
+        setEngineBannerText('');
+      }
+    }
+
+    if (isConnected && webSearchEnabled && shouldTriggerWebSearch(userText)) {
+      setEngineBannerText('🌐 실시간 웹 검색 수행 중...');
+      fetchedSources = await performLiveWebSearch(userText);
+      if (fetchedSources.length > 0) {
+        const formattedSearch = fetchedSources
+          .map((src, idx) => `[${idx + 1}] ${src.title}: ${src.snippet}`)
+          .join('\n');
+        contextSections.push(`- 실시간 웹 검색 결과:\n${formattedSearch}`);
+        pluginBadges.push(`🌐 웹 검색 (${fetchedSources.length}건)`);
+      }
+      setEngineBannerText('');
+    }
+
+    const externalContextBlock = contextSections.join('\n');
+
+    if (pluginBadges.length > 0 || fetchedSources.length > 0) {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === assistantMsgId
+                    ? {
+                        ...m,
+                        pluginBadges,
+                        webSources: fetchedSources.length > 0 ? fetchedSources : undefined,
+                      }
+                    : m,
+                ),
+              }
+            : s,
+        ),
+      );
+    }
+
     let finalAnswer = '';
     let stage1TitleSnapshot = '';
     let stage1OutputSnapshot = '';
 
     try {
       if (plan.steps.length === 1) {
-        // 단일 특화 AI 자동/수동 실행
         const step = plan.steps[0];
         const ctx = await ensureModelLoaded(
           step.modelKey,
@@ -1096,6 +1584,7 @@ export default function App(): React.JSX.Element {
           spec,
           historyBeforeUser,
           userText,
+          externalContextBlock,
         );
 
         let lastUiUpdate = 0;
@@ -1111,7 +1600,7 @@ export default function App(): React.JSX.Element {
           (tokenData) => {
             finalAnswer += tokenData.token;
             const now = Date.now();
-            if (now - lastUiUpdate >= 50) {
+            if (now - lastUiUpdate >= 65) {
               lastUiUpdate = now;
               const snapshot = cleanModelOutput(finalAnswer);
               setSessions((prev) =>
@@ -1130,7 +1619,6 @@ export default function App(): React.JSX.Element {
           },
         );
       } else {
-        // 2단계 복합 AI 협업 파이프라인 (1단계 특화 분석 -> 2단계 한국어 통합 완성)
         const step1 = plan.steps[0];
         const step2 = plan.steps[1];
 
@@ -1161,6 +1649,7 @@ export default function App(): React.JSX.Element {
           spec1,
           [],
           `${step1.instructionHint}${userText}`,
+          externalContextBlock,
           true,
         );
 
@@ -1177,7 +1666,7 @@ export default function App(): React.JSX.Element {
           (tokenData) => {
             stage1OutputSnapshot += tokenData.token;
             const now = Date.now();
-            if (now - lastUiUpdate1 >= 60) {
+            if (now - lastUiUpdate1 >= 65) {
               lastUiUpdate1 = now;
               const cleaned1 = cleanModelOutput(stage1OutputSnapshot);
               setSessions((prev) =>
@@ -1217,7 +1706,6 @@ export default function App(): React.JSX.Element {
         if (stopRequestedRef.current) {
           finalAnswer = stage1OutputSnapshot;
         } else {
-          // 2단계 모델로 자동 메모리 교체 후 최종 통합 답변 생성
           const ctx2 = await ensureModelLoaded(
             step2.modelKey,
             `[2/2단계] ${MODELS[step2.modelKey].title}로 한국어 최종 통합 중...`,
@@ -1231,7 +1719,12 @@ export default function App(): React.JSX.Element {
             `[1단계 전문 AI 검증 결과]\n${stage1OutputSnapshot}\n\n` +
             `위 검증된 수치와 논리를 빠짐없이 정확히 반영하여, 사용자에게 가장 이해하기 쉽고 자연스러운 한국어 최종 답변을 완성해 주세요.`;
 
-          const built2 = buildModelPrompt(spec2, historyBeforeUser, synthesisPrompt);
+          const built2 = buildModelPrompt(
+            spec2,
+            historyBeforeUser,
+            synthesisPrompt,
+            externalContextBlock,
+          );
 
           let lastUiUpdate2 = 0;
           await ctx2.completion(
@@ -1246,7 +1739,7 @@ export default function App(): React.JSX.Element {
             (tokenData) => {
               finalAnswer += tokenData.token;
               const now = Date.now();
-              if (now - lastUiUpdate2 >= 50) {
+              if (now - lastUiUpdate2 >= 65) {
                 lastUiUpdate2 = now;
                 const snapshot2 = cleanModelOutput(finalAnswer);
                 setSessions((prev) =>
@@ -1282,6 +1775,9 @@ export default function App(): React.JSX.Element {
                   ? {
                       ...m,
                       content: finalText,
+                      pluginBadges: pluginBadges.length > 0 ? pluginBadges : undefined,
+                      webSources:
+                        fetchedSources.length > 0 ? fetchedSources : undefined,
                       stage1Title: stage1TitleSnapshot || undefined,
                       stage1Content: stage1OutputSnapshot || undefined,
                     }
@@ -1325,7 +1821,7 @@ export default function App(): React.JSX.Element {
       try {
         await llamaContextRef.current.stopCompletion();
       } catch {
-        // 이미 완료된 경우 무시
+        // 무시
       }
     }
   };
@@ -1377,10 +1873,9 @@ export default function App(): React.JSX.Element {
   };
 
   const installedCount = MODEL_ORDER.filter((k) => downloadedModels[k]).length;
+  const activePluginCount = Object.values(enabledPlugins).filter(Boolean).length;
   const activeAccentColor =
-    selectionMode === 'auto'
-      ? '#10A37F'
-      : MODELS[selectionMode].badgeColor;
+    selectionMode === 'auto' ? '#10A37F' : MODELS[selectionMode].badgeColor;
 
   const renderMessageItem = ({
     item,
@@ -1420,6 +1915,29 @@ export default function App(): React.JSX.Element {
                 <Text style={styles.orchestrationPillText}>
                   🧠 {item.orchestrationLabel}
                 </Text>
+              </View>
+            ) : null}
+
+            {item.pluginBadges && item.pluginBadges.length > 0 ? (
+              <View style={styles.pluginBadgeRow}>
+                {item.pluginBadges.map((b, bIdx) => (
+                  <View key={bIdx} style={styles.pluginUsedChip}>
+                    <Text style={styles.pluginUsedChipText}>{b}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            {item.webSources && item.webSources.length > 0 ? (
+              <View style={styles.sourcesCard}>
+                <Text style={styles.sourcesHeader}>
+                  🌐 실시간 웹 검색 근거 ({item.webSources.length}건)
+                </Text>
+                {item.webSources.map((src, sIdx) => (
+                  <Text key={sIdx} numberOfLines={1} style={styles.sourceItemText}>
+                    • {src.title}
+                  </Text>
+                ))}
               </View>
             ) : null}
 
@@ -1531,6 +2049,55 @@ export default function App(): React.JSX.Element {
         </TouchableOpacity>
       </View>
 
+      {/* 인터넷·웹검색·플러그인 빠른 제어 상태 바 */}
+      <View style={styles.quickFeatureBar}>
+        <TouchableOpacity
+          onPress={toggleWebSearch}
+          style={[
+            styles.featurePill,
+            isConnected && webSearchEnabled
+              ? styles.featurePillOnline
+              : styles.featurePillOffline,
+          ]}>
+          <Text
+            style={[
+              styles.featurePillText,
+              isConnected && webSearchEnabled && styles.featurePillTextOnline,
+            ]}>
+            {!isConnected
+              ? '📴 오프라인 모드'
+              : webSearchEnabled
+                ? `🌐 웹 검색 ON (${networkType === 'cellular' ? '셀룰러' : 'Wi-Fi'})`
+                : '🌐 웹 검색 OFF'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => setPluginModalVisible(true)}
+          style={styles.featurePill}>
+          <Text style={styles.featurePillText}>
+            🧩 플러그인 ({activePluginCount}/{PLUGINS.length})
+          </Text>
+        </TouchableOpacity>
+
+        {loadedModelKey === 'allrounder' && (
+          <TouchableOpacity
+            onPress={() => setQwenThinkingMode((prev) => !prev)}
+            style={[
+              styles.featurePill,
+              qwenThinkingMode && styles.featurePillOnline,
+            ]}>
+            <Text
+              style={[
+                styles.featurePillText,
+                qwenThinkingMode && styles.featurePillTextOnline,
+              ]}>
+              {qwenThinkingMode ? '🧠 깊은 사고' : '⚡ 빠른 응답'}
+            </Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
       {/* 토스트 알림 배지 */}
       {toastText ? (
         <View style={styles.toastWrap}>
@@ -1538,29 +2105,7 @@ export default function App(): React.JSX.Element {
         </View>
       ) : null}
 
-      {/* 올라운더(Qwen3 8B) 전용 깊은 사고(Thinking) 토글 */}
-      {loadedModelKey === 'allrounder' && !engineBannerText && (
-        <View style={styles.subModeBar}>
-          <TouchableOpacity
-            onPress={() => setQwenThinkingMode((prev) => !prev)}
-            style={[
-              styles.thinkingChip,
-              qwenThinkingMode && styles.thinkingChipActive,
-            ]}>
-            <Text
-              style={[
-                styles.thinkingChipText,
-                qwenThinkingMode && styles.thinkingChipTextActive,
-              ]}>
-              {qwenThinkingMode
-                ? '🧠 Qwen3 8B 깊은 사고 모드 ON'
-                : '⚡ Qwen3 8B 빠른 응답 (터치해 깊은 사고 전환)'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* 모델 적재·교체 상태 배너 */}
+      {/* 모델 적재·웹 검색·플러그인 실행 배너 */}
       {engineBannerText ? (
         <View style={styles.loadingBanner}>
           <ActivityIndicator color="#10A37F" size="small" />
@@ -1585,15 +2130,15 @@ export default function App(): React.JSX.Element {
                   styles.activeSpecialtyText,
                   { color: activeAccentColor },
                 ]}>
-                {selectionMode === 'auto'
-                  ? 'AUTONOMOUS MULTI-AI ORCHESTRATOR'
-                  : MODELS[selectionMode].badge}
+                {isConnected && webSearchEnabled
+                  ? 'HYBRID AI · ONLINE WEB SEARCH + 8B ON-DEVICE'
+                  : 'AUTONOMOUS MULTI-AI ORCHESTRATOR'}
               </Text>
             </View>
             <Text style={styles.centerTitle}>무엇을 도와드릴까요?</Text>
             <Text style={styles.centerSubtitle}>
               {installedCount > 0
-                ? `질문 의도를 분석해 8B급 전문 AI ${installedCount}종이 단독 또는 협업으로 해결합니다`
+                ? `질문 의도를 분석해 8B급 전문 AI ${installedCount}종과 웹 검색·플러그인이 협업합니다`
                 : '상단 버튼을 눌러 아이폰 16 Pro용 7B~8B AI 모델을 다운로드하세요'}
             </Text>
           </View>
@@ -1630,11 +2175,22 @@ export default function App(): React.JSX.Element {
         keyboardVerticalOffset={6}>
         <View style={styles.bottomDock}>
           <View style={styles.inputCapsule}>
+            <TouchableOpacity
+              onPress={() => setPluginModalVisible(true)}
+              style={styles.plusToolBtn}
+              disabled={isGenerating}>
+              <Text style={styles.plusToolText}>+</Text>
+            </TouchableOpacity>
+
             <TextInput
               maxLength={2000}
               multiline
               onChangeText={setInputText}
-              placeholder="수학, 코딩, 한국어 작문 등 무엇이든 물어보세요"
+              placeholder={
+                isConnected && webSearchEnabled
+                  ? '최신 웹 검색, 수학, 코딩, 한국어 작문 무엇이든 물어보세요'
+                  : '오프라인 모드 · 수학, 코딩, 한국어 작문 입력'
+              }
               placeholderTextColor="#8E8EA0"
               style={styles.textInput}
               value={inputText}
@@ -1658,7 +2214,9 @@ export default function App(): React.JSX.Element {
             )}
           </View>
           <Text style={styles.footerDisclaimer}>
-            모든 추론과 모델 협업은 인터넷 없이 아이폰 16 Pro 내부에서 실행됩니다.
+            {isConnected
+              ? '온라인 연결됨 · 웹 검색 및 URL 플러그인 사용 가능 · AI 연산은 기기 내부 실행'
+              : '오프라인 상태 · 모든 AI 모델과 로컬 플러그인이 기기 내부에서 안전하게 작동'}
           </Text>
         </View>
       </KeyboardAvoidingView>
@@ -1726,20 +2284,112 @@ export default function App(): React.JSX.Element {
                 }}
               />
 
-              <TouchableOpacity
-                onPress={() => {
-                  toggleDrawer(false);
-                  setModelModalVisible(true);
-                }}
-                style={styles.drawerFooterBtn}>
-                <Text style={styles.drawerFooterText}>⚙ 8B 특화 모델 다운로드 · 모드 설정</Text>
-              </TouchableOpacity>
+              <View style={styles.drawerFooterGroup}>
+                <TouchableOpacity
+                  onPress={() => {
+                    toggleDrawer(false);
+                    setPluginModalVisible(true);
+                  }}
+                  style={styles.drawerFooterBtn}>
+                  <Text style={styles.drawerFooterText}>🧩 플러그인 및 웹 검색 설정</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    toggleDrawer(false);
+                    setModelModalVisible(true);
+                  }}
+                  style={styles.drawerFooterBtn}>
+                  <Text style={styles.drawerFooterText}>⚙ 8B 모델 다운로드 · 데이터 설정</Text>
+                </TouchableOpacity>
+              </View>
             </SafeAreaView>
           </Animated.View>
         </View>
       )}
 
-      {/* 능동형 모드 & 7B~8B 특화 AI 모델 관리 모달 */}
+      {/* 플러그인 & 웹 검색 허브 모달 */}
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setPluginModalVisible(false)}
+        transparent
+        visible={pluginModalVisible}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>플러그인 & 실시간 웹 검색</Text>
+              <TouchableOpacity onPress={() => setPluginModalVisible(false)}>
+                <Text style={styles.modalClose}>닫기</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalDesc}>
+              인터넷 연결 시 웹 검색과 URL 요약기가 자동 활성화되며, 로컬 플러그인은 오프라인에서도 작동합니다.
+            </Text>
+
+            {/* 실시간 웹 검색 마스터 토글 */}
+            <View style={styles.toggleSettingCard}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleTitle}>
+                  🌐 실시간 웹 검색 ({isConnected ? '온라인 연결됨' : '오프라인'})
+                </Text>
+                <Text style={styles.toggleSub}>
+                  최신 뉴스·날씨·정보 질문 시 인터넷 검색 결과를 AI에 자동 주입
+                </Text>
+              </View>
+              <Switch
+                value={isConnected && webSearchEnabled}
+                onValueChange={toggleWebSearch}
+                trackColor={{ false: '#3F3F46', true: '#10A37F' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            {/* 클립보드 원탭 불러오기 액션 */}
+            <TouchableOpacity
+              onPress={() => {
+                setPluginModalVisible(false);
+                handlePasteFromClipboard();
+              }}
+              style={styles.clipboardQuickAction}>
+              <Text style={styles.clipboardQuickActionText}>
+                📋 지금 클립보드 내용 불러와 분석하기
+              </Text>
+            </TouchableOpacity>
+
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}>
+              {PLUGINS.map((plugin) => {
+                const active = enabledPlugins[plugin.key];
+                return (
+                  <View key={plugin.key} style={styles.pluginRowCard}>
+                    <View style={styles.pluginInfoCol}>
+                      <View style={styles.pluginTitleLine}>
+                        <Text style={styles.pluginTitleText}>
+                          {plugin.icon} {plugin.title}
+                        </Text>
+                        {plugin.requiresInternet && (
+                          <View style={styles.onlineOnlyTag}>
+                            <Text style={styles.onlineOnlyTagText}>온라인</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.pluginDescText}>{plugin.desc}</Text>
+                    </View>
+                    <Switch
+                      value={active}
+                      onValueChange={() => togglePlugin(plugin.key)}
+                      trackColor={{ false: '#3F3F46', true: '#3B82F6' }}
+                      thumbColor="#FFFFFF"
+                    />
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 능동형 모드 & 7B~8B 특화 AI 모델 + 셀룰러 토글 모달 */}
       <Modal
         animationType="slide"
         onRequestClose={() => setModelModalVisible(false)}
@@ -1754,8 +2404,28 @@ export default function App(): React.JSX.Element {
               </TouchableOpacity>
             </View>
             <Text style={styles.modalDesc}>
-              8GB RAM 한계에 맞춘 7B~8B 플래그십 모델을 내려받으면, 능동형 AI가 작업에 맞춰 모델을 자동 선택하거나 2단계로 협업합니다.
+              8GB RAM 한계에 맞춘 7B~8B 플래그십 모델을 내려받으면 능동형 AI가 작업에 맞춰 모델을 자동 선택·협업합니다.
             </Text>
+
+            {/* 셀룰러 데이터 다운로드 허용 토글 */}
+            <View style={styles.toggleSettingCard}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleTitle}>
+                  📶 셀룰러 데이터 다운로드 허용
+                </Text>
+                <Text style={styles.toggleSub}>
+                  {networkType === 'cellular'
+                    ? '현재 셀룰러(5G/LTE) 연결 중 · 허용 시 대용량 다운로드 가능'
+                    : '꺼두면 Wi-Fi 연결 시에만 대용량(4.7GB+) 다운로드를 허용합니다'}
+                </Text>
+              </View>
+              <Switch
+                value={allowCellularDownload}
+                onValueChange={toggleAllowCellular}
+                trackColor={{ false: '#3F3F46', true: '#F59E0B' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
 
             {/* 능동형 복합 AI 모드 선택 카드 */}
             <TouchableOpacity
@@ -1878,7 +2548,9 @@ export default function App(): React.JSX.Element {
                           downloadingKey !== null && styles.disabledBtn,
                         ]}>
                         <Text style={styles.downloadModelBtnText}>
-                          다운로드 ({spec.sizeLabel})
+                          {networkType === 'cellular' && !allowCellularDownload
+                            ? `다운로드 (${spec.sizeLabel} · Wi-Fi 필요)`
+                            : `다운로드 (${spec.sizeLabel})`}
                         </Text>
                       </TouchableOpacity>
                     )}
@@ -1899,7 +2571,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#212121',
   },
   topBar: {
-    height: 52,
+    height: 50,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -1941,6 +2613,39 @@ const styles = StyleSheet.create({
     color: '#9B9B9B',
     fontSize: 13,
   },
+  quickFeatureBar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 6,
+    gap: 6,
+  },
+  featurePill: {
+    backgroundColor: '#2A2A2A',
+    borderWidth: 1,
+    borderColor: '#3A3A3A',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  featurePillOnline: {
+    backgroundColor: '#132E26',
+    borderColor: '#10A37F',
+  },
+  featurePillOffline: {
+    backgroundColor: '#262626',
+    borderColor: '#383838',
+  },
+  featurePillText: {
+    color: '#B4B4B4',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  featurePillTextOnline: {
+    color: '#6EE7B7',
+  },
   toastWrap: {
     alignSelf: 'center',
     backgroundColor: '#333333',
@@ -1953,30 +2658,6 @@ const styles = StyleSheet.create({
     color: '#ECECEC',
     fontSize: 12,
     fontWeight: '500',
-  },
-  subModeBar: {
-    alignItems: 'center',
-    paddingBottom: 6,
-  },
-  thinkingChip: {
-    backgroundColor: '#2A2A2A',
-    borderWidth: 1,
-    borderColor: '#3A3A3A',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  thinkingChipActive: {
-    backgroundColor: '#14332B',
-    borderColor: '#10A37F',
-  },
-  thinkingChipText: {
-    color: '#9B9B9B',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  thinkingChipTextActive: {
-    color: '#6EE7B7',
   },
   loadingBanner: {
     flexDirection: 'row',
@@ -1995,37 +2676,37 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: 22,
-    paddingBottom: 18,
+    paddingTop: 18,
+    paddingBottom: 16,
   },
   centerLogoWrap: {
     alignItems: 'center',
-    marginTop: 8,
+    marginTop: 6,
   },
   logoOuterWrap: {
-    width: 72,
-    height: 72,
+    width: 68,
+    height: 68,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
   },
   logoGlowRing: {
     position: 'absolute',
-    width: 68,
-    height: 68,
-    borderRadius: 34,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
   },
   centerLogoCircle: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: '#ECECEC',
     alignItems: 'center',
     justifyContent: 'center',
   },
   centerLogoIcon: {
     color: '#212121',
-    fontSize: 26,
+    fontSize: 24,
     fontWeight: '700',
   },
   activeSpecialtyBadge: {
@@ -2042,9 +2723,9 @@ const styles = StyleSheet.create({
   },
   centerTitle: {
     color: '#ECECEC',
-    fontSize: 22,
+    fontSize: 21,
     fontWeight: '700',
-    marginBottom: 6,
+    marginBottom: 5,
   },
   centerSubtitle: {
     color: '#9B9B9B',
@@ -2053,16 +2734,16 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   suggestionsGrid: {
-    gap: 10,
-    marginTop: 20,
+    gap: 9,
+    marginTop: 18,
   },
   suggestionCard: {
     backgroundColor: '#2A2A2A',
     borderWidth: 1,
     borderColor: '#383838',
     borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 11,
+    paddingHorizontal: 15,
+    paddingVertical: 10,
   },
   suggestionBadge: {
     color: '#10A37F',
@@ -2074,7 +2755,7 @@ const styles = StyleSheet.create({
     color: '#ECECEC',
     fontSize: 14,
     fontWeight: '600',
-    marginBottom: 3,
+    marginBottom: 2,
   },
   suggestionDesc: {
     color: '#9B9B9B',
@@ -2136,6 +2817,42 @@ const styles = StyleSheet.create({
     color: '#A7F3D0',
     fontSize: 11,
     fontWeight: '600',
+  },
+  pluginBadgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  pluginUsedChip: {
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 7,
+  },
+  pluginUsedChipText: {
+    color: '#93C5FD',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  sourcesCard: {
+    backgroundColor: '#162420',
+    borderWidth: 1,
+    borderColor: '#244239',
+    borderRadius: 10,
+    padding: 10,
+    gap: 3,
+  },
+  sourcesHeader: {
+    color: '#6EE7B7',
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  sourceItemText: {
+    color: '#D1FAE5',
+    fontSize: 11,
   },
   stage1Card: {
     backgroundColor: '#19222C',
@@ -2238,10 +2955,24 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     backgroundColor: '#2F2F2F',
     borderRadius: 24,
-    paddingLeft: 16,
+    paddingLeft: 8,
     paddingRight: 8,
     paddingVertical: 7,
     gap: 8,
+  },
+  plusToolBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#3D3D3D',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  plusToolText: {
+    color: '#ECECEC',
+    fontSize: 20,
+    fontWeight: '600',
+    lineHeight: 22,
   },
   textInput: {
     flex: 1,
@@ -2360,10 +3091,14 @@ const styles = StyleSheet.create({
     color: '#7A7A7A',
     fontSize: 13,
   },
-  drawerFooterBtn: {
+  drawerFooterGroup: {
     borderTopWidth: 1,
     borderTopColor: '#2A2A2A',
-    paddingTop: 14,
+    paddingTop: 10,
+    gap: 12,
+  },
+  drawerFooterBtn: {
+    paddingVertical: 4,
     paddingHorizontal: 6,
   },
   drawerFooterText: {
@@ -2377,7 +3112,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalSheet: {
-    maxHeight: '88%',
+    maxHeight: '90%',
     backgroundColor: '#1E1E1E',
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
@@ -2405,6 +3140,88 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     marginBottom: 12,
+  },
+  toggleSettingCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#262626',
+    borderWidth: 1,
+    borderColor: '#383838',
+    borderRadius: 14,
+    padding: 13,
+    marginBottom: 11,
+    gap: 10,
+  },
+  toggleTextCol: {
+    flex: 1,
+    gap: 3,
+  },
+  toggleTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  toggleSub: {
+    color: '#A1A1AA',
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  clipboardQuickAction: {
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 12,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  clipboardQuickActionText: {
+    color: '#93C5FD',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  pluginRowCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#2A2A2A',
+    borderRadius: 13,
+    padding: 13,
+    borderWidth: 1,
+    borderColor: '#3A3A3A',
+    gap: 10,
+  },
+  pluginInfoCol: {
+    flex: 1,
+    gap: 4,
+  },
+  pluginTitleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  pluginTitleText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  onlineOnlyTag: {
+    backgroundColor: '#13392E',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
+  },
+  onlineOnlyTagText: {
+    color: '#6EE7B7',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  pluginDescText: {
+    color: '#B4B4B4',
+    fontSize: 12,
+    lineHeight: 17,
   },
   autoModeCard: {
     backgroundColor: '#172A24',
@@ -2442,7 +3259,7 @@ const styles = StyleSheet.create({
     flexGrow: 0,
   },
   modalScrollContent: {
-    gap: 11,
+    gap: 10,
     paddingBottom: 8,
   },
   modelCard: {

@@ -1,6 +1,6 @@
 workflows:
   ios-pocketmind-sideload:
-    name: PocketMind iOS Build (8B Orchestrator + Compiled Assets.car Icon)
+    name: PocketMind iOS Build (Hybrid Web+8B AI, Plugins, Cellular Guard)
     max_build_duration: 60
     instance_type: mac_mini_m2
     environment:
@@ -8,9 +8,10 @@ workflows:
       xcode: latest
       cocoapods: default
     scripts:
-      - name: Install npm dependencies
+      - name: Install npm dependencies including NetInfo
         script: |
           npm install
+          npm install @react-native-community/netinfo
       - name: Install CocoaPods dependencies
         script: |
           cd ios && pod install
@@ -145,8 +146,9 @@ workflows:
             --app-icon AppIcon \
             --output-partial-info-plist build/icon-partial.plist
 
-          /usr/libexec/PlistBuddy -c "Merge build/icon-partial.plist" "$PLIST"
-          ls -lh "$APP_DIR/Assets.car" "$APP_DIR"/AppIcon*.png || true
+          if [ -f build/icon-partial.plist ]; then
+            /usr/libexec/PlistBuddy -c "Merge build/icon-partial.plist" "$PLIST"
+          fi
 
           printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n\t<key>com.apple.developer.kernel.increased-memory-limit</key>\n\t<true/>\n</dict>\n</plist>\n' > ios/PocketMind/PocketMind.entitlements
           plutil -lint ios/PocketMind/PocketMind.entitlements
