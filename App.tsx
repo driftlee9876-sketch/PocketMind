@@ -25,7 +25,7 @@ import {
 } from './src/aiModelsAndPlugins';
 
 // 1단계에서 배포한 본인의 Cloudflare Workers 주소를 여기에 넣으세요
-const DEFAULT_RELAY_URL = 'wss://pocketmind-relay.workers.dev';
+const DEFAULT_RELAY_URL = 'wss://pocketmind-relay.driftlee9876.workers.dev';
 
 interface ChatMessage {
   id: string;
