@@ -6,6 +6,7 @@ import {
   Platform,
   SafeAreaView,
   ScrollView,
+  Share,
   StatusBar,
   StyleSheet,
   Switch,
@@ -21,23 +22,47 @@ import {
   AIModelSpec,
   openPluginActionUrl,
   PICKLE_PLUGINS,
+  PluginActionLink,
+  PluginCategory,
   runActivePlugins,
 } from './src/aiModelsAndPlugins';
 
-// 1단계에서 배포한 본인의 Cloudflare Workers 주소를 여기에 넣으세요
 const DEFAULT_RELAY_URL = 'wss://pocketmind-relay.driftlee9876.workers.dev';
 
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   text: string;
-  badge?: string;
+  meta?: string;
   pluginsUsed?: string[];
-  actionLinks?: { label: string; url: string }[];
+  actionLinks?: PluginActionLink[];
 }
 
+interface ChatSession {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+}
+
+const STARTER_CARDS = [
+  { icon: '🌤️', title: '오늘 청주 날씨', prompt: '오늘 청주 날씨와 옷차림 알려줘' },
+  { icon: '🚄', title: 'KTX 열차 예매', prompt: '오송역에서 서울역 가는 KTX 열차 조회해줘' },
+  { icon: '💬', title: '카카오톡 메시지', prompt: '카카오톡으로 보낼 정중한 안부 인사 쓰고 카톡 열어줘' },
+  { icon: '🧠', title: '내 기기 기억하기', prompt: '기억해: 내 기기는 갤탭 S7 FE, 아이폰 16 Pro, RTX 3060 랩탑이야' },
+];
+
+const PLUGIN_CATEGORIES: ('전체' | PluginCategory)[] = [
+  '전체',
+  '메신저·연락',
+  '지도·교통·여행',
+  '쇼핑·배달·결제',
+  '미디어·엔터',
+  '정보·검색',
+  '생산성·기기',
+];
+
 export default function App() {
-  const [selectedModel, setSelectedModel] = useState<AIModelSpec>(AI_MODEL_CATALOG[1]); // 기본: Qwen 2.5 1.5B (갤탭 S7 FE 최적)
+  const [selectedModel, setSelectedModel] = useState<AIModelSpec>(AI_MODEL_CATALOG[1]); // Qwen 2.5 1.5B (갤탭 S7 FE 최적)
   const [downloadedModels, setDownloadedModels] = useState<Record<string, boolean>>({});
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
@@ -50,31 +75,28 @@ export default function App() {
   const [relayConnected, setRelayConnected] = useState<boolean>(false);
   const [onlineWorkers, setOnlineWorkers] = useState<number>(0);
 
-  // 피클 스타일 플러그인 활성화 목록 (기본 10종 모두 활성)
+  // 30종 앱 플러그인 활성화 목록 (전체 활성 기본값)
   const [enabledPlugins, setEnabledPlugins] = useState<string[]>(
     PICKLE_PLUGINS.map((p) => p.id),
   );
+  const [selectedPluginCategory, setSelectedPluginCategory] = useState<'전체' | PluginCategory>('전체');
+  const [pluginSearch, setPluginSearch] = useState<string>('');
 
-  // 모달 상태
-  const [showModelModal, setShowModelModal] = useState<boolean>(false);
-  const [showPluginModal, setShowPluginModal] = useState<boolean>(false);
-  const [showSwarmModal, setShowSwarmModal] = useState<boolean>(false);
-
-  // 채팅 상태
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      text: '안녕하세요! PocketMind입니다.\n• 상단 [모델]에서 갤탭 S7 FE용 초경량(0.5B~3B)부터 RTX 3060용 14B 모델까지 선택할 수 있습니다.\n• [플러그인]에서 날씨·검색·KTX·쇼핑·전화·캘린더·기억 10종 도구가 자동 작동합니다.\n• [GPU 공유]를 켜면 VPN 앱 없이 다른 기기와 연산력을 자동 공유합니다.',
-      badge: '준비 완료',
-    },
+  // ChatGPT 스타일 세션 & UI 패널 상태
+  const [sessions, setSessions] = useState<ChatSession[]>([
+    { id: 'session-1', title: '새 대화', messages: [] },
   ]);
+  const [activeSessionId, setActiveSessionId] = useState<string>('session-1');
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  const [activeSheet, setActiveSheet] = useState<'none' | 'models' | 'plugins' | 'swarm'>('none');
+
   const [inputText, setInputText] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
 
   const llamaRef = useRef<LlamaContext | null>(null);
   const loadedModelIdRef = useRef<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const abortRef = useRef<boolean>(false);
   const pendingJobsRef = useRef<
     Map<
       string,
@@ -87,6 +109,10 @@ export default function App() {
     >
   >(new Map());
   const scrollViewRef = useRef<ScrollView | null>(null);
+
+  const activeSession =
+    sessions.find((s) => s.id === activeSessionId) || sessions[0];
+  const messages = activeSession.messages;
 
   const getModelPath = (model: AIModelSpec) =>
     `${RNFS.DocumentDirectoryPath}/${model.filename}`;
@@ -111,12 +137,13 @@ export default function App() {
     };
   }, []);
 
-  // 로컬 GGUF 엔진 로드
   const ensureLocalEngine = async (model: AIModelSpec): Promise<LlamaContext> => {
     const path = getModelPath(model);
     const exists = await RNFS.exists(path);
     if (!exists) {
-      throw new Error(`'${model.name}' 모델 파일이 아직 다운로드되지 않았습니다. 상단 [모델]에서 받아주세요.`);
+      throw new Error(
+        `'${model.shortName}' 모델 파일이 아직 없습니다. 상단 모델 이름을 눌러 먼저 다운로드해 주세요.`,
+      );
     }
     if (llamaRef.current && loadedModelIdRef.current === model.id) {
       return llamaRef.current;
@@ -137,7 +164,7 @@ export default function App() {
     return ctx;
   };
 
-  // WebSocket 무설치 GPU 공유 연결 관리
+  // 무설치 WebSocket GPU 공유 연결
   useEffect(() => {
     if (!gpuShareEnabled) {
       if (wsRef.current) {
@@ -173,8 +200,6 @@ export default function App() {
           setOnlineWorkers(Number(msg.onlineWorkers ?? msg.workers ?? 0));
           return;
         }
-
-        // 클라이언트 요청에 대한 원격 GPU 응답 수신
         if (msg.type === 'job_token') {
           const job = pendingJobsRef.current.get(msg.jobId);
           if (job) {
@@ -199,8 +224,6 @@ export default function App() {
           }
           return;
         }
-
-        // 워커 모드: 다른 기기(아이폰 등)가 보낸 추론 작업을 내 기기에서 대신 처리
         if (msg.type === 'execute_job') {
           try {
             const targetModel =
@@ -263,7 +286,6 @@ export default function App() {
     };
   }, [gpuShareEnabled, workerModeEnabled, relayUrl, swarmRoom]);
 
-  // 모델 다운로드
   const handleDownloadModel = async (model: AIModelSpec) => {
     if (downloadingId) return;
     setDownloadingId(model.id);
@@ -287,7 +309,7 @@ export default function App() {
       }
       await refreshDownloadedModels();
       setSelectedModel(model);
-      Alert.alert('다운로드 완료', `${model.name} 모델이 준비되었습니다.`);
+      Alert.alert('다운로드 완료', `${model.shortName} 모델이 준비되었습니다.`);
     } catch (e: any) {
       Alert.alert('다운로드 오류', e?.message || '모델을 내려받지 못했습니다.');
     } finally {
@@ -296,7 +318,6 @@ export default function App() {
     }
   };
 
-  // 원격 GPU 오프로딩 요청
   const tryRemoteGpuInference = (
     systemPrompt: string,
     prompt: string,
@@ -341,13 +362,39 @@ export default function App() {
     });
   };
 
-  // 메시지 전송 및 플러그인 + 로컬/원격 추론 실행
+  const updateSessionMessages = (
+    sessionId: string,
+    updater: (prev: ChatMessage[]) => ChatMessage[],
+    newTitle?: string,
+  ) => {
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId
+          ? {
+              ...s,
+              title: newTitle && s.title === '새 대화' ? newTitle : s.title,
+              messages: updater(s.messages),
+            }
+          : s,
+      ),
+    );
+  };
+
+  const handleNewChat = () => {
+    const newId = `session-${Date.now()}`;
+    setSessions((prev) => [{ id: newId, title: '새 대화', messages: [] }, ...prev]);
+    setActiveSessionId(newId);
+    setSidebarOpen(false);
+  };
+
   const handleSend = async (overrideText?: string) => {
     const query = (overrideText ?? inputText).trim();
     if (!query || isGenerating) return;
 
+    const targetSessionId = activeSession.id;
     setInputText('');
     setIsGenerating(true);
+    abortRef.current = false;
 
     const userMsg: ChatMessage = {
       id: `u-${Date.now()}`,
@@ -355,31 +402,39 @@ export default function App() {
       text: query,
     };
     const botMsgId = `a-${Date.now() + 1}`;
-    setMessages((prev) => [
-      ...prev,
-      userMsg,
-      { id: botMsgId, role: 'assistant', text: '생각 중...', badge: '준비 중' },
-    ]);
+
+    updateSessionMessages(
+      targetSessionId,
+      (prev) => [...prev, userMsg, { id: botMsgId, role: 'assistant', text: '●' }],
+      query.slice(0, 22),
+    );
 
     try {
-      // 1. 피클 스타일 10종 플러그인 자동 실행
       const pluginRes = await runActivePlugins(query, enabledPlugins);
+      const historyContext = messages
+        .slice(-4)
+        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
+        .join('\n');
+
       const systemPrompt =
-        '당신은 PocketMind AI 비서입니다. 사용자의 질문에 한국어로 정확하고 간결하게 답하며, 아래 제공된 실시간 플러그인 데이터가 있으면 반드시 이를 반영해 답하세요.' +
+        '당신은 ChatGPT처럼 자연스럽고 똑똑하게 대화하는 PocketMind AI 어시스턴트입니다. 한국어로 친절하고 명확하게 답변하며, 아래 실시간 앱 플러그인 데이터가 제공되면 반드시 반영해서 안내하세요.' +
         pluginRes.contextBlock;
 
-      let usedBadge = '';
-      let streamedText = '';
+      const combinedPrompt = historyContext
+        ? `${historyContext}\nUser: ${query}`
+        : query;
 
-      const appendToken = (tok: string, badgeLabel: string) => {
+      let streamedText = '';
+      const appendToken = (tok: string, metaLabel: string) => {
+        if (abortRef.current) return;
         streamedText += tok;
-        setMessages((prev) =>
+        updateSessionMessages(targetSessionId, (prev) =>
           prev.map((m) =>
             m.id === botMsgId
               ? {
                   ...m,
                   text: streamedText,
-                  badge: badgeLabel,
+                  meta: metaLabel,
                   pluginsUsed: pluginRes.usedPlugins,
                   actionLinks: pluginRes.actionLinks,
                 }
@@ -388,29 +443,21 @@ export default function App() {
         );
       };
 
-      // 2. GPU 공유가 켜져 있으면 원격 고성능 GPU(RTX 3060 등) 우선 시도
       let remoteSucceeded = false;
       if (gpuShareEnabled && relayConnected) {
         try {
-          usedBadge = '🌐 원격 공유 GPU 실행';
-          await tryRemoteGpuInference(systemPrompt, query, (tok) =>
-            appendToken(tok, usedBadge),
+          await tryRemoteGpuInference(systemPrompt, combinedPrompt, (tok) =>
+            appendToken(tok, '🌐 원격 공유 GPU'),
           );
           remoteSucceeded = true;
         } catch {
-          // 대기 워커가 없으면 자동으로 내 기기 온디바이스 추론으로 매끄럽게 전환
+          // 대기 워커 없으면 로컬 온디바이스로 자동 전환
         }
       }
 
-      // 3. 로컬 온디바이스 추론 폴백
       if (!remoteSucceeded) {
-        usedBadge =
-          Platform.OS === 'ios'
-            ? `📱 아이폰 로컬 (${selectedModel.tierLabel})`
-            : `📱 갤탭 로컬 (${selectedModel.tierLabel})`;
-
         const ctx = await ensureLocalEngine(selectedModel);
-        const formattedPrompt = `<|im_start|>system\n${systemPrompt}<|im_end|>\n<|im_start|>user\n${query}<|im_end|>\n<|im_start|>assistant\n`;
+        const formattedPrompt = `<|im_start|>system\n${systemPrompt}<|im_end|>\n<|im_start|>user\n${combinedPrompt}<|im_end|>\n<|im_start|>assistant\n`;
 
         await ctx.completion(
           {
@@ -420,17 +467,17 @@ export default function App() {
             top_p: 0.9,
             stop: ['<|im_end|>', '[|endofturn|>'],
           },
-          (tok) => appendToken(tok.token, usedBadge),
+          (tok) => appendToken(tok.token, selectedModel.shortName),
         );
       }
     } catch (err: any) {
-      setMessages((prev) =>
+      updateSessionMessages(targetSessionId, (prev) =>
         prev.map((m) =>
           m.id === botMsgId
             ? {
                 ...m,
-                text: `실행 안내: ${err?.message || '모델을 먼저 다운로드해 주세요.'}`,
-                badge: '안내',
+                text: `${err?.message || '모델을 먼저 다운로드해 주세요.'}`,
+                meta: '안내',
               }
             : m,
         ),
@@ -446,162 +493,306 @@ export default function App() {
     );
   };
 
+  const filteredPlugins = PICKLE_PLUGINS.filter((p) => {
+    const matchCat =
+      selectedPluginCategory === '전체' || p.category === selectedPluginCategory;
+    const matchQuery =
+      !pluginSearch.trim() ||
+      p.name.toLowerCase().includes(pluginSearch.toLowerCase()) ||
+      p.description.toLowerCase().includes(pluginSearch.toLowerCase());
+    return matchCat && matchQuery;
+  });
+
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#0F172A" />
+      <StatusBar barStyle="light-content" backgroundColor="#212121" />
 
-      {/* 상단 컨트롤 바 */}
-      <View style={styles.header}>
-        <View style={styles.headerTopRow}>
-          <Text style={styles.appTitle}>PocketMind</Text>
-          <View style={styles.headerButtons}>
-            <TouchableOpacity
-              style={[styles.chipBtn, gpuShareEnabled && styles.chipBtnActive]}
-              onPress={() => setShowSwarmModal(true)}
-            >
-              <Text style={styles.chipText}>
-                {gpuShareEnabled
-                  ? `🌐 공유ON (${onlineWorkers})`
-                  : '🌐 GPU공유'}
-              </Text>
-            </TouchableOpacity>
+      {/* ChatGPT 스타일 미니멀 상단 헤더 */}
+      <View style={styles.topBar}>
+        <TouchableOpacity
+          style={styles.iconBtn}
+          onPress={() => setSidebarOpen(true)}
+        >
+          <Text style={styles.iconBtnText}>☰</Text>
+        </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.chipBtn}
-              onPress={() => setShowPluginModal(true)}
-            >
-              <Text style={styles.chipText}>🧩 플러그인({enabledPlugins.length})</Text>
-            </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.modelPill}
+          onPress={() => setActiveSheet('models')}
+        >
+          <Text style={styles.modelPillTitle}>PocketMind</Text>
+          <Text style={styles.modelPillSub}>
+            {gpuShareEnabled && relayConnected
+              ? `🌐 공유GPU(${onlineWorkers})`
+              : selectedModel.shortName}{' '}
+            ▾
+          </Text>
+        </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.chipBtn}
-              onPress={() => setShowModelModal(true)}
-            >
-              <Text style={styles.chipText}>🧠 {selectedModel.tierLabel}</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-        <Text style={styles.subStatus}>
-          현재 모델: {selectedModel.name} ·{' '}
-          {downloadedModels[selectedModel.id] ? '로컬 설치됨' : '다운로드 필요'}
-        </Text>
+        <TouchableOpacity style={styles.iconBtn} onPress={handleNewChat}>
+          <Text style={styles.iconBtnText}>✎</Text>
+        </TouchableOpacity>
       </View>
 
-      {/* 채팅 영역 */}
+      {/* 메인 대화 영역 */}
       <ScrollView
         ref={scrollViewRef}
-        style={styles.chatArea}
-        contentContainerStyle={styles.chatContent}
+        style={styles.chatScroll}
+        contentContainerStyle={
+          messages.length === 0 ? styles.emptyCenterContainer : styles.threadContainer
+        }
         onContentSizeChange={() =>
           scrollViewRef.current?.scrollToEnd({ animated: true })
         }
       >
-        {messages.map((m) => (
-          <View
-            key={m.id}
-            style={[
-              styles.msgBubble,
-              m.role === 'user' ? styles.userBubble : styles.botBubble,
-            ]}
-          >
-            {m.badge && <Text style={styles.badgeText}>{m.badge}</Text>}
-            <Text style={styles.msgText}>{m.text}</Text>
+        {messages.length === 0 ? (
+          /* ChatGPT 초기 화면 */
+          <View style={styles.welcomeWrap}>
+            <View style={styles.logoCircle}>
+              <Text style={styles.logoGlyph}>✦</Text>
+            </View>
+            <Text style={styles.welcomeTitle}>무엇을 도와드릴까요?</Text>
+            <Text style={styles.welcomeSub}>
+              {downloadedModels[selectedModel.id]
+                ? `${selectedModel.shortName} 준비됨 · 앱 플러그인 ${enabledPlugins.length}개 활성`
+                : `상단 모델 메뉴에서 ${selectedModel.shortName}를 먼저 받아주세요`}
+            </Text>
 
-            {m.pluginsUsed && m.pluginsUsed.length > 0 && (
-              <View style={styles.pluginTagRow}>
-                {m.pluginsUsed.map((tag, idx) => (
-                  <Text key={idx} style={styles.pluginTag}>
-                    {tag}
+            <View style={styles.starterGrid}>
+              {STARTER_CARDS.map((card, i) => (
+                <TouchableOpacity
+                  key={i}
+                  style={styles.starterCard}
+                  onPress={() => handleSend(card.prompt)}
+                >
+                  <Text style={styles.starterIcon}>{card.icon}</Text>
+                  <Text style={styles.starterTitle}>{card.title}</Text>
+                  <Text style={styles.starterDesc} numberOfLines={2}>
+                    {card.prompt}
                   </Text>
-                ))}
-              </View>
-            )}
-
-            {m.actionLinks && m.actionLinks.length > 0 && (
-              <View style={styles.actionLinkBox}>
-                {m.actionLinks.map((act, idx) => (
-                  <TouchableOpacity
-                    key={idx}
-                    style={styles.actionLinkBtn}
-                    onPress={() => openPluginActionUrl(act.url)}
-                  >
-                    <Text style={styles.actionLinkText}>{act.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
-        ))}
+        ) : (
+          /* ChatGPT 대화 스레드 */
+          messages.map((m) =>
+            m.role === 'user' ? (
+              <View key={m.id} style={styles.userRow}>
+                <View style={styles.userPill}>
+                  <Text style={styles.userText}>{m.text}</Text>
+                </View>
+              </View>
+            ) : (
+              <View key={m.id} style={styles.assistantRow}>
+                <View style={styles.assistantAvatar}>
+                  <Text style={styles.assistantAvatarText}>✦</Text>
+                </View>
+                <View style={styles.assistantBody}>
+                  {m.meta && (
+                    <Text style={styles.assistantMeta}>
+                      {m.meta}
+                      {m.pluginsUsed && m.pluginsUsed.length > 0
+                        ? ` · ${m.pluginsUsed.join(', ')}`
+                        : ''}
+                    </Text>
+                  )}
+                  <Text style={styles.assistantText}>{m.text}</Text>
+
+                  {m.actionLinks && m.actionLinks.length > 0 && (
+                    <View style={styles.appLaunchWrap}>
+                      {m.actionLinks.map((act, idx) => (
+                        <TouchableOpacity
+                          key={idx}
+                          style={styles.appLaunchPill}
+                          onPress={() =>
+                            openPluginActionUrl(act.url, act.fallbackUrl)
+                          }
+                        >
+                          <Text style={styles.appLaunchText}>{act.label} ↗</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+
+                  {m.text !== '●' && (
+                    <View style={styles.msgActionRow}>
+                      <TouchableOpacity
+                        onPress={() => Share.share({ message: m.text })}
+                      >
+                        <Text style={styles.msgActionBtn}>공유·복사</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+              </View>
+            ),
+          )
+        )}
       </ScrollView>
 
-      {/* 입력창 */}
-      <View style={styles.inputBar}>
-        <TextInput
-          style={styles.input}
-          placeholder="질문하거나 날씨·KTX·쇼핑·기억해 등을 입력..."
-          placeholderTextColor="#94A3B8"
-          value={inputText}
-          onChangeText={setInputText}
-          multiline
-        />
-        <TouchableOpacity
-          style={[styles.sendBtn, isGenerating && styles.sendBtnDisabled]}
-          onPress={() => handleSend()}
-          disabled={isGenerating}
-        >
+      {/* ChatGPT 스타일 하단 캡슐형 입력창 */}
+      <View style={styles.composerOuter}>
+        <View style={styles.composerPill}>
+          <TouchableOpacity
+            style={styles.plusBtn}
+            onPress={() => setActiveSheet('plugins')}
+          >
+            <Text style={styles.plusBtnText}>+</Text>
+          </TouchableOpacity>
+
+          <TextInput
+            style={styles.composerInput}
+            placeholder="PocketMind에게 메시지 보내기"
+            placeholderTextColor="#8E8EA0"
+            value={inputText}
+            onChangeText={setInputText}
+            multiline
+          />
+
           {isGenerating ? (
-            <ActivityIndicator color="#FFF" size="small" />
+            <TouchableOpacity
+              style={styles.sendCircleBtn}
+              onPress={() => {
+                abortRef.current = true;
+                setIsGenerating(false);
+              }}
+            >
+              <Text style={styles.stopGlyph}>■</Text>
+            </TouchableOpacity>
           ) : (
-            <Text style={styles.sendBtnText}>전송</Text>
+            <TouchableOpacity
+              style={[
+                styles.sendCircleBtn,
+                !inputText.trim() && styles.sendCircleDisabled,
+              ]}
+              onPress={() => handleSend()}
+              disabled={!inputText.trim()}
+            >
+              <Text style={styles.sendArrow}>↑</Text>
+            </TouchableOpacity>
           )}
-        </TouchableOpacity>
+        </View>
       </View>
 
-      {/* 1. 저사양~초고사양 AI 모델 선택 모달 */}
-      <Modal visible={showModelModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>🧠 기기 사양별 AI 모델 (7종)</Text>
-            <ScrollView style={{ maxHeight: 440 }}>
-              {AI_MODEL_CATALOG.map((m) => {
-                const isInstalled = !!downloadedModels[m.id];
-                const isSelected = selectedModel.id === m.id;
-                const isThisDownloading = downloadingId === m.id;
+      {/* ChatGPT 스타일 좌측 사이드바 드로어 */}
+      <Modal visible={sidebarOpen} transparent animationType="fade">
+        <View style={styles.sidebarOverlay}>
+          <View style={styles.sidebarPanel}>
+            <TouchableOpacity style={styles.newChatRow} onPress={handleNewChat}>
+              <Text style={styles.newChatText}>✦  새 채팅</Text>
+            </TouchableOpacity>
 
+            <TouchableOpacity
+              style={styles.sidebarMenuBtn}
+              onPress={() => {
+                setSidebarOpen(false);
+                setActiveSheet('plugins');
+              }}
+            >
+              <Text style={styles.sidebarMenuText}>
+                🧩  앱 플러그인 스토어 ({enabledPlugins.length}/30)
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.sidebarMenuBtn}
+              onPress={() => {
+                setSidebarOpen(false);
+                setActiveSheet('models');
+              }}
+            >
+              <Text style={styles.sidebarMenuText}>
+                🧠  AI 모델 선택 ({selectedModel.shortName})
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.sidebarMenuBtn}
+              onPress={() => {
+                setSidebarOpen(false);
+                setActiveSheet('swarm');
+              }}
+            >
+              <Text style={styles.sidebarMenuText}>
+                🌐  무설치 GPU 공유 ({gpuShareEnabled ? `ON · ${onlineWorkers}대` : 'OFF'})
+              </Text>
+            </TouchableOpacity>
+
+            <Text style={styles.sidebarSectionLabel}>최근 대화</Text>
+            <ScrollView style={{ flex: 1 }}>
+              {sessions.map((s) => (
+                <TouchableOpacity
+                  key={s.id}
+                  style={[
+                    styles.sessionItem,
+                    s.id === activeSession.id && styles.sessionItemActive,
+                  ]}
+                  onPress={() => {
+                    setActiveSessionId(s.id);
+                    setSidebarOpen(false);
+                  }}
+                >
+                  <Text style={styles.sessionItemText} numberOfLines={1}>
+                    {s.title}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+          <TouchableOpacity
+            style={styles.sidebarBackdrop}
+            onPress={() => setSidebarOpen(false)}
+          />
+        </View>
+      </Modal>
+
+      {/* 하단 바텀시트: AI 모델 (7종) */}
+      <Modal
+        visible={activeSheet === 'models'}
+        transparent
+        animationType="slide"
+      >
+        <View style={styles.sheetOverlay}>
+          <View style={styles.sheetCard}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>AI 모델 선택 (저사양 ~ 초고사양)</Text>
+            <ScrollView style={{ maxHeight: 450 }}>
+              {AI_MODEL_CATALOG.map((m) => {
+                const installed = !!downloadedModels[m.id];
+                const selected = selectedModel.id === m.id;
+                const isDl = downloadingId === m.id;
                 return (
                   <View
                     key={m.id}
-                    style={[styles.cardItem, isSelected && styles.cardItemSelected]}
+                    style={[styles.sheetItem, selected && styles.sheetItemActive]}
                   >
-                    <Text style={styles.itemTitle}>
-                      [{m.tierLabel}] {m.name} ({m.sizeLabel})
+                    <Text style={styles.sheetItemTitle}>
+                      [{m.tierLabel}] {m.name} · {m.sizeLabel}
                     </Text>
-                    <Text style={styles.itemSub}>권장: {m.recommendedDevices}</Text>
-                    <Text style={styles.itemDesc}>{m.description}</Text>
-
-                    <View style={styles.itemBtnRow}>
-                      {isInstalled ? (
+                    <Text style={styles.sheetItemSub}>{m.recommendedDevices}</Text>
+                    <Text style={styles.sheetItemDesc}>{m.description}</Text>
+                    <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                      {installed ? (
                         <TouchableOpacity
-                          style={styles.primarySmallBtn}
+                          style={styles.sheetPrimaryBtn}
                           onPress={() => {
                             setSelectedModel(m);
-                            setShowModelModal(false);
+                            setActiveSheet('none');
                           }}
                         >
-                          <Text style={styles.btnSmallText}>
-                            {isSelected ? '✓ 사용 중' : '이 모델 선택'}
+                          <Text style={styles.sheetBtnText}>
+                            {selected ? '✓ 현재 사용 중' : '이 모델로 대화'}
                           </Text>
                         </TouchableOpacity>
                       ) : (
                         <TouchableOpacity
-                          style={styles.downloadSmallBtn}
+                          style={styles.sheetDownloadBtn}
                           disabled={!!downloadingId}
                           onPress={() => handleDownloadModel(m)}
                         >
-                          <Text style={styles.btnSmallText}>
-                            {isThisDownloading
-                              ? `다운로드 중 ${downloadProgress}%`
-                              : '⬇️ 모델 다운로드'}
+                          <Text style={styles.sheetBtnText}>
+                            {isDl ? `다운로드 중 ${downloadProgress}%` : '⬇️ 다운로드'}
                           </Text>
                         </TouchableOpacity>
                       )}
@@ -611,76 +802,122 @@ export default function App() {
               })}
             </ScrollView>
             <TouchableOpacity
-              style={styles.closeModalBtn}
-              onPress={() => setShowModelModal(false)}
+              style={styles.sheetCloseBtn}
+              onPress={() => setActiveSheet('none')}
             >
-              <Text style={styles.closeModalText}>닫기</Text>
+              <Text style={styles.sheetCloseText}>닫기</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* 2. 피클 스타일 10종 플러그인 허브 모달 */}
-      <Modal visible={showPluginModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>🧩 피클 스타일 실생활 플러그인 (10종)</Text>
-            <ScrollView style={{ maxHeight: 440 }}>
-              {PICKLE_PLUGINS.map((p) => {
+      {/* 하단 바텀시트: 앱 플러그인 30종 */}
+      <Modal
+        visible={activeSheet === 'plugins'}
+        transparent
+        animationType="slide"
+      >
+        <View style={styles.sheetOverlay}>
+          <View style={styles.sheetCard}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>
+              실생활 앱 플러그인 ({enabledPlugins.length}/30 활성)
+            </Text>
+
+            <TextInput
+              style={styles.searchInput}
+              placeholder="플러그인 이름 검색 (예: 카톡, 카카오맵, 배민, 토스...)"
+              placeholderTextColor="#8E8EA0"
+              value={pluginSearch}
+              onChangeText={setPluginSearch}
+            />
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={{ maxHeight: 38, marginBottom: 8 }}
+            >
+              {PLUGIN_CATEGORIES.map((cat) => (
+                <TouchableOpacity
+                  key={cat}
+                  style={[
+                    styles.catChip,
+                    selectedPluginCategory === cat && styles.catChipActive,
+                  ]}
+                  onPress={() => setSelectedPluginCategory(cat)}
+                >
+                  <Text style={styles.catChipText}>{cat}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <ScrollView style={{ maxHeight: 380 }}>
+              {filteredPlugins.map((p) => {
                 const active = enabledPlugins.includes(p.id);
                 return (
-                  <View key={p.id} style={styles.cardItem}>
-                    <View style={styles.switchRow}>
-                      <Text style={styles.itemTitle}>
+                  <View key={p.id} style={styles.sheetItem}>
+                    <View style={styles.rowBetween}>
+                      <Text style={styles.sheetItemTitle}>
                         {p.icon} {p.name}
                       </Text>
-                      <Switch value={active} onValueChange={() => togglePlugin(p.id)} />
+                      <Switch
+                        value={active}
+                        onValueChange={() => togglePlugin(p.id)}
+                      />
                     </View>
-                    <Text style={styles.itemSub}>{p.category}</Text>
-                    <Text style={styles.itemDesc}>{p.description}</Text>
+                    <Text style={styles.sheetItemDesc}>{p.description}</Text>
                     <TouchableOpacity
-                      style={styles.tryHintBtn}
+                      style={styles.hintActionBtn}
                       onPress={() => {
                         if (!active) togglePlugin(p.id);
-                        setShowPluginModal(false);
+                        setActiveSheet('none');
                         handleSend(p.promptHint);
                       }}
                     >
-                      <Text style={styles.tryHintText}>
-                        ▶ 바로 실행: "{p.promptHint}"
+                      <Text style={styles.hintActionText}>
+                        ▶ 실행: "{p.promptHint}"
                       </Text>
                     </TouchableOpacity>
                   </View>
                 );
               })}
             </ScrollView>
+
             <TouchableOpacity
-              style={styles.closeModalBtn}
-              onPress={() => setShowPluginModal(false)}
+              style={styles.sheetCloseBtn}
+              onPress={() => setActiveSheet('none')}
             >
-              <Text style={styles.closeModalText}>닫기</Text>
+              <Text style={styles.sheetCloseText}>닫기</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* 3. 무설치 WebSocket GPU 공유 설정 모달 */}
-      <Modal visible={showSwarmModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>🌐 무설치 GPU 공유 네트워크 (VPN 불필요)</Text>
-            <Text style={styles.itemDesc}>
-              테일스케일이나 IP 설정 없이 wss:// 암호화 중계로 내 RTX 3060 랩탑·LG 그램·갤탭·아이폰을 자동 연결합니다.
+      {/* 하단 바텀시트: 무설치 GPU 공유 */}
+      <Modal
+        visible={activeSheet === 'swarm'}
+        transparent
+        animationType="slide"
+      >
+        <View style={styles.sheetOverlay}>
+          <View style={styles.sheetCard}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>무설치 GPU 공유 (VPN 불필요)</Text>
+            <Text style={styles.sheetItemDesc}>
+              테일스케일 설치 없이 wss:// 암호화 중계로 내 RTX 3060 랩탑·LG 그램·아이폰·갤탭을 자동 연결합니다.
             </Text>
 
-            <View style={styles.switchRow}>
-              <Text style={styles.itemTitle}>GPU 공유 네트워크 활성화</Text>
-              <Switch value={gpuShareEnabled} onValueChange={setGpuShareEnabled} />
+            <View style={[styles.rowBetween, { marginTop: 12 }]}>
+              <Text style={styles.sheetItemTitle}>GPU 공유 네트워크 켜기</Text>
+              <Switch
+                value={gpuShareEnabled}
+                onValueChange={setGpuShareEnabled}
+              />
             </View>
 
             {Platform.OS === 'android' && (
-              <View style={styles.switchRow}>
-                <Text style={styles.itemTitle}>내 갤탭 유휴 연산력도 공유(워커)</Text>
+              <View style={[styles.rowBetween, { marginTop: 8 }]}>
+                <Text style={styles.sheetItemTitle}>내 갤탭 유휴 연산력 공유</Text>
                 <Switch
                   value={workerModeEnabled}
                   onValueChange={setWorkerModeEnabled}
@@ -688,32 +925,32 @@ export default function App() {
               </View>
             )}
 
-            <Text style={styles.inputLabel}>중계 서버 주소 (Cloudflare Workers)</Text>
+            <Text style={styles.fieldLabel}>중계 서버 주소</Text>
             <TextInput
-              style={styles.modalInput}
+              style={styles.searchInput}
               value={relayUrl}
               onChangeText={setRelayUrl}
               autoCapitalize="none"
             />
 
-            <Text style={styles.inputLabel}>내 기기 그룹 코드 (같은 코드끼리 자동 연결)</Text>
+            <Text style={styles.fieldLabel}>내 기기 그룹 코드</Text>
             <TextInput
-              style={styles.modalInput}
+              style={styles.searchInput}
               value={swarmRoom}
               onChangeText={setSwarmRoom}
               autoCapitalize="none"
             />
 
-            <Text style={styles.statusBanner}>
-              연결 상태: {relayConnected ? '🟢 연결됨' : '⚪ 대기 중'} · 현재 온라인 워커:{' '}
+            <Text style={styles.swarmStatusText}>
+              상태: {relayConnected ? '🟢 연결됨' : '⚪ 대기 중'} · 온라인 워커{' '}
               {onlineWorkers}대
             </Text>
 
             <TouchableOpacity
-              style={styles.closeModalBtn}
-              onPress={() => setShowSwarmModal(false)}
+              style={styles.sheetCloseBtn}
+              onPress={() => setActiveSheet('none')}
             >
-              <Text style={styles.closeModalText}>확인</Text>
+              <Text style={styles.sheetCloseText}>확인</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -723,175 +960,307 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F172A' },
-  header: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: '#1E293B',
-    borderBottomWidth: 1,
-    borderBottomColor: '#334155',
-  },
-  headerTopRow: {
+  container: { flex: 1, backgroundColor: '#212121' },
+  topBar: {
+    height: 52,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    backgroundColor: '#212121',
   },
-  appTitle: { color: '#F8FAFC', fontSize: 18, fontWeight: '800' },
-  headerButtons: { flexDirection: 'row', gap: 6 },
-  chipBtn: {
-    backgroundColor: '#334155',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 14,
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  chipBtnActive: { backgroundColor: '#0284C7' },
-  chipText: { color: '#F8FAFC', fontSize: 12, fontWeight: '700' },
-  subStatus: { color: '#94A3B8', fontSize: 11, marginTop: 4 },
-  chatArea: { flex: 1 },
-  chatContent: { padding: 14, gap: 10 },
-  msgBubble: {
-    maxWidth: '88%',
-    padding: 12,
-    borderRadius: 14,
-  },
-  userBubble: {
-    alignSelf: 'flex-end',
-    backgroundColor: '#2563EB',
-  },
-  botBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#1E293B',
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  badgeText: {
-    color: '#38BDF8',
-    fontSize: 10,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  msgText: { color: '#F8FAFC', fontSize: 15, lineHeight: 22 },
-  pluginTagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 8 },
-  pluginTag: {
-    backgroundColor: '#0F172A',
-    color: '#A5F3FC',
-    fontSize: 11,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  actionLinkBox: { marginTop: 8, gap: 6 },
-  actionLinkBtn: {
-    backgroundColor: '#0369A1',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-  },
-  actionLinkText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
-  inputBar: {
+  iconBtnText: { color: '#ECECEC', fontSize: 20 },
+  modelPill: {
     flexDirection: 'row',
-    padding: 10,
-    backgroundColor: '#1E293B',
-    borderTopWidth: 1,
-    borderTopColor: '#334155',
+    alignItems: 'center',
+    backgroundColor: '#2F2F2F',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 18,
+    gap: 6,
+  },
+  modelPillTitle: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
+  modelPillSub: { color: '#B4B4B4', fontSize: 13, fontWeight: '500' },
+  chatScroll: { flex: 1 },
+  emptyCenterContainer: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  threadContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 24,
+    gap: 20,
+  },
+  welcomeWrap: { alignItems: 'center' },
+  logoCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  logoGlyph: { color: '#171717', fontSize: 24, fontWeight: '800' },
+  welcomeTitle: {
+    color: '#ECECEC',
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  welcomeSub: {
+    color: '#9B9B9B',
+    fontSize: 13,
+    marginBottom: 22,
+    textAlign: 'center',
+  },
+  starterGrid: {
+    width: '100%',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    justifyContent: 'center',
+  },
+  starterCard: {
+    width: '47%',
+    backgroundColor: '#2A2A2A',
+    borderRadius: 16,
+    padding: 13,
+    borderWidth: 1,
+    borderColor: '#383838',
+  },
+  starterIcon: { fontSize: 18, marginBottom: 4 },
+  starterTitle: { color: '#ECECEC', fontSize: 13, fontWeight: '700' },
+  starterDesc: { color: '#9B9B9B', fontSize: 12, marginTop: 3, lineHeight: 17 },
+  userRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  userPill: {
+    maxWidth: '82%',
+    backgroundColor: '#2F2F2F',
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 22,
+  },
+  userText: { color: '#ECECEC', fontSize: 15, lineHeight: 22 },
+  assistantRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  assistantAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  assistantAvatarText: { color: '#171717', fontSize: 14, fontWeight: '800' },
+  assistantBody: { flex: 1 },
+  assistantMeta: { color: '#8E8EA0', fontSize: 11, marginBottom: 4 },
+  assistantText: { color: '#ECECEC', fontSize: 15, lineHeight: 24 },
+  appLaunchWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  appLaunchPill: {
+    backgroundColor: '#2F2F2F',
+    borderWidth: 1,
+    borderColor: '#4A4A4A',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
+  appLaunchText: { color: '#FFFFFF', fontSize: 12, fontWeight: '600' },
+  msgActionRow: { flexDirection: 'row', marginTop: 8 },
+  msgActionBtn: { color: '#8E8EA0', fontSize: 12 },
+  composerOuter: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#212121',
+  },
+  composerPill: {
+    flexDirection: 'row',
     alignItems: 'flex-end',
+    backgroundColor: '#2F2F2F',
+    borderRadius: 26,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
     gap: 8,
   },
-  input: {
-    flex: 1,
-    backgroundColor: '#0F172A',
-    color: '#F8FAFC',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    maxHeight: 110,
-    fontSize: 15,
-  },
-  sendBtn: {
-    backgroundColor: '#2563EB',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  sendBtnDisabled: { backgroundColor: '#475569' },
-  sendBtnText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+  plusBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#3E3E3E',
+    alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
   },
-  modalCard: {
-    backgroundColor: '#1E293B',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#475569',
+  plusBtnText: { color: '#ECECEC', fontSize: 20, fontWeight: '500' },
+  composerInput: {
+    flex: 1,
+    color: '#ECECEC',
+    fontSize: 15,
+    maxHeight: 120,
+    paddingVertical: 6,
   },
-  modalTitle: { color: '#F8FAFC', fontSize: 17, fontWeight: '800', marginBottom: 10 },
-  cardItem: {
-    backgroundColor: '#0F172A',
-    padding: 12,
+  sendCircleBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendCircleDisabled: { backgroundColor: '#565869' },
+  sendArrow: { color: '#171717', fontSize: 18, fontWeight: '800' },
+  stopGlyph: { color: '#171717', fontSize: 12 },
+  sidebarOverlay: { flex: 1, flexDirection: 'row' },
+  sidebarPanel: {
+    width: '76%',
+    maxWidth: 320,
+    backgroundColor: '#171717',
+    paddingTop: 18,
+    paddingHorizontal: 14,
+    paddingBottom: 20,
+  },
+  sidebarBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)' },
+  newChatRow: {
+    backgroundColor: '#2A2A2A',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     borderRadius: 12,
+    marginBottom: 12,
+  },
+  newChatText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
+  sidebarMenuBtn: {
+    paddingVertical: 11,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+  },
+  sidebarMenuText: { color: '#ECECEC', fontSize: 14, fontWeight: '500' },
+  sidebarSectionLabel: {
+    color: '#8E8EA0',
+    fontSize: 12,
+    marginTop: 16,
+    marginBottom: 6,
+    paddingHorizontal: 10,
+  },
+  sessionItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+  },
+  sessionItemActive: { backgroundColor: '#2A2A2A' },
+  sessionItemText: { color: '#D1D5DB', fontSize: 14 },
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'flex-end',
+  },
+  sheetCard: {
+    backgroundColor: '#212121',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: 18,
+    borderTopWidth: 1,
+    borderColor: '#383838',
+  },
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#565869',
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  sheetTitle: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  searchInput: {
+    backgroundColor: '#2F2F2F',
+    color: '#FFFFFF',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 14,
+    marginBottom: 10,
+  },
+  catChip: {
+    backgroundColor: '#2F2F2F',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    marginRight: 6,
+  },
+  catChipActive: { backgroundColor: '#FFFFFF' },
+  catChipText: { color: '#9B9B9B', fontSize: 12, fontWeight: '700' },
+  sheetItem: {
+    backgroundColor: '#2A2A2A',
+    padding: 12,
+    borderRadius: 14,
     marginBottom: 8,
-    borderWidth: 1,
-    borderColor: '#334155',
   },
-  cardItemSelected: { borderColor: '#38BDF8' },
-  itemTitle: { color: '#F8FAFC', fontSize: 14, fontWeight: '700' },
-  itemSub: { color: '#38BDF8', fontSize: 11, marginTop: 2 },
-  itemDesc: { color: '#CBD5E1', fontSize: 12, marginTop: 4, lineHeight: 18 },
-  itemBtnRow: { flexDirection: 'row', marginTop: 8 },
-  primarySmallBtn: {
-    backgroundColor: '#0284C7',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
+  sheetItemActive: { borderWidth: 1, borderColor: '#FFFFFF' },
+  sheetItemTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+  sheetItemSub: { color: '#A3A3A3', fontSize: 12, marginTop: 2 },
+  sheetItemDesc: { color: '#B4B4B4', fontSize: 12, marginTop: 4, lineHeight: 18 },
+  sheetPrimaryBtn: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 10,
   },
-  downloadSmallBtn: {
-    backgroundColor: '#059669',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
+  sheetDownloadBtn: {
+    backgroundColor: '#10A37F',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 10,
   },
-  btnSmallText: { color: '#FFF', fontSize: 12, fontWeight: '700' },
-  switchRow: {
+  sheetBtnText: { color: '#171717', fontSize: 12, fontWeight: '700' },
+  rowBetween: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginVertical: 4,
   },
-  tryHintBtn: {
+  hintActionBtn: {
     marginTop: 8,
-    backgroundColor: '#1E293B',
+    backgroundColor: '#212121',
     padding: 8,
     borderRadius: 8,
   },
-  tryHintText: { color: '#7DD3FC', fontSize: 12, fontWeight: '600' },
-  inputLabel: { color: '#94A3B8', fontSize: 12, marginTop: 10, marginBottom: 4 },
-  modalInput: {
-    backgroundColor: '#0F172A',
-    color: '#F8FAFC',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#334155',
-    fontSize: 13,
-  },
-  statusBanner: {
-    color: '#34D399',
+  hintActionText: { color: '#10A37F', fontSize: 12, fontWeight: '600' },
+  fieldLabel: { color: '#9B9B9B', fontSize: 12, marginTop: 8, marginBottom: 4 },
+  swarmStatusText: {
+    color: '#10A37F',
     fontSize: 13,
     fontWeight: '700',
-    marginTop: 12,
+    marginTop: 10,
     textAlign: 'center',
   },
-  closeModalBtn: {
+  sheetCloseBtn: {
     marginTop: 12,
-    backgroundColor: '#334155',
-    paddingVertical: 11,
-    borderRadius: 10,
+    backgroundColor: '#2F2F2F',
+    paddingVertical: 12,
+    borderRadius: 12,
     alignItems: 'center',
   },
-  closeModalText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  sheetCloseText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
 });
