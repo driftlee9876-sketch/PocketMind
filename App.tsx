@@ -675,7 +675,8 @@ export default function App(): React.JSX.Element {
 
           {item.content.length > 0 && !isGenerating && (
             <View style="{styles.actionBar}">
-              <TouchableOpacity onPress="{()" style="{styles.actionChip}"> handleCopyText(item.id, item.content)}>
+              <TouchableOpacity onPress="{()"> handleCopyText(item.id, item.content)}
+                style={styles.actionChip}>
                 <Text style="{styles.actionChipText}">
                   {copiedId === item.id ? '복사 완료 ✓' : '복사'}
                 </Text>
@@ -698,12 +699,14 @@ export default function App(): React.JSX.Element {
 
       {/* 상단 ChatGPT 스타일 헤더 */}
       <View style="{styles.topBar}">
-        <TouchableOpacity onPress="{()" style="{styles.iconBtn}"> toggleDrawer(true)}
+        <TouchableOpacity onPress="{()"> toggleDrawer(true)}
+          style={styles.iconBtn}
           disabled={isGenerating}>
           <Text style="{styles.iconBtnText}">☰</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity onPress="{()" style="{styles.modelSelectorPill}"> setModelModalVisible(true)}
+        <TouchableOpacity onPress="{()"> setModelModalVisible(true)}
+          style={styles.modelSelectorPill}
           disabled={isGenerating}>
           <Text style="{styles.modelPillTitle}">
             {loadedModelKey ? MODELS[loadedModelKey].title : '모델 선택 필요'}
@@ -711,7 +714,8 @@ export default function App(): React.JSX.Element {
           <Text style="{styles.modelPillChevron}">▾</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity onPress="{()" style="{styles.iconBtn}"> createNewSession()}
+        <TouchableOpacity onPress="{()"> createNewSession()}
+          style={styles.iconBtn}
           disabled={isGenerating}>
           <Text style="{styles.iconBtnText}">✎</Text>
         </TouchableOpacity>
@@ -744,7 +748,8 @@ export default function App(): React.JSX.Element {
 
           <View style="{styles.suggestionsGrid}">
             {SUGGESTION_CARDS.map((card, idx) => (
-              <TouchableOpacity key="{idx}" onPress="{()" style="{styles.suggestionCard}"> handleSendMessage(card.prompt)}>
+              <TouchableOpacity key="{idx}" onPress="{()"> handleSendMessage(card.prompt)}
+                style={styles.suggestionCard}>
                 <Text style="{styles.suggestionTitle}">{card.title}</Text>
                 <Text style="{styles.suggestionDesc}">{card.desc}</Text>
               </TouchableOpacity>
@@ -771,7 +776,11 @@ export default function App(): React.JSX.Element {
                 <View style="{styles.stopSquare}"/>
               </TouchableOpacity>
             ) : (
-              <TouchableOpacity !inputText.trim() && ]} onPress="{()" style="{[" styles.sendCircleBtn, styles.sendCircleBtnDisabled,> handleSendMessage()}
+              <TouchableOpacity onPress="{()"> handleSendMessage()}
+                style={[
+                  styles.sendCircleBtn,
+                  !inputText.trim() && styles.sendCircleBtnDisabled,
+                ]}
                 disabled={!inputText.trim()}>
                 <Text style="{styles.sendArrow}">↑</Text>
               </TouchableOpacity>
@@ -786,14 +795,16 @@ export default function App(): React.JSX.Element {
       {/* 좌측 사이드바 (대화 목록) */}
       {drawerOpen && (
         <View style="{StyleSheet.absoluteFill}">
-          <Pressable onPress="{()" style="{styles.drawerBackdrop}"> toggleDrawer(false)}
+          <Pressable onPress="{()"> toggleDrawer(false)}
+            style={styles.drawerBackdrop}
           />
           <Animated.View [{ ]} drawerAnim style="{[" styles.drawerPanel, transform: translateX: { }, }]>
             <SafeAreaView style="{styles.drawerSafe}">
-              <TouchableOpacity onPress="{async" style="{styles.newChatDrawerBtn}"> {
+              <TouchableOpacity onPress="{async"> {
                   await createNewSession();
                   toggleDrawer(false);
-                }}>
+                }}
+                style={styles.newChatDrawerBtn}>
                 <Text style="{styles.newChatDrawerIcon}">✦</Text>
                 <Text style="{styles.newChatDrawerText}">새 채팅 시작</Text>
               </TouchableOpacity>
@@ -804,15 +815,17 @@ export default function App(): React.JSX.Element {
                   const selected = item.id === activeSession?.id;
                   return (
                     <View && ]} selected style="{[" styles.sessionRow, styles.sessionRowActive,>
-                      <TouchableOpacity onPress="{()" style="{styles.sessionTitleBtn}"> {
+                      <TouchableOpacity onPress="{()"> {
                           setActiveSessionId(item.id);
                           toggleDrawer(false);
-                        }}>
+                        }}
+                        style={styles.sessionTitleBtn}>
                         <Text && ]} numberOfLines="{1}" selected style="{[" styles.sessionTitleText, styles.sessionTitleTextActive,>
                           {item.title}
                         </Text>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress="{()" style="{styles.sessionDeleteBtn}"> handleDeleteSession(item.id)}>
+                      <TouchableOpacity onPress="{()"> handleDeleteSession(item.id)}
+                        style={styles.sessionDeleteBtn}>
                         <Text style="{styles.sessionDeleteText}">✕</Text>
                       </TouchableOpacity>
                     </View>
@@ -820,10 +833,11 @@ export default function App(): React.JSX.Element {
                 }}
               />
 
-              <TouchableOpacity onPress="{()" style="{styles.drawerFooterBtn}"> {
+              <TouchableOpacity onPress="{()"> {
                   toggleDrawer(false);
                   setModelModalVisible(true);
-                }}>
+                }}
+                style={styles.drawerFooterBtn}>
                 <Text style="{styles.drawerFooterText}">⚙ 오프라인 AI 모델 관리</Text>
               </TouchableOpacity>
             </SafeAreaView>
@@ -832,7 +846,9 @@ export default function App(): React.JSX.Element {
       )}
 
       {/* 모델 선택 및 다운로드 모달 */}
-      <Modal animationType="slide" onRequestClose="{()" transparent visible="{modelModalVisible}"> setModelModalVisible(false)}>
+      <Modal animationType="slide" onRequestClose="{()"> setModelModalVisible(false)}
+        transparent
+        visible={modelModalVisible}>
         <View style="{styles.modalOverlay}">
           <View style="{styles.modalSheet}">
             <View style="{styles.modalHeader}">
@@ -873,20 +889,29 @@ export default function App(): React.JSX.Element {
                     </View>
                   ) : isInstalled ? (
                     <View style="{styles.installedActions}">
-                      <TouchableOpacity && ]} disabled="{isLoaded" isInitializingEngine} isLoaded onPress="{async" style="{[" styles.useModelBtn, styles.useModelBtnCurrent, ||> {
+                      <TouchableOpacity disabled="{isLoaded" isInitializingEngine} onPress="{async" ||> {
                           await loadModelIntoMemory(key);
                           setModelModalVisible(false);
-                        }}>
+                        }}
+                        style={[
+                          styles.useModelBtn,
+                          isLoaded && styles.useModelBtnCurrent,
+                        ]}>
                         <Text style="{styles.useModelBtnText}">
                           {isLoaded ? '사용 중 ✓' : '불러오기'}
                         </Text>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress="{()" style="{styles.deleteModelBtn}"> handleDeleteModel(key)}>
+                      <TouchableOpacity onPress="{()"> handleDeleteModel(key)}
+                        style={styles.deleteModelBtn}>
                         <Text style="{styles.deleteModelBtnText}">삭제</Text>
                       </TouchableOpacity>
                     </View>
                   ) : (
-                    <TouchableOpacity !="=" && ]} disabled="{downloadingKey" downloadingKey null null} onPress="{()" style="{[" styles.disabledBtn, styles.downloadModelBtn,> handleDownloadModel(key)}>
+                    <TouchableOpacity !="=" disabled="{downloadingKey" null} onPress="{()"> handleDownloadModel(key)}
+                      style={[
+                        styles.downloadModelBtn,
+                        downloadingKey !== null && styles.disabledBtn,
+                      ]}>
                       <Text style="{styles.downloadModelBtnText}">다운로드</Text>
                     </TouchableOpacity>
                   )}
