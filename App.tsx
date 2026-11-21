@@ -26,9 +26,11 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import { initLlama, LlamaContext } from 'llama.rn';
 
 type ModelKey = 'allrounder' | 'math' | 'korean';
+type SelectionMode = 'auto' | ModelKey;
 type PromptFormat = 'chatml' | 'exaone';
 
 interface SuggestionItem {
+  badge: string;
   title: string;
   desc: string;
   prompt: string;
@@ -48,7 +50,6 @@ interface ModelSpec {
   url: string;
   promptFormat: PromptFormat;
   systemPrompt: string;
-  suggestions: SuggestionItem[];
 }
 
 interface ChatMessage {
@@ -56,6 +57,9 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  orchestrationLabel?: string;
+  stage1Title?: string;
+  stage1Content?: string;
 }
 
 interface ChatSession {
@@ -65,127 +69,103 @@ interface ChatSession {
   messages: ChatMessage[];
 }
 
+interface ExecutionStep {
+  modelKey: ModelKey;
+  roleTitle: string;
+  instructionHint: string;
+}
+
+interface ExecutionPlan {
+  summaryLabel: string;
+  steps: ExecutionStep[];
+}
+
 const MODELS: Record<ModelKey, ModelSpec> = {
   allrounder: {
     key: 'allrounder',
-    badge: '올라운더',
+    badge: '올라운더 8B',
     badgeColor: '#10A37F',
-    title: 'Qwen3 4B (올라운더)',
-    shortTitle: '올라운더 · Qwen3 4B',
-    subtitle: '코딩 · 요약 · 일반 지식 균형 잡힌 고성능 모델',
-    sizeLabel: '2.50 GB',
-    expectedBytes: 2497280000,
-    minBytes: 1200 * 1024 * 1024,
-    filename: 'Qwen3-4B-Q4_K_M.gguf',
-    url: 'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf',
+    title: 'Qwen3 8B (올라운더)',
+    shortTitle: 'Qwen3 8B',
+    subtitle: '아이폰 16 Pro 최적 · 코딩·추론·요약 플래그십 균형 모델',
+    sizeLabel: '5.03 GB',
+    expectedBytes: 5027783488,
+    minBytes: 2500 * 1024 * 1024,
+    filename: 'Qwen3-8B-Q4_K_M.gguf',
+    url: 'https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf',
     promptFormat: 'chatml',
     systemPrompt:
-      '당신은 아이폰 온디바이스 환경에서 오프라인으로 동작하는 다재다능한 AI 어시스턴트 PocketMind입니다. 한국어로 명확하고 논리적으로 답변하며, 코드는 마크다운 코드 블록으로 감싸서 제공하세요.',
-    suggestions: [
-      {
-        title: '핵심 내용 3줄 요약',
-        desc: '긴 글이나 회의록을 핵심만 간결하게 정리',
-        prompt: '내가 다음에 붙여넣는 글의 핵심 내용만 뽑아 3줄 불릿 포인트로 요약해 줘. 준비됐으면 대답해 줘.',
-      },
-      {
-        title: '파이썬 자동화 코드',
-        desc: '텍스트 파일 중복 제거 스크립트 작성',
-        prompt: '폴더 내의 텍스트 파일들을 읽어서 중복된 줄을 제거하고 새 파일로 저장하는 파이썬 코드를 작성해 줘.',
-      },
-      {
-        title: '아이디어 브레인스토밍',
-        desc: '오프라인 환경에서 집중할 프로젝트 추천',
-        prompt: '주말 동안 인터넷 없이 혼자 집중해서 완성할 수 있는 생산적인 미니 프로젝트 5가지를 추천해 줘.',
-      },
-      {
-        title: '개념 쉽게 이해하기',
-        desc: '복잡한 IT·과학 원리를 비유로 설명',
-        prompt: '양자 컴퓨터가 기존 컴퓨터와 무엇이 다른지 고등학생도 이해할 수 있게 비유를 들어 설명해 줘.',
-      },
-    ],
+      '당신은 아이폰 16 Pro 온디바이스 환경에서 오프라인으로 동작하는 플래그십 AI 어시스턴트 PocketMind입니다. 한국어로 명확하고 깊이 있게 답변하며, 코드는 마크다운 코드 블록으로 감싸서 제공하세요.',
   },
   math: {
     key: 'math',
-    badge: '수학·논리 특화',
+    badge: '수학·논리 7B',
     badgeColor: '#3B82F6',
-    title: 'Qwen2.5-Math 1.5B',
-    shortTitle: '수학 특화 · Qwen2.5-Math',
-    subtitle: '방정식 · 미적분 · 확률 · 단계별 수리 추론 특화',
-    sizeLabel: '0.99 GB',
-    expectedBytes: 986000000,
-    minBytes: 500 * 1024 * 1024,
-    filename: 'Qwen2.5-Math-1.5B-Instruct-Q4_K_M.gguf',
-    url: 'https://huggingface.co/bartowski/Qwen2.5-Math-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-Math-1.5B-Instruct-Q4_K_M.gguf',
+    title: 'Qwen2.5-Math 7B',
+    shortTitle: 'Math 7B',
+    subtitle: '고난도 방정식·미적분·확률·단계별 수리 증명 특화 모델',
+    sizeLabel: '4.68 GB',
+    expectedBytes: 4680000000,
+    minBytes: 2300 * 1024 * 1024,
+    filename: 'Qwen2.5-Math-7B-Instruct-Q4_K_M.gguf',
+    url: 'https://huggingface.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF/resolve/main/Qwen2.5-Math-7B-Instruct-Q4_K_M.gguf',
     promptFormat: 'chatml',
     systemPrompt:
-      '당신은 수학 및 논리 추론 전문 AI입니다. 모든 수학 문제는 풀이 과정을 단계별(Step-by-step)로 정확하게 전개하고 마지막에 최종 정답을 명확히 제시하세요. 한국어로 친절하게 설명하세요.',
-    suggestions: [
-      {
-        title: '이차방정식 · 함수 풀이',
-        desc: '판별식과 최댓값·최솟값 단계별 계산',
-        prompt: '이차함수 f(x) = 2x^2 - 8x + 5의 최솟값을 구하고, f(x) = 0의 두 근의 합과 곱을 단계별로 풀이해 줘.',
-      },
-      {
-        title: '확률과 통계 문제',
-        desc: '조건부 확률 및 경우의 수 논리 풀이',
-        prompt: '빨간 공 4개와 파란 공 6개가 들어 있는 주머니에서 임의로 2개를 동시에 꺼낼 때, 두 공이 서로 다른 색일 확률을 구해 줘.',
-      },
-      {
-        title: '미적분 도함수 계산',
-        desc: '극값 판정 및 접선의 방정식 도출',
-        prompt: '함수 f(x) = x^3 - 3x^2 + 2의 극댓값과 극솟값을 미분을 이용해 단계별로 구해 줘.',
-      },
-      {
-        title: '수리 논리 퍼즐',
-        desc: '연립방정식 기반 실생활 응용 문제',
-        prompt: '닭과 토끼가 합쳐서 35마리 있고, 다리 수의 합이 94개일 때 닭과 토끼는 각각 몇 마리인지 연립방정식으로 풀어 줘.',
-      },
-    ],
+      '당신은 수학 및 수리 논리 추론 전문 AI입니다. 모든 수리 문제는 풀이 과정을 단계별(Step-by-step)로 엄밀하게 전개하고 검산한 뒤 최종 정답을 명확히 도출하세요.',
   },
   korean: {
     key: 'korean',
-    badge: '한국어 특화',
+    badge: '한국어 7.8B',
     badgeColor: '#A855F7',
-    title: 'LG EXAONE 3.5 2.4B',
-    shortTitle: '한국어 특화 · EXAONE 3.5',
-    subtitle: 'LG AI 연구원 한국어 최적화 · 자연스러운 작문·교정',
-    sizeLabel: '1.65 GB',
-    expectedBytes: 1650000000,
-    minBytes: 800 * 1024 * 1024,
-    filename: 'EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf',
-    url: 'https://huggingface.co/bartowski/EXAONE-3.5-2.4B-Instruct-GGUF/resolve/main/EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf',
+    title: 'LG EXAONE 3.5 7.8B',
+    shortTitle: 'EXAONE 7.8B',
+    subtitle: 'LG AI 연구원 7.8B · 최상급 한국어 작문·윤문·문맥 이해',
+    sizeLabel: '4.77 GB',
+    expectedBytes: 4770000000,
+    minBytes: 2300 * 1024 * 1024,
+    filename: 'EXAONE-3.5-7.8B-Instruct-Q4_K_M.gguf',
+    url: 'https://huggingface.co/bartowski/EXAONE-3.5-7.8B-Instruct-GGUF/resolve/main/EXAONE-3.5-7.8B-Instruct-Q4_K_M.gguf',
     promptFormat: 'exaone',
     systemPrompt:
-      '당신은 LG AI Research에서 개발한 한국어 특화 언어모델 EXAONE입니다. 자연스럽고 정확한 한국어 어휘와 문맥을 구사하며, 사용자의 질문에 깊이 있고 정중하게 답변합니다.',
-    suggestions: [
-      {
-        title: '비즈니스 이메일 작성',
-        desc: '격식 있고 정중한 협조·일정 조율 메일',
-        prompt: '거래처 담당자에게 프로젝트 납기 일정을 일주일 조율해 달라고 정중하게 요청하는 비즈니스 이메일 초안을 작성해 줘.',
-      },
-      {
-        title: '맞춤법 · 문맥 자연스럽게 교정',
-        desc: '어색한 번역투나 비문을 매끄러운 한국어로 다듬기',
-        prompt: '내가 다음에 입력하는 한국어 문장의 맞춤법, 띄어쓰기, 어색한 표현을 자연스럽게 다듬고 수정 이유를 알려줘. 준비됐으면 대답해 줘.',
-      },
-      {
-        title: '자기소개서 · 에세이 윤문',
-        desc: '핵심 강점이 돋보이도록 설득력 있게 구성',
-        prompt: '문제 해결 능력과 꾸준함을 강조하는 400자 분량의 자기소개서 도입부 예시를 작성해 줘.',
-      },
-      {
-        title: '사자성어 · 한국어 뉘앙스',
-        desc: '상황에 딱 맞는 고급 어휘와 표현 추천',
-        prompt: '위기를 기회로 바꾼다는 뜻의 사자성어 3가지를 알려주고, 각각 어떤 상황에서 쓰면 자연스러운지 예문과 함께 설명해 줘.',
-      },
-    ],
+      '당신은 LG AI Research에서 개발한 한국어 특화 언어모델 EXAONE입니다. 유려하고 정확한 한국어 문장과 어휘를 구사하며, 사용자의 의도를 깊이 파악해 품격 있고 논리적으로 답변합니다.',
   },
 };
 
 const MODEL_ORDER: ModelKey[] = ['allrounder', 'math', 'korean'];
 
-const STORAGE_SESSIONS_KEY = '@pocketmind_sessions_v2';
-const STORAGE_ACTIVE_MODEL_KEY = '@pocketmind_active_model_v2';
+const AUTO_SUGGESTIONS: SuggestionItem[] = [
+  {
+    badge: '복합 협업 · Math + EXAONE',
+    title: '수리 분석 + 한국어 결과 보고서',
+    desc: 'Math 7B가 확률·기댓값을 계산하고 EXAONE 7.8B가 보고서로 정리',
+    prompt:
+      '연이율 4.5% 월복리로 매월 50만 원씩 5년간 적립할 때 만기 원리금 합계를 단계별로 계산하고, 이 결과를 바탕으로 재테크 초보자를 위한 친절한 한국어 안내 보고서를 작성해 줘.',
+  },
+  {
+    badge: '복합 협업 · Qwen3 + EXAONE',
+    title: '알고리즘 코드 설계 + 한국어 기획서',
+    desc: 'Qwen3 8B가 파이썬 코드를 작성하고 EXAONE이 도입 제안서로 윤문',
+    prompt:
+      '대용량 CSV 로그에서 이상 징후를 탐지하는 파이썬 코드 구조를 설계하고, 팀장에게 제출할 한국어 도입 제안서 형식으로 깔끔하게 정리해 줘.',
+  },
+  {
+    badge: '자동 특화 · Math 7B',
+    title: '고난도 미적분 · 극값 증명 풀이',
+    desc: '수학 질문 감지 시 Qwen2.5-Math 7B가 자동으로 전담 풀이',
+    prompt:
+      '함수 f(x) = x^4 - 4x^3 + 4x^2 + 3의 극댓값과 극솟값을 미분을 이용해 단계별로 구하고 그래프의 개형을 설명해 줘.',
+  },
+  {
+    badge: '자동 특화 · EXAONE 7.8B',
+    title: '비즈니스 협상 이메일 · 정밀 윤문',
+    desc: '한국어 작문 감지 시 LG EXAONE 7.8B가 자연스럽게 집필',
+    prompt:
+      '중요 파트너사에 일정 지연에 대한 정중한 양해를 구하면서도 신뢰를 지키는 격식 있는 한국어 비즈니스 이메일 초안을 작성해 줘.',
+  },
+];
+
+const STORAGE_SESSIONS_KEY = '@pocketmind_sessions_v3';
+const STORAGE_MODE_KEY = '@pocketmind_selection_mode_v3';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const DRAWER_WIDTH = Math.min(290, SCREEN_WIDTH * 0.78);
@@ -201,7 +181,6 @@ function formatMB(bytes: number): string {
 }
 
 function cleanModelOutput(raw: string): string {
-  // Qwen3 빈 <think>\n\n</think> 태그 정리
   return raw.replace(/<think>\s*<\/think>/g, '').trim();
 }
 
@@ -238,6 +217,115 @@ function parseMessageBlocks(raw: string): ContentBlock[] {
     blocks.push({ type: 'text', content: raw });
   }
   return blocks;
+}
+
+function analyzeAutonomousPlan(
+  promptText: string,
+  installed: Record<ModelKey, boolean>,
+): ExecutionPlan {
+  const lower = promptText.toLowerCase();
+
+  const mathRegex =
+    /(수학|방정식|미분|적분|극댓값|극솟값|확률|통계|기댓값|복리|단리|연리|이율|원리금|행렬|벡터|기하|삼각함수|로그|지수|수열|점화식|극한|순열|조합|경우의\s*수|증명|연립방정식|계산해|풀어\s*줘|풀이|sin|cos|tan|log|sqrt|\^2|\^3|\d+\s*[+\-*/=]\s*\d+)/i;
+  const koreanWritingRegex =
+    /(이메일|메일|초안|자기소개서|자소서|에세이|윤문|교정|맞춤법|띄어쓰기|보고서|제안서|기획서|안내문|공지문|사과문|편지|작문|문장|다듬어|사자성어|어휘|뉘앙스|소설|시\s*써|기사|번역)/i;
+  const codeTechRegex =
+    /(코드|파이썬|python|javascript|typescript|react|sql|html|css|알고리즘|함수|클래스|버그|에러|디버깅|api|아키텍처|스크립트|자동화|프로그램)/i;
+
+  const hasMath = mathRegex.test(lower);
+  const hasKoreanWriting = koreanWritingRegex.test(lower);
+  const hasCodeTech = codeTechRegex.test(lower);
+
+  const pickAvailable = (preferred: ModelKey[]): ModelKey => {
+    for (const k of preferred) {
+      if (installed[k]) return k;
+    }
+    return 'allrounder';
+  };
+
+  // 1. 복합 협업: 수리·논리 계산 + 한국어 보고서/해설 작성
+  if (hasMath && hasKoreanWriting && installed.math && (installed.korean || installed.allrounder)) {
+    const writerKey: ModelKey = installed.korean ? 'korean' : 'allrounder';
+    return {
+      summaryLabel: `복합 협업 · ${MODELS.math.shortTitle} 수리 검증 → ${MODELS[writerKey].shortTitle} 한국어 작성`,
+      steps: [
+        {
+          modelKey: 'math',
+          roleTitle: `1단계 · ${MODELS.math.shortTitle} 수리·논리 정밀 계산`,
+          instructionHint:
+            '다음 요청의 수학적 계산과 논리적 근거만을 단계별로 정확히 도출하고 검산하세요. 불필요한 인사말 없이 핵심 풀이과정과 수치 결과만 명확히 제시하세요:\n\n',
+        },
+        {
+          modelKey: writerKey,
+          roleTitle: `2단계 · ${MODELS[writerKey].shortTitle} 한국어 최종 완성`,
+          instructionHint: '',
+        },
+      ],
+    };
+  }
+
+  // 2. 복합 협업: 코드/기술 설계 + 한국어 제안서/보고서 문서화
+  if (hasCodeTech && hasKoreanWriting && installed.allrounder && installed.korean) {
+    return {
+      summaryLabel: `복합 협업 · ${MODELS.allrounder.shortTitle} 기술 설계 → ${MODELS.korean.shortTitle} 한국어 문서화`,
+      steps: [
+        {
+          modelKey: 'allrounder',
+          roleTitle: `1단계 · ${MODELS.allrounder.shortTitle} 기술 설계 및 코드 구현`,
+          instructionHint:
+            '다음 요청에서 필요한 핵심 기술 구조와 실행 가능한 코드만 정확하게 설계해 출력하세요:\n\n',
+        },
+        {
+          modelKey: 'korean',
+          roleTitle: `2단계 · ${MODELS.korean.shortTitle} 한국어 문서 통합 완성`,
+          instructionHint: '',
+        },
+      ],
+    };
+  }
+
+  // 3. 수학·논리 단독 전문 처리 (Math 7B가 있으면 수학 풀이 후 EXAONE이 있으면 자연스러운 한국어 보강 가능)
+  if (hasMath) {
+    const primary = pickAvailable(['math', 'allrounder', 'korean']);
+    return {
+      summaryLabel: `능동 선택 · ${MODELS[primary].shortTitle} (${MODELS[primary].badge})`,
+      steps: [
+        {
+          modelKey: primary,
+          roleTitle: MODELS[primary].title,
+          instructionHint: '',
+        },
+      ],
+    };
+  }
+
+  // 4. 한국어 작문·교정·문맥 전문 처리
+  if (hasKoreanWriting) {
+    const primary = pickAvailable(['korean', 'allrounder', 'math']);
+    return {
+      summaryLabel: `능동 선택 · ${MODELS[primary].shortTitle} (${MODELS[primary].badge})`,
+      steps: [
+        {
+          modelKey: primary,
+          roleTitle: MODELS[primary].title,
+          instructionHint: '',
+        },
+      ],
+    };
+  }
+
+  // 5. 코딩·일반 지식·다목적 추론
+  const primary = pickAvailable(['allrounder', 'korean', 'math']);
+  return {
+    summaryLabel: `능동 선택 · ${MODELS[primary].shortTitle} (${MODELS[primary].badge})`,
+    steps: [
+      {
+        modelKey: primary,
+        roleTitle: MODELS[primary].title,
+        instructionHint: '',
+      },
+    ],
+  };
 }
 
 function RichTextRenderer({
@@ -390,11 +478,13 @@ function ThinkingWave({ color }: { color: string }): React.JSX.Element {
 }
 
 function AnimatedSuggestionCard({
+  badge,
   title,
   desc,
   index,
   onPress,
 }: {
+  badge: string;
   title: string;
   desc: string;
   index: number;
@@ -412,7 +502,7 @@ function AnimatedSuggestionCard({
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
-  }, [enterAnim, index, title]);
+  }, [enterAnim, index]);
 
   const handlePressIn = () => {
     Animated.spring(pressScale, {
@@ -448,6 +538,7 @@ function AnimatedSuggestionCard({
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
         style={styles.suggestionCard}>
+        <Text style={styles.suggestionBadge}>{badge}</Text>
         <Text style={styles.suggestionTitle}>{title}</Text>
         <Text style={styles.suggestionDesc}>{desc}</Text>
       </Pressable>
@@ -495,8 +586,9 @@ export default function App(): React.JSX.Element {
     math: false,
     korean: false,
   });
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>('auto');
   const [loadedModelKey, setLoadedModelKey] = useState<ModelKey | null>(null);
-  const [isInitializingEngine, setIsInitializingEngine] = useState<boolean>(false);
+  const [engineBannerText, setEngineBannerText] = useState<string>('');
   const [qwenThinkingMode, setQwenThinkingMode] = useState<boolean>(false);
 
   const [downloadingKey, setDownloadingKey] = useState<ModelKey | null>(null);
@@ -510,6 +602,7 @@ export default function App(): React.JSX.Element {
   const [inputText, setInputText] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [toastText, setToastText] = useState<string>('');
 
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
   const [modelModalVisible, setModelModalVisible] = useState<boolean>(false);
@@ -517,9 +610,19 @@ export default function App(): React.JSX.Element {
   const backdropAnim = useRef(new Animated.Value(0)).current;
 
   const llamaContextRef = useRef<LlamaContext | null>(null);
+  const loadedModelKeyRef = useRef<ModelKey | null>(null);
+  loadedModelKeyRef.current = loadedModelKey;
   const flatListRef = useRef<FlatList<ChatMessage> | null>(null);
   const sessionsRef = useRef<ChatSession[]>([]);
   sessionsRef.current = sessions;
+  const stopRequestedRef = useRef<boolean>(false);
+
+  const showToast = (msg: string) => {
+    setToastText(msg);
+    setTimeout(() => {
+      setToastText((prev) => (prev === msg ? '' : prev));
+    }, 1800);
+  };
 
   const getModelPath = (key: ModelKey) =>
     `${RNFS.DocumentDirectoryPath}/${MODELS[key].filename}`;
@@ -545,32 +648,43 @@ export default function App(): React.JSX.Element {
     return result;
   }, []);
 
-  const loadModelIntoMemory = useCallback(async (key: ModelKey) => {
-    setIsInitializingEngine(true);
-    try {
-      if (llamaContextRef.current) {
-        await llamaContextRef.current.release();
-        llamaContextRef.current = null;
-        setLoadedModelKey(null);
+  const ensureModelLoaded = useCallback(
+    async (key: ModelKey, customBanner?: string): Promise<LlamaContext | null> => {
+      if (loadedModelKeyRef.current === key && llamaContextRef.current) {
+        return llamaContextRef.current;
       }
-      const context = await initLlama({
-        model: getModelPath(key),
-        use_mlock: true,
-        n_ctx: 2048,
-        n_gpu_layers: 99,
-      });
-      llamaContextRef.current = context;
-      setLoadedModelKey(key);
-      await AsyncStorage.setItem(STORAGE_ACTIVE_MODEL_KEY, key);
-    } catch (error) {
-      Alert.alert(
-        '모델 로딩 실패',
-        `메모리 부족 또는 파일 오류로 모델을 불러오지 못했습니다.\n(${String(error)})`,
+
+      setEngineBannerText(
+        customBanner ?? `아이폰 16 Pro GPU에 ${MODELS[key].title} 적재 중...`,
       );
-    } finally {
-      setIsInitializingEngine(false);
-    }
-  }, []);
+      try {
+        if (llamaContextRef.current) {
+          await llamaContextRef.current.release();
+          llamaContextRef.current = null;
+          setLoadedModelKey(null);
+        }
+        const context = await initLlama({
+          model: getModelPath(key),
+          use_mlock: false,
+          use_mmap: true,
+          n_ctx: 2048,
+          n_gpu_layers: 99,
+        });
+        llamaContextRef.current = context;
+        setLoadedModelKey(key);
+        return context;
+      } catch (error) {
+        Alert.alert(
+          '모델 로딩 실패',
+          `메모리 부족 또는 파일 오류로 ${MODELS[key].title} 모델을 불러오지 못했습니다.\n(${String(error)})`,
+        );
+        return null;
+      } finally {
+        setEngineBannerText('');
+      }
+    },
+    [],
+  );
 
   const persistSessions = async (updated: ChatSession[]) => {
     setSessions(updated);
@@ -581,22 +695,41 @@ export default function App(): React.JSX.Element {
     }
   };
 
-  const createNewSession = useCallback(
-    async (existingList?: ChatSession[]) => {
-      const base = existingList ?? sessionsRef.current;
-      const newSession: ChatSession = {
-        id: `session-${Date.now()}`,
-        title: '새 대화',
-        updatedAt: Date.now(),
-        messages: [],
-      };
-      const updated = [newSession, ...base];
-      await persistSessions(updated);
-      setActiveSessionId(newSession.id);
-      return newSession;
-    },
-    [],
-  );
+  const createNewSession = useCallback(async () => {
+    const currentList = sessionsRef.current;
+    const currentActive = currentList.find((s) => s.id === activeSessionId);
+
+    // 현재 보고 있는 채팅이 아직 비어 있으면 새 채팅을 늘리지 않음
+    if (currentActive && currentActive.messages.length === 0) {
+      Keyboard.dismiss();
+      showToast('이미 새 채팅 화면입니다');
+      return currentActive;
+    }
+
+    // 목록에 이미 비어 있는 새 채팅방이 있다면 중복 생성 대신 해당 채팅방으로 이동
+    const existingEmpty = currentList.find((s) => s.messages.length === 0);
+    if (existingEmpty) {
+      const reordered = [
+        { ...existingEmpty, updatedAt: Date.now() },
+        ...currentList.filter((s) => s.id !== existingEmpty.id),
+      ];
+      await persistSessions(reordered);
+      setActiveSessionId(existingEmpty.id);
+      Keyboard.dismiss();
+      return existingEmpty;
+    }
+
+    const newSession: ChatSession = {
+      id: `session-${Date.now()}`,
+      title: '새 대화',
+      updatedAt: Date.now(),
+      messages: [],
+    };
+    const updated = [newSession, ...currentList];
+    await persistSessions(updated);
+    setActiveSessionId(newSession.id);
+    return newSession;
+  }, [activeSessionId]);
 
   useEffect(() => {
     let mounted = true;
@@ -606,6 +739,17 @@ export default function App(): React.JSX.Element {
         let parsedSessions: ChatSession[] = savedSessionsRaw
           ? JSON.parse(savedSessionsRaw)
           : [];
+
+        // 중복된 빈 새 대화 정리 (최대 1개만 유지)
+        let seenEmpty = false;
+        parsedSessions = parsedSessions.filter((s) => {
+          if (s.messages.length === 0) {
+            if (seenEmpty) return false;
+            seenEmpty = true;
+          }
+          return true;
+        });
+
         if (parsedSessions.length === 0) {
           const initial: ChatSession = {
             id: `session-${Date.now()}`,
@@ -614,31 +758,38 @@ export default function App(): React.JSX.Element {
             messages: [],
           };
           parsedSessions = [initial];
-          await AsyncStorage.setItem(
-            STORAGE_SESSIONS_KEY,
-            JSON.stringify(parsedSessions),
-          );
         }
+        await AsyncStorage.setItem(
+          STORAGE_SESSIONS_KEY,
+          JSON.stringify(parsedSessions),
+        );
+
         if (mounted) {
           setSessions(parsedSessions);
           setActiveSessionId(parsedSessions[0].id);
         }
 
-        const savedModel = (await AsyncStorage.getItem(
-          STORAGE_ACTIVE_MODEL_KEY,
-        )) as ModelKey | null;
-        const preferredKey: ModelKey =
-          savedModel && MODEL_ORDER.includes(savedModel) ? savedModel : 'allrounder';
+        const savedMode = (await AsyncStorage.getItem(
+          STORAGE_MODE_KEY,
+        )) as SelectionMode | null;
+        const resolvedMode: SelectionMode =
+          savedMode === 'auto' ||
+          (savedMode && MODEL_ORDER.includes(savedMode as ModelKey))
+            ? savedMode
+            : 'auto';
+        if (mounted) {
+          setSelectionMode(resolvedMode);
+        }
 
         const available = await scanDownloadedModels();
         if (!mounted) return;
 
-        if (available[preferredKey]) {
-          await loadModelIntoMemory(preferredKey);
+        if (resolvedMode !== 'auto' && available[resolvedMode]) {
+          await ensureModelLoaded(resolvedMode);
         } else {
           const firstAvailable = MODEL_ORDER.find((k) => available[k]);
           if (firstAvailable) {
-            await loadModelIntoMemory(firstAvailable);
+            await ensureModelLoaded(firstAvailable);
           } else {
             setModelModalVisible(true);
           }
@@ -656,7 +807,7 @@ export default function App(): React.JSX.Element {
         llamaContextRef.current = null;
       }
     };
-  }, [loadModelIntoMemory, scanDownloadedModels]);
+  }, [ensureModelLoaded, scanDownloadedModels]);
 
   const toggleDrawer = (open: boolean) => {
     Keyboard.dismiss();
@@ -692,6 +843,15 @@ export default function App(): React.JSX.Element {
     }
   };
 
+  const handleSelectMode = async (mode: SelectionMode) => {
+    setSelectionMode(mode);
+    await AsyncStorage.setItem(STORAGE_MODE_KEY, mode);
+    if (mode !== 'auto' && downloadedModels[mode]) {
+      await ensureModelLoaded(mode);
+    }
+    setModelModalVisible(false);
+  };
+
   const handleDownloadModel = async (key: ModelKey) => {
     if (downloadingKey) return;
     const spec = MODELS[key];
@@ -716,7 +876,7 @@ export default function App(): React.JSX.Element {
         discretionary: false,
         cacheable: false,
         headers: {
-          'User-Agent': 'PocketMind-iOS/1.0',
+          'User-Agent': 'PocketMind-iOS/2.0',
         },
         progressInterval: 250,
         begin: (res) => {
@@ -746,8 +906,9 @@ export default function App(): React.JSX.Element {
         downloadJobIdRef.current = null;
         setDownloadStatusText('');
         await scanDownloadedModels();
-        await loadModelIntoMemory(key);
-        setModelModalVisible(false);
+        if (!loadedModelKeyRef.current) {
+          await ensureModelLoaded(key);
+        }
       } else {
         throw new Error(`서버 응답 오류 (HTTP ${response.statusCode})`);
       }
@@ -760,7 +921,7 @@ export default function App(): React.JSX.Element {
       }
       Alert.alert(
         '다운로드 실패',
-        `모델을 내려받지 못했습니다. Wi-Fi 연결 상태를 확인한 뒤 다시 시도해 주세요.\n(${String(error)})`,
+        `모델을 내려받지 못했습니다. Wi-Fi 연결 상태와 여유 저장공간을 확인해 주세요.\n(${String(error)})`,
       );
     }
   };
@@ -802,7 +963,7 @@ export default function App(): React.JSX.Element {
             if (loadedModelKey === key) {
               const fallback = MODEL_ORDER.find((k) => updated[k]);
               if (fallback) {
-                await loadModelIntoMemory(fallback);
+                await ensureModelLoaded(fallback);
               }
             }
           },
@@ -811,17 +972,11 @@ export default function App(): React.JSX.Element {
     );
   };
 
-  const activeSession =
-    sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
-  const currentMessages = activeSession?.messages ?? [];
-  const activeModelSpec: ModelSpec = loadedModelKey
-    ? MODELS[loadedModelKey]
-    : MODELS.allrounder;
-
   const buildModelPrompt = (
     spec: ModelSpec,
     history: ChatMessage[],
     userPrompt: string,
+    forceThinking?: boolean,
   ): { prompt: string; stop: string[]; penaltyRepeat: number } => {
     const contextSlice = history.slice(-6);
 
@@ -842,9 +997,9 @@ export default function App(): React.JSX.Element {
       };
     }
 
-    // Qwen3 / Qwen2.5-Math ChatML 형식
+    const useThinking = forceThinking ?? qwenThinkingMode;
     const effectiveUserPrompt =
-      spec.key === 'allrounder' && !qwenThinkingMode
+      spec.key === 'allrounder' && !useThinking
         ? `${userPrompt} /no_think`
         : userPrompt;
 
@@ -866,12 +1021,28 @@ export default function App(): React.JSX.Element {
     historyBeforeUser: ChatMessage[],
     userText: string,
   ) => {
-    if (!llamaContextRef.current || !loadedModelKey) {
+    const hasAnyModel = MODEL_ORDER.some((k) => downloadedModels[k]);
+    if (!hasAnyModel) {
       setModelModalVisible(true);
       return;
     }
 
-    const spec = MODELS[loadedModelKey];
+    stopRequestedRef.current = false;
+
+    const plan: ExecutionPlan =
+      selectionMode === 'auto'
+        ? analyzeAutonomousPlan(userText, downloadedModels)
+        : {
+            summaryLabel: `수동 고정 · ${MODELS[selectionMode].title}`,
+            steps: [
+              {
+                modelKey: selectionMode,
+                roleTitle: MODELS[selectionMode].title,
+                instructionHint: '',
+              },
+            ],
+          };
+
     const userMsg: ChatMessage = {
       id: `msg-${Date.now()}-u`,
       role: 'user',
@@ -884,6 +1055,7 @@ export default function App(): React.JSX.Element {
       role: 'assistant',
       content: '',
       timestamp: Date.now(),
+      orchestrationLabel: plan.summaryLabel,
     };
 
     const nextMessages = [...historyBeforeUser, userMsg, assistantPlaceholder];
@@ -905,58 +1077,215 @@ export default function App(): React.JSX.Element {
     await persistSessions(initialSessions);
     setIsGenerating(true);
 
-    let fullAnswer = '';
-    let lastUiUpdate = 0;
+    let finalAnswer = '';
+    let stage1TitleSnapshot = '';
+    let stage1OutputSnapshot = '';
 
     try {
-      const { prompt, stop, penaltyRepeat } = buildModelPrompt(
-        spec,
-        historyBeforeUser,
-        userText,
-      );
-      await llamaContextRef.current.completion(
-        {
-          prompt,
-          n_predict: 1280,
-          temperature: spec.key === 'math' ? 0.3 : 0.7,
-          top_p: 0.9,
-          penalty_repeat: penaltyRepeat,
-          stop,
-        },
-        (tokenData) => {
-          fullAnswer += tokenData.token;
-          const now = Date.now();
-          if (now - lastUiUpdate >= 50) {
-            lastUiUpdate = now;
-            const snapshot = cleanModelOutput(fullAnswer);
-            setSessions((prev) =>
-              prev.map((s) =>
-                s.id === sessionId
-                  ? {
-                      ...s,
-                      messages: s.messages.map((m) =>
-                        m.id === assistantMsgId ? { ...m, content: snapshot } : m,
-                      ),
-                    }
-                  : s,
-              ),
-            );
-          }
-        },
-      );
+      if (plan.steps.length === 1) {
+        // 단일 특화 AI 자동/수동 실행
+        const step = plan.steps[0];
+        const ctx = await ensureModelLoaded(
+          step.modelKey,
+          `능동 라우팅: ${MODELS[step.modelKey].title} 활성화 중...`,
+        );
+        if (!ctx) throw new Error('모델을 메모리에 올리지 못했습니다.');
+
+        const spec = MODELS[step.modelKey];
+        const { prompt, stop, penaltyRepeat } = buildModelPrompt(
+          spec,
+          historyBeforeUser,
+          userText,
+        );
+
+        let lastUiUpdate = 0;
+        await ctx.completion(
+          {
+            prompt,
+            n_predict: 1400,
+            temperature: spec.key === 'math' ? 0.25 : 0.7,
+            top_p: 0.9,
+            penalty_repeat: penaltyRepeat,
+            stop,
+          },
+          (tokenData) => {
+            finalAnswer += tokenData.token;
+            const now = Date.now();
+            if (now - lastUiUpdate >= 50) {
+              lastUiUpdate = now;
+              const snapshot = cleanModelOutput(finalAnswer);
+              setSessions((prev) =>
+                prev.map((s) =>
+                  s.id === sessionId
+                    ? {
+                        ...s,
+                        messages: s.messages.map((m) =>
+                          m.id === assistantMsgId ? { ...m, content: snapshot } : m,
+                        ),
+                      }
+                    : s,
+                ),
+              );
+            }
+          },
+        );
+      } else {
+        // 2단계 복합 AI 협업 파이프라인 (1단계 특화 분석 -> 2단계 한국어 통합 완성)
+        const step1 = plan.steps[0];
+        const step2 = plan.steps[1];
+
+        stage1TitleSnapshot = step1.roleTitle;
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? {
+                  ...s,
+                  messages: s.messages.map((m) =>
+                    m.id === assistantMsgId
+                      ? { ...m, stage1Title: stage1TitleSnapshot, stage1Content: '' }
+                      : m,
+                  ),
+                }
+              : s,
+          ),
+        );
+
+        const ctx1 = await ensureModelLoaded(
+          step1.modelKey,
+          `[1/2단계] ${MODELS[step1.modelKey].title}로 핵심 분석 전환 중...`,
+        );
+        if (!ctx1) throw new Error('1단계 모델 로딩 실패');
+
+        const spec1 = MODELS[step1.modelKey];
+        const built1 = buildModelPrompt(
+          spec1,
+          [],
+          `${step1.instructionHint}${userText}`,
+          true,
+        );
+
+        let lastUiUpdate1 = 0;
+        await ctx1.completion(
+          {
+            prompt: built1.prompt,
+            n_predict: 1024,
+            temperature: 0.25,
+            top_p: 0.9,
+            penalty_repeat: built1.penaltyRepeat,
+            stop: built1.stop,
+          },
+          (tokenData) => {
+            stage1OutputSnapshot += tokenData.token;
+            const now = Date.now();
+            if (now - lastUiUpdate1 >= 60) {
+              lastUiUpdate1 = now;
+              const cleaned1 = cleanModelOutput(stage1OutputSnapshot);
+              setSessions((prev) =>
+                prev.map((s) =>
+                  s.id === sessionId
+                    ? {
+                        ...s,
+                        messages: s.messages.map((m) =>
+                          m.id === assistantMsgId
+                            ? { ...m, stage1Content: cleaned1 }
+                            : m,
+                        ),
+                      }
+                    : s,
+                ),
+              );
+            }
+          },
+        );
+
+        stage1OutputSnapshot = cleanModelOutput(stage1OutputSnapshot);
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? {
+                  ...s,
+                  messages: s.messages.map((m) =>
+                    m.id === assistantMsgId
+                      ? { ...m, stage1Content: stage1OutputSnapshot }
+                      : m,
+                  ),
+                }
+              : s,
+          ),
+        );
+
+        if (stopRequestedRef.current) {
+          finalAnswer = stage1OutputSnapshot;
+        } else {
+          // 2단계 모델로 자동 메모리 교체 후 최종 통합 답변 생성
+          const ctx2 = await ensureModelLoaded(
+            step2.modelKey,
+            `[2/2단계] ${MODELS[step2.modelKey].title}로 한국어 최종 통합 중...`,
+          );
+          if (!ctx2) throw new Error('2단계 모델 로딩 실패');
+
+          const spec2 = MODELS[step2.modelKey];
+          const synthesisPrompt =
+            `다음은 사용자의 원래 요청과, 1단계 전문 AI(${MODELS[step1.modelKey].title})가 검증해 도출한 핵심 분석 결과입니다.\n\n` +
+            `[사용자 원래 요청]\n${userText}\n\n` +
+            `[1단계 전문 AI 검증 결과]\n${stage1OutputSnapshot}\n\n` +
+            `위 검증된 수치와 논리를 빠짐없이 정확히 반영하여, 사용자에게 가장 이해하기 쉽고 자연스러운 한국어 최종 답변을 완성해 주세요.`;
+
+          const built2 = buildModelPrompt(spec2, historyBeforeUser, synthesisPrompt);
+
+          let lastUiUpdate2 = 0;
+          await ctx2.completion(
+            {
+              prompt: built2.prompt,
+              n_predict: 1400,
+              temperature: 0.65,
+              top_p: 0.9,
+              penalty_repeat: built2.penaltyRepeat,
+              stop: built2.stop,
+            },
+            (tokenData) => {
+              finalAnswer += tokenData.token;
+              const now = Date.now();
+              if (now - lastUiUpdate2 >= 50) {
+                lastUiUpdate2 = now;
+                const snapshot2 = cleanModelOutput(finalAnswer);
+                setSessions((prev) =>
+                  prev.map((s) =>
+                    s.id === sessionId
+                      ? {
+                          ...s,
+                          messages: s.messages.map((m) =>
+                            m.id === assistantMsgId ? { ...m, content: snapshot2 } : m,
+                          ),
+                        }
+                      : s,
+                  ),
+                );
+              }
+            },
+          );
+        }
+      }
     } catch (error) {
-      if (!fullAnswer) {
-        fullAnswer = `응답 생성 중 오류가 발생했습니다: ${String(error)}`;
+      if (!finalAnswer) {
+        finalAnswer = `응답 생성 중 오류가 발생했습니다: ${String(error)}`;
       }
     } finally {
-      const finalText = cleanModelOutput(fullAnswer) || '(응답이 중지되었습니다)';
+      const finalText = cleanModelOutput(finalAnswer) || '(응답이 중지되었습니다)';
       const finalizedSessions = sessionsRef.current.map((s) =>
         s.id === sessionId
           ? {
               ...s,
               updatedAt: Date.now(),
               messages: s.messages.map((m) =>
-                m.id === assistantMsgId ? { ...m, content: finalText } : m,
+                m.id === assistantMsgId
+                  ? {
+                      ...m,
+                      content: finalText,
+                      stage1Title: stage1TitleSnapshot || undefined,
+                      stage1Content: stage1OutputSnapshot || undefined,
+                    }
+                  : m,
               ),
             }
           : s,
@@ -966,11 +1295,16 @@ export default function App(): React.JSX.Element {
     }
   };
 
+  const activeSession =
+    sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
+  const currentMessages = activeSession?.messages ?? [];
+
   const handleSendMessage = async (overrideText?: string) => {
     const textToSend = (overrideText ?? inputText).trim();
     if (!textToSend || isGenerating) return;
 
-    if (!llamaContextRef.current) {
+    const hasAnyModel = MODEL_ORDER.some((k) => downloadedModels[k]);
+    if (!hasAnyModel) {
       setModelModalVisible(true);
       return;
     }
@@ -985,11 +1319,14 @@ export default function App(): React.JSX.Element {
   };
 
   const handleStopGeneration = async () => {
-    if (!isGenerating || !llamaContextRef.current) return;
-    try {
-      await llamaContextRef.current.stopCompletion();
-    } catch {
-      // 이미 완료된 경우 무시
+    if (!isGenerating) return;
+    stopRequestedRef.current = true;
+    if (llamaContextRef.current) {
+      try {
+        await llamaContextRef.current.stopCompletion();
+      } catch {
+        // 이미 완료된 경우 무시
+      }
     }
   };
 
@@ -1020,7 +1357,14 @@ export default function App(): React.JSX.Element {
         onPress: async () => {
           const filtered = sessionsRef.current.filter((s) => s.id !== sessionId);
           if (filtered.length === 0) {
-            await createNewSession([]);
+            const fresh: ChatSession = {
+              id: `session-${Date.now()}`,
+              title: '새 대화',
+              updatedAt: Date.now(),
+              messages: [],
+            };
+            await persistSessions([fresh]);
+            setActiveSessionId(fresh.id);
           } else {
             await persistSessions(filtered);
             if (activeSessionId === sessionId) {
@@ -1031,6 +1375,12 @@ export default function App(): React.JSX.Element {
       },
     ]);
   };
+
+  const installedCount = MODEL_ORDER.filter((k) => downloadedModels[k]).length;
+  const activeAccentColor =
+    selectionMode === 'auto'
+      ? '#10A37F'
+      : MODELS[selectionMode].badgeColor;
 
   const renderMessageItem = ({
     item,
@@ -1061,16 +1411,29 @@ export default function App(): React.JSX.Element {
     return (
       <AnimatedMessageRow>
         <View style={styles.assistantRow}>
-          <View
-            style={[
-              styles.avatarBadge,
-              { backgroundColor: activeModelSpec.badgeColor },
-            ]}>
+          <View style={[styles.avatarBadge, { backgroundColor: activeAccentColor }]}>
             <Text style={styles.avatarGlyph}>✦</Text>
           </View>
           <View style={styles.assistantContentCol}>
+            {item.orchestrationLabel ? (
+              <View style={styles.orchestrationPill}>
+                <Text style={styles.orchestrationPillText}>
+                  🧠 {item.orchestrationLabel}
+                </Text>
+              </View>
+            ) : null}
+
+            {item.stage1Title ? (
+              <View style={styles.stage1Card}>
+                <Text style={styles.stage1Header}>{item.stage1Title}</Text>
+                <Text style={styles.stage1Body} numberOfLines={8}>
+                  {item.stage1Content || '1단계 전문 분석 연산 중...'}
+                </Text>
+              </View>
+            ) : null}
+
             {item.content.length === 0 ? (
-              <ThinkingWave color={activeModelSpec.badgeColor} />
+              <ThinkingWave color={activeAccentColor} />
             ) : (
               blocks.map((block, bIdx) => {
                 const isLastBlock = bIdx === blocks.length - 1;
@@ -1131,7 +1494,7 @@ export default function App(): React.JSX.Element {
     <SafeAreaView style={styles.root}>
       <StatusBar backgroundColor="#212121" barStyle="light-content" />
 
-      {/* 상단 모델 스위처 & 메뉴 헤더 */}
+      {/* 상단 능동 AI 스위처 & 메뉴 헤더 */}
       <View style={styles.topBar}>
         <TouchableOpacity
           onPress={() => toggleDrawer(true)}
@@ -1148,14 +1511,14 @@ export default function App(): React.JSX.Element {
             style={[
               styles.statusDot,
               {
-                backgroundColor: loadedModelKey
-                  ? MODELS[loadedModelKey].badgeColor
-                  : '#F59E0B',
+                backgroundColor: installedCount > 0 ? activeAccentColor : '#F59E0B',
               },
             ]}
           />
           <Text style={styles.modelPillTitle}>
-            {loadedModelKey ? MODELS[loadedModelKey].shortTitle : 'AI 모델 선택'}
+            {selectionMode === 'auto'
+              ? `능동형 복합 AI (${installedCount}/3)`
+              : `고정 · ${MODELS[selectionMode].shortTitle}`}
           </Text>
           <Text style={styles.modelPillChevron}>▾</Text>
         </TouchableOpacity>
@@ -1168,8 +1531,15 @@ export default function App(): React.JSX.Element {
         </TouchableOpacity>
       </View>
 
-      {/* 올라운더(Qwen3 4B) 전용 깊은 생각(Thinking) 모드 토글 바 */}
-      {loadedModelKey === 'allrounder' && !isInitializingEngine && (
+      {/* 토스트 알림 배지 */}
+      {toastText ? (
+        <View style={styles.toastWrap}>
+          <Text style={styles.toastText}>{toastText}</Text>
+        </View>
+      ) : null}
+
+      {/* 올라운더(Qwen3 8B) 전용 깊은 사고(Thinking) 토글 */}
+      {loadedModelKey === 'allrounder' && !engineBannerText && (
         <View style={styles.subModeBar}>
           <TouchableOpacity
             onPress={() => setQwenThinkingMode((prev) => !prev)}
@@ -1183,58 +1553,57 @@ export default function App(): React.JSX.Element {
                 qwenThinkingMode && styles.thinkingChipTextActive,
               ]}>
               {qwenThinkingMode
-                ? '🧠 깊은 사고 모드 ON (정밀 추론)'
-                : '⚡ 빠른 응답 모드 (터치해 깊은 사고 전환)'}
+                ? '🧠 Qwen3 8B 깊은 사고 모드 ON'
+                : '⚡ Qwen3 8B 빠른 응답 (터치해 깊은 사고 전환)'}
             </Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* 모델 로딩 배너 */}
-      {isInitializingEngine && (
+      {/* 모델 적재·교체 상태 배너 */}
+      {engineBannerText ? (
         <View style={styles.loadingBanner}>
           <ActivityIndicator color="#10A37F" size="small" />
-          <Text style={styles.loadingBannerText}>
-            아이폰 Metal GPU에 AI 모델을 올리는 중...
-          </Text>
+          <Text style={styles.loadingBannerText}>{engineBannerText}</Text>
         </View>
-      )}
+      ) : null}
 
-      {/* 메인 대화 영역 또는 모델별 맞춤 추천 뷰 */}
+      {/* 메인 대화 영역 또는 복합 협업 추천 뷰 */}
       {currentMessages.length === 0 ? (
         <ScrollView
           contentContainerStyle={styles.emptyStateContainer}
           keyboardShouldPersistTaps="handled">
           <View style={styles.centerLogoWrap}>
-            <BreathingLogo accentColor={activeModelSpec.badgeColor} />
-            {loadedModelKey && (
-              <View
+            <BreathingLogo accentColor={activeAccentColor} />
+            <View
+              style={[
+                styles.activeSpecialtyBadge,
+                { borderColor: activeAccentColor },
+              ]}>
+              <Text
                 style={[
-                  styles.activeSpecialtyBadge,
-                  { borderColor: activeModelSpec.badgeColor },
+                  styles.activeSpecialtyText,
+                  { color: activeAccentColor },
                 ]}>
-                <Text
-                  style={[
-                    styles.activeSpecialtyText,
-                    { color: activeModelSpec.badgeColor },
-                  ]}>
-                  {activeModelSpec.badge}
-                </Text>
-              </View>
-            )}
+                {selectionMode === 'auto'
+                  ? 'AUTONOMOUS MULTI-AI ORCHESTRATOR'
+                  : MODELS[selectionMode].badge}
+              </Text>
+            </View>
             <Text style={styles.centerTitle}>무엇을 도와드릴까요?</Text>
             <Text style={styles.centerSubtitle}>
-              {loadedModelKey
-                ? `${MODELS[loadedModelKey].title} · 오프라인 기기 내 추론 활성`
-                : '상단 메뉴에서 올라운더 · 수학 · 한국어 AI 모델을 선택하세요'}
+              {installedCount > 0
+                ? `질문 의도를 분석해 8B급 전문 AI ${installedCount}종이 단독 또는 협업으로 해결합니다`
+                : '상단 버튼을 눌러 아이폰 16 Pro용 7B~8B AI 모델을 다운로드하세요'}
             </Text>
           </View>
 
           <View style={styles.suggestionsGrid}>
-            {activeModelSpec.suggestions.map((card, idx) => (
+            {AUTO_SUGGESTIONS.map((card, idx) => (
               <AnimatedSuggestionCard
-                key={`${activeModelSpec.key}-${idx}`}
+                key={idx}
                 index={idx}
+                badge={card.badge}
                 title={card.title}
                 desc={card.desc}
                 onPress={() => handleSendMessage(card.prompt)}
@@ -1265,13 +1634,7 @@ export default function App(): React.JSX.Element {
               maxLength={2000}
               multiline
               onChangeText={setInputText}
-              placeholder={
-                loadedModelKey === 'math'
-                  ? '수학 문제나 논리 퍼즐을 입력하세요'
-                  : loadedModelKey === 'korean'
-                    ? '작문, 교정, 한국어 질문을 입력하세요'
-                    : 'PocketMind에게 메시지 보내기'
-              }
+              placeholder="수학, 코딩, 한국어 작문 등 무엇이든 물어보세요"
               placeholderTextColor="#8E8EA0"
               style={styles.textInput}
               value={inputText}
@@ -1295,7 +1658,7 @@ export default function App(): React.JSX.Element {
             )}
           </View>
           <Text style={styles.footerDisclaimer}>
-            모든 연산은 인터넷 연결 없이 아이폰 기기 내부에서 처리됩니다.
+            모든 추론과 모델 협업은 인터넷 없이 아이폰 16 Pro 내부에서 실행됩니다.
           </Text>
         </View>
       </KeyboardAvoidingView>
@@ -1369,14 +1732,14 @@ export default function App(): React.JSX.Element {
                   setModelModalVisible(true);
                 }}
                 style={styles.drawerFooterBtn}>
-                <Text style={styles.drawerFooterText}>⚙ 특화 AI 모델 다운로드 · 관리</Text>
+                <Text style={styles.drawerFooterText}>⚙ 8B 특화 모델 다운로드 · 모드 설정</Text>
               </TouchableOpacity>
             </SafeAreaView>
           </Animated.View>
         </View>
       )}
 
-      {/* 특화 AI 모델 선택 및 다운로드 모달 */}
+      {/* 능동형 모드 & 7B~8B 특화 AI 모델 관리 모달 */}
       <Modal
         animationType="slide"
         onRequestClose={() => setModelModalVisible(false)}
@@ -1385,14 +1748,34 @@ export default function App(): React.JSX.Element {
         <View style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>분야별 오프라인 AI 모델</Text>
+              <Text style={styles.modalTitle}>아이폰 16 Pro · AI 엔진 허브</Text>
               <TouchableOpacity onPress={() => setModelModalVisible(false)}>
                 <Text style={styles.modalClose}>닫기</Text>
               </TouchableOpacity>
             </View>
             <Text style={styles.modalDesc}>
-              작은 모델의 한계를 넘기 위해 분야별 특화 모델을 각각 받아 상황에 맞게 전환할 수 있습니다.
+              8GB RAM 한계에 맞춘 7B~8B 플래그십 모델을 내려받으면, 능동형 AI가 작업에 맞춰 모델을 자동 선택하거나 2단계로 협업합니다.
             </Text>
+
+            {/* 능동형 복합 AI 모드 선택 카드 */}
+            <TouchableOpacity
+              onPress={() => handleSelectMode('auto')}
+              style={[
+                styles.autoModeCard,
+                selectionMode === 'auto' && styles.autoModeCardActive,
+              ]}>
+              <View style={styles.autoModeTop}>
+                <Text style={styles.autoModeTitle}>
+                  🧠 능동형 복합 AI 오케스트레이터 (추천)
+                </Text>
+                {selectionMode === 'auto' && (
+                  <Text style={styles.autoModeActiveTag}>활성 ✓</Text>
+                )}
+              </View>
+              <Text style={styles.autoModeDesc}>
+                질문 성격을 자동 분석해 최적의 AI를 고르거나, 수리+한국어·코드+기획서 같은 복합 요청 시 두 AI가 순차 협업합니다.
+              </Text>
+            </TouchableOpacity>
 
             <ScrollView
               style={styles.modalScroll}
@@ -1400,7 +1783,7 @@ export default function App(): React.JSX.Element {
               {MODEL_ORDER.map((key) => {
                 const spec = MODELS[key];
                 const isInstalled = downloadedModels[key];
-                const isLoaded = loadedModelKey === key;
+                const isManualFixed = selectionMode === key;
                 const isThisDownloading = downloadingKey === key;
 
                 return (
@@ -1408,7 +1791,7 @@ export default function App(): React.JSX.Element {
                     key={key}
                     style={[
                       styles.modelCard,
-                      isLoaded && { borderColor: spec.badgeColor },
+                      isManualFixed && { borderColor: spec.badgeColor },
                     ]}>
                     <View style={styles.modelCardInfo}>
                       <View style={styles.modelCardTitleRow}>
@@ -1468,18 +1851,16 @@ export default function App(): React.JSX.Element {
                     ) : isInstalled ? (
                       <View style={styles.installedActions}>
                         <TouchableOpacity
-                          disabled={isLoaded || isInitializingEngine}
-                          onPress={async () => {
-                            await loadModelIntoMemory(key);
-                            setModelModalVisible(false);
-                          }}
+                          onPress={() => handleSelectMode(key)}
                           style={[
                             styles.useModelBtn,
                             { backgroundColor: spec.badgeColor },
-                            isLoaded && styles.useModelBtnCurrent,
+                            isManualFixed && styles.useModelBtnCurrent,
                           ]}>
                           <Text style={styles.useModelBtnText}>
-                            {isLoaded ? '현재 사용 중 ✓' : '이 모델로 전환'}
+                            {isManualFixed
+                              ? '수동 고정 사용 중 ✓'
+                              : '이 모델만 수동 고정'}
                           </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
@@ -1560,6 +1941,19 @@ const styles = StyleSheet.create({
     color: '#9B9B9B',
     fontSize: 13,
   },
+  toastWrap: {
+    alignSelf: 'center',
+    backgroundColor: '#333333',
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    borderRadius: 12,
+    marginBottom: 4,
+  },
+  toastText: {
+    color: '#ECECEC',
+    fontSize: 12,
+    fontWeight: '500',
+  },
   subModeBar: {
     alignItems: 'center',
     paddingBottom: 6,
@@ -1601,12 +1995,12 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: 28,
+    paddingTop: 22,
     paddingBottom: 18,
   },
   centerLogoWrap: {
     alignItems: 'center',
-    marginTop: 12,
+    marginTop: 8,
   },
   logoOuterWrap: {
     width: 72,
@@ -1642,8 +2036,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   activeSpecialtyText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
+    letterSpacing: 0.4,
   },
   centerTitle: {
     color: '#ECECEC',
@@ -1655,10 +2050,11 @@ const styles = StyleSheet.create({
     color: '#9B9B9B',
     fontSize: 13,
     textAlign: 'center',
+    lineHeight: 19,
   },
   suggestionsGrid: {
     gap: 10,
-    marginTop: 24,
+    marginTop: 20,
   },
   suggestionCard: {
     backgroundColor: '#2A2A2A',
@@ -1666,7 +2062,13 @@ const styles = StyleSheet.create({
     borderColor: '#383838',
     borderRadius: 14,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 11,
+  },
+  suggestionBadge: {
+    color: '#10A37F',
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 2,
   },
   suggestionTitle: {
     color: '#ECECEC',
@@ -1719,7 +2121,39 @@ const styles = StyleSheet.create({
   },
   assistantContentCol: {
     flex: 1,
-    gap: 10,
+    gap: 8,
+  },
+  orchestrationPill: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#2A2A2A',
+    borderWidth: 1,
+    borderColor: '#3A3A3A',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  orchestrationPillText: {
+    color: '#A7F3D0',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  stage1Card: {
+    backgroundColor: '#19222C',
+    borderWidth: 1,
+    borderColor: '#2B3E52',
+    borderRadius: 10,
+    padding: 10,
+    gap: 4,
+  },
+  stage1Header: {
+    color: '#93C5FD',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  stage1Body: {
+    color: '#CBD5E1',
+    fontSize: 12,
+    lineHeight: 18,
   },
   typingRow: {
     flexDirection: 'row',
@@ -1943,7 +2377,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalSheet: {
-    maxHeight: '85%',
+    maxHeight: '88%',
     backgroundColor: '#1E1E1E',
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
@@ -1968,15 +2402,47 @@ const styles = StyleSheet.create({
   },
   modalDesc: {
     color: '#9B9B9B',
-    fontSize: 13,
+    fontSize: 12,
     lineHeight: 18,
     marginBottom: 12,
+  },
+  autoModeCard: {
+    backgroundColor: '#172A24',
+    borderRadius: 14,
+    padding: 13,
+    borderWidth: 1.5,
+    borderColor: '#2A4A3F',
+    marginBottom: 12,
+    gap: 5,
+  },
+  autoModeCardActive: {
+    borderColor: '#10A37F',
+  },
+  autoModeTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  autoModeTitle: {
+    color: '#ECFDF5',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  autoModeActiveTag: {
+    color: '#6EE7B7',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  autoModeDesc: {
+    color: '#A7F3D0',
+    fontSize: 12,
+    lineHeight: 17,
   },
   modalScroll: {
     flexGrow: 0,
   },
   modalScrollContent: {
-    gap: 12,
+    gap: 11,
     paddingBottom: 8,
   },
   modelCard: {
@@ -2074,7 +2540,7 @@ const styles = StyleSheet.create({
   },
   useModelBtnText: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
   },
   deleteModelBtn: {
@@ -2086,7 +2552,7 @@ const styles = StyleSheet.create({
   },
   deleteModelBtnText: {
     color: '#F87171',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
   downloadModelBtn: {

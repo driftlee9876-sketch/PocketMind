@@ -1,6 +1,6 @@
 workflows:
   ios-pocketmind-sideload:
-    name: PocketMind iOS Build (Multi-Model + Guaranteed Icon)
+    name: PocketMind iOS Build (8B Orchestrator + Compiled Assets.car Icon)
     max_build_duration: 60
     instance_type: mac_mini_m2
     environment:
@@ -14,7 +14,7 @@ workflows:
       - name: Install CocoaPods dependencies
         script: |
           cd ios && pod install
-      - name: Generate PocketMind iOS App Icon Assets
+      - name: Generate PocketMind Icon Assets and Configure Xcode Project
         script: |
           cat << 'EOF' > make_icon.swift
           import Foundation
@@ -107,6 +107,16 @@ workflows:
           }
           EOF
           done
+
+          python3 -c '
+          p = "ios/PocketMind.xcodeproj/project.pbxproj"
+          with open(p, "r") as f:
+              s = f.read()
+          if "ASSETCATALOG_COMPILER_APPICON_NAME" not in s:
+              s = s.replace("PRODUCT_NAME = PocketMind;", "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;\n\t\t\t\tPRODUCT_NAME = PocketMind;")
+              with open(p, "w") as f:
+                  f.write(s)
+          '
       - name: Build unsigned iOS archive
         script: |
           xcodebuild archive \
@@ -115,36 +125,28 @@ workflows:
             -configuration Release \
             -sdk iphoneos \
             -archivePath build/PocketMind.xcarchive \
+            ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
-      - name: Inject Icons into App Bundle and Embed Entitlements
+      - name: Compile Assets.car with actool and Embed Entitlements
         script: |
           APP_DIR="build/PocketMind.xcarchive/Products/Applications/PocketMind.app"
           PLIST="$APP_DIR/Info.plist"
-
-          sips -z 120 120 master-icon-1024.png --out "$APP_DIR/AppIcon60x60@2x.png"
-          sips -z 180 180 master-icon-1024.png --out "$APP_DIR/AppIcon60x60@3x.png"
-          sips -z 152 152 master-icon-1024.png --out "$APP_DIR/AppIcon76x76@2x~ipad.png"
-          sips -z 167 167 master-icon-1024.png --out "$APP_DIR/AppIcon83.5x83.5@2x~ipad.png"
-          cp master-icon-1024.png "$APP_DIR/Icon-1024.png"
+          XCASSETS=$(find ios/PocketMind -maxdepth 2 -name "*.xcassets" | head -n 1)
 
           /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$PLIST" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string AppIcon" "$PLIST"
           /usr/libexec/PlistBuddy -c "Delete :CFBundleIcons" "$PLIST" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons dict" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons:CFBundlePrimaryIcon dict" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName string AppIcon" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles array" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:0 string AppIcon60x60" "$PLIST"
           /usr/libexec/PlistBuddy -c "Delete :CFBundleIcons~ipad" "$PLIST" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons~ipad dict" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons~ipad:CFBundlePrimaryIcon dict" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName string AppIcon" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconFiles array" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconFiles:0 string AppIcon60x60" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconFiles:1 string AppIcon76x76" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconFiles:2 string AppIcon83.5x83.5" "$PLIST"
+
+          xcrun actool --compile "$APP_DIR" "$XCASSETS" \
+            --platform iphoneos \
+            --minimum-deployment-target 15.0 \
+            --app-icon AppIcon \
+            --output-partial-info-plist build/icon-partial.plist
+
+          /usr/libexec/PlistBuddy -c "Merge build/icon-partial.plist" "$PLIST"
+          ls -lh "$APP_DIR/Assets.car" "$APP_DIR"/AppIcon*.png || true
 
           printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n\t<key>com.apple.developer.kernel.increased-memory-limit</key>\n\t<true/>\n</dict>\n</plist>\n' > ios/PocketMind/PocketMind.entitlements
           plutil -lint ios/PocketMind/PocketMind.entitlements
