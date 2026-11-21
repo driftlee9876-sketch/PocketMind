@@ -35,6 +35,79 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Generate PocketMind Android Launcher Icons
+        run: |
+          python3 - << 'EOF'
+          import os, struct, zlib
+
+          def make_png(size, is_round=False):
+              raw = bytearray()
+              cx = cy = size / 2.0
+              r_outer = size * 0.46
+              for y in range(size):
+                  raw.append(0)
+                  for x in range(size):
+                      dx = x - cx
+                      dy = y - cy
+                      dist = (dx*dx + dy*dy) ** 0.5
+                      # 사각형 둥근 모서리 또는 원형 마스크
+                      if is_round:
+                          inside = dist <= r_outer
+                      else:
+                          corner = size * 0.22
+                          ax, ay = abs(dx), abs(dy)
+                          limit = size * 0.46
+                          if ax > limit or ay > limit:
+                              inside = False
+                          elif ax > limit - corner and ay > limit - corner:
+                              inside = ((ax - (limit - corner))**2 + (ay - (limit - corner))**2) ** 0.5 <= corner
+                          else:
+                              inside = True
+                      if not inside:
+                          raw.extend((0, 0, 0, 0))
+                          continue
+                      # 중앙 AI 스파크(다이아몬드 별) 문양
+                      star = (abs(dx) ** 0.65 + abs(dy) ** 0.65) <= (size * 0.28) ** 0.65
+                      if star:
+                          raw.extend((255, 255, 255, 255))
+                      else:
+                          # 다크 에메랄드-블루 그라데이션 배경
+                          t = (x + y) / (2.0 * size)
+                          r = int(16 + t * 20)
+                          g = int(163 - t * 40)
+                          b = int(127 + t * 80)
+                          raw.extend((r, g, b, 255))
+
+              def chunk(tag, data):
+                  return struct.pack("!I", len(data)) + tag + data + struct.pack("!I", zlib.crc32(tag + data) & 0xffffffff)
+
+              ihdr = struct.pack("!IIBBBBB", size, size, 8, 6, 0, 0, 0)
+              return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b"")
+
+          res_dir = "android/app/src/main/res"
+          for sub in ["mipmap-anydpi-v26", "mipmap-anydpi"]:
+              p = os.path.join(res_dir, sub)
+              if os.path.isdir(p):
+                  for f in os.listdir(p):
+                      os.remove(os.path.join(p, f))
+
+          densities = {
+              "mipmap-mdpi": 48,
+              "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96,
+              "mipmap-xxhdpi": 144,
+              "mipmap-xxxhdpi": 192,
+          }
+          for folder, px in densities.items():
+              out_dir = os.path.join(res_dir, folder)
+              os.makedirs(out_dir, exist_ok=True)
+              with open(os.path.join(out_dir, "ic_launcher.png"), "wb") as f:
+                  f.write(make_png(px, False))
+              with open(os.path.join(out_dir, "ic_launcher_round.png"), "wb") as f:
+                  f.write(make_png(px, True))
+          print("PocketMind Android launcher icons generated successfully.")
+          EOF
+
       - name: Ensure Fixed Signing Keystore
         run: |
           if [ ! -f android/app/debug.keystore ]; then
