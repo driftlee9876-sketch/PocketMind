@@ -27,6 +27,8 @@ workflows:
             CODE_SIGNING_ALLOWED=NO
       - name: Embed Increased Memory Limit entitlement
         script: |
+          printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n\t<key>com.apple.developer.kernel.increased-memory-limit</key>\n\t<true/>\n</dict>\n</plist>\n' > ios/PocketMind/PocketMind.entitlements
+          plutil -lint ios/PocketMind/PocketMind.entitlements
           codesign --force --sign - \
             --entitlements ios/PocketMind/PocketMind.entitlements \
             build/PocketMind.xcarchive/Products/Applications/PocketMind.app
