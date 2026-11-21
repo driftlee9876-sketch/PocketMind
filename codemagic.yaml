@@ -1,164 +1,47 @@
 workflows:
-  ios-pocketmind-sideload:
-    name: PocketMind iOS Build (Hybrid Web+8B AI, Plugins, Cellular Guard)
+  ios-sideload-ipa:
+    name: Build PocketMind iOS IPA (On-Demand)
     max_build_duration: 60
     instance_type: mac_mini_m2
+    triggering:
+      events:
+        - tag
+      tag_patterns:
+        - pattern: 'ios-*'
+          include: true
     environment:
       node: 20
       xcode: latest
       cocoapods: default
     scripts:
-      - name: Install npm dependencies including NetInfo
+      - name: Install JS dependencies
         script: |
-          npm install
-          npm install @react-native-community/netinfo
-      - name: Install CocoaPods dependencies
+          npm install --legacy-peer-deps
+      - name: Install CocoaPods
         script: |
-          cd ios && pod install
-      - name: Generate PocketMind Icon Assets and Configure Xcode Project
-        script: |
-          cat << 'EOF' > make_icon.swift
-          import Foundation
-          import CoreGraphics
-          import ImageIO
-
-          let size = 1024
-          let colorSpace = CGColorSpaceCreateDeviceRGB()
-          let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
-          guard let ctx = CGContext(
-            data: nil,
-            width: size,
-            height: size,
-            bitsPerComponent: 8,
-            bytesPerRow: size * 4,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo
-          ) else { exit(1) }
-
-          let colors = [
-            CGColor(red: 0.06, green: 0.09, blue: 0.09, alpha: 1.0),
-            CGColor(red: 0.05, green: 0.22, blue: 0.18, alpha: 1.0)
-          ] as CFArray
-          if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors, locations: [0.0, 1.0]) {
-            ctx.drawLinearGradient(
-              gradient,
-              start: CGPoint(x: 0, y: CGFloat(size)),
-              end: CGPoint(x: CGFloat(size), y: 0),
-              options: []
-            )
-          }
-
-          ctx.setStrokeColor(CGColor(red: 0.063, green: 0.639, blue: 0.498, alpha: 0.65))
-          ctx.setLineWidth(28)
-          ctx.strokeEllipse(in: CGRect(x: 156, y: 156, width: 712, height: 712))
-
-          let cx: CGFloat = 512
-          let cy: CGFloat = 512
-          let outer: CGFloat = 260
-          let inner: CGFloat = 68
-
-          ctx.beginPath()
-          ctx.move(to: CGPoint(x: cx, y: cy + outer))
-          ctx.quadCurve(to: CGPoint(x: cx + outer, y: cy), control: CGPoint(x: cx + inner, y: cy + inner))
-          ctx.quadCurve(to: CGPoint(x: cx, y: cy - outer), control: CGPoint(x: cx + inner, y: cy - inner))
-          ctx.quadCurve(to: CGPoint(x: cx - outer, y: cy), control: CGPoint(x: cx - inner, y: cy - inner))
-          ctx.quadCurve(to: CGPoint(x: cx, y: cy + outer), control: CGPoint(x: cx - inner, y: cy + inner))
-          ctx.closePath()
-          ctx.setFillColor(CGColor(red: 0.97, green: 0.99, blue: 0.98, alpha: 1.0))
-          ctx.fillPath()
-
-          guard let image = ctx.makeImage() else { exit(1) }
-          let url = URL(fileURLWithPath: "master-icon-1024.png")
-          guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else { exit(1) }
-          CGImageDestinationAddImage(dest, image, nil)
-          if !CGImageDestinationFinalize(dest) { exit(1) }
-          EOF
-          swift make_icon.swift
-
-          mkdir -p ios/PocketMind/Images.xcassets/AppIcon.appiconset
-          ICON_DIRS=$(find ios -type d -name "AppIcon.appiconset")
-          for DIR in $ICON_DIRS; do
-            echo "Populating $DIR"
-            cp master-icon-1024.png "$DIR/icon-1024.png"
-            sips -z 40 40 master-icon-1024.png --out "$DIR/icon-40.png"
-            sips -z 58 58 master-icon-1024.png --out "$DIR/icon-58.png"
-            sips -z 60 60 master-icon-1024.png --out "$DIR/icon-60.png"
-            sips -z 80 80 master-icon-1024.png --out "$DIR/icon-80.png"
-            sips -z 87 87 master-icon-1024.png --out "$DIR/icon-87.png"
-            sips -z 120 120 master-icon-1024.png --out "$DIR/icon-120.png"
-            sips -z 152 152 master-icon-1024.png --out "$DIR/icon-152.png"
-            sips -z 167 167 master-icon-1024.png --out "$DIR/icon-167.png"
-            sips -z 180 180 master-icon-1024.png --out "$DIR/icon-180.png"
-            cat << 'EOF' > "$DIR/Contents.json"
-          {
-            "images" : [
-              { "filename" : "icon-40.png", "idiom" : "iphone", "scale" : "2x", "size" : "20x20" },
-              { "filename" : "icon-60.png", "idiom" : "iphone", "scale" : "3x", "size" : "20x20" },
-              { "filename" : "icon-58.png", "idiom" : "iphone", "scale" : "2x", "size" : "29x29" },
-              { "filename" : "icon-87.png", "idiom" : "iphone", "scale" : "3x", "size" : "29x29" },
-              { "filename" : "icon-80.png", "idiom" : "iphone", "scale" : "2x", "size" : "40x40" },
-              { "filename" : "icon-120.png", "idiom" : "iphone", "scale" : "3x", "size" : "40x40" },
-              { "filename" : "icon-120.png", "idiom" : "iphone", "scale" : "2x", "size" : "60x60" },
-              { "filename" : "icon-180.png", "idiom" : "iphone", "scale" : "3x", "size" : "60x60" },
-              { "filename" : "icon-152.png", "idiom" : "ipad", "scale" : "2x", "size" : "76x76" },
-              { "filename" : "icon-167.png", "idiom" : "ipad", "scale" : "2x", "size" : "83.5x83.5" },
-              { "filename" : "icon-1024.png", "idiom" : "ios-marketing", "scale" : "1x", "size" : "1024x1024" }
-            ],
-            "info" : { "author" : "xcode", "version" : 1 }
-          }
-          EOF
-          done
-
-          python3 -c '
-          p = "ios/PocketMind.xcodeproj/project.pbxproj"
-          with open(p, "r") as f:
-              s = f.read()
-          if "ASSETCATALOG_COMPILER_APPICON_NAME" not in s:
-              s = s.replace("PRODUCT_NAME = PocketMind;", "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;\n\t\t\t\tPRODUCT_NAME = PocketMind;")
-              with open(p, "w") as f:
-                  f.write(s)
-          '
+          cd ios
+          pod install
       - name: Build unsigned iOS archive
         script: |
-          xcodebuild archive \
-            -workspace ios/PocketMind.xcworkspace \
-            -scheme PocketMind \
+          cd ios
+          WORKSPACE=$(find . -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          echo "Building workspace: $WORKSPACE, scheme: $SCHEME"
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
-            -archivePath build/PocketMind.xcarchive \
-            ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon \
+            -archivePath "$CM_BUILD_DIR/build/PocketMind.xcarchive" \
+            archive \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
-      - name: Compile Assets.car with actool and Embed Entitlements
+      - name: Package IPA for SideStore / AltStore
         script: |
-          APP_DIR="build/PocketMind.xcarchive/Products/Applications/PocketMind.app"
-          PLIST="$APP_DIR/Info.plist"
-          XCASSETS=$(find ios/PocketMind -maxdepth 2 -name "*.xcassets" | head -n 1)
-
-          /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$PLIST" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Delete :CFBundleIcons" "$PLIST" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Delete :CFBundleIcons~ipad" "$PLIST" 2>/dev/null || true
-
-          xcrun actool --compile "$APP_DIR" "$XCASSETS" \
-            --platform iphoneos \
-            --minimum-deployment-target 15.0 \
-            --app-icon AppIcon \
-            --output-partial-info-plist build/icon-partial.plist
-
-          if [ -f build/icon-partial.plist ]; then
-            /usr/libexec/PlistBuddy -c "Merge build/icon-partial.plist" "$PLIST"
-          fi
-
-          printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n\t<key>com.apple.developer.kernel.increased-memory-limit</key>\n\t<true/>\n</dict>\n</plist>\n' > ios/PocketMind/PocketMind.entitlements
-          plutil -lint ios/PocketMind/PocketMind.entitlements
-          codesign --force --sign - \
-            --entitlements ios/PocketMind/PocketMind.entitlements \
-            "$APP_DIR"
-      - name: Package IPA
-        script: |
-          mkdir -p build/ipa/Payload
-          cp -r build/PocketMind.xcarchive/Products/Applications/PocketMind.app build/ipa/Payload/
-          cd build/ipa && zip -r ../PocketMind-unsigned.ipa Payload
+          mkdir -p "$CM_BUILD_DIR/build/Payload"
+          cp -r "$CM_BUILD_DIR/build/PocketMind.xcarchive/Products/Applications/"*.app "$CM_BUILD_DIR/build/Payload/"
+          cd "$CM_BUILD_DIR/build"
+          zip -r PocketMind-iOS.ipa Payload
     artifacts:
-      - build/PocketMind-unsigned.ipa
+      - build/PocketMind-iOS.ipa
