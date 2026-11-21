@@ -8,11 +8,13 @@ import {
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
+  Share,
   StatusBar,
   StyleSheet,
   Switch,
@@ -37,46 +39,71 @@ try {
 type ModelKey = 'allrounder' | 'math' | 'korean';
 type SelectionMode = 'auto' | ModelKey;
 type PromptFormat = 'chatml' | 'exaone';
-type PluginCategory = 'realtime' | 'compute' | 'productivity';
-type PluginKey =
-  | 'memory_core'
-  | 'code_interpreter'
-  | 'live_weather'
-  | 'live_currency'
-  | 'doc_reader'
-  | 'unit_timezone'
-  | 'calculator'
-  | 'url_reader'
-  | 'datetime_tool'
-  | 'clipboard_reader';
+type IntegrationKey =
+  | 'github'
+  | 'google'
+  | 'notion'
+  | 'web_reader'
+  | 'calendar'
+  | 'weather'
+  | 'finance'
+  | 'knowledge'
+  | 'reminders'
+  | 'kakao';
 
-interface WebSearchSource {
-  title: string;
-  snippet: string;
-  url: string;
+interface GoogleIntegrationState {
+  enabled: boolean;
+  accessToken: string;
+  accountNote: string;
 }
 
-interface PluginSpec {
-  key: PluginKey;
-  category: PluginCategory;
-  icon: string;
-  title: string;
-  desc: string;
-  requiresInternet: boolean;
-  samplePrompt: string;
+interface KakaoIntegrationState {
+  enabled: boolean;
+  accessToken: string;
+  nicknameNote: string;
 }
 
-interface MemoryItem {
+interface GitHubIntegrationState {
+  enabled: boolean;
+  repo: string;
+  token: string;
+}
+
+interface NotionIntegrationState {
+  enabled: boolean;
+  token: string;
+  workspaceNote: string;
+}
+
+interface SimplePluginState {
+  enabled: boolean;
+}
+
+interface IntegrationsBundle {
+  github: GitHubIntegrationState;
+  google: GoogleIntegrationState;
+  notion: NotionIntegrationState;
+  web_reader: SimplePluginState;
+  calendar: SimplePluginState;
+  weather: SimplePluginState;
+  finance: SimplePluginState;
+  knowledge: SimplePluginState;
+  reminders: SimplePluginState;
+  kakao: KakaoIntegrationState;
+}
+
+interface TodoItem {
   id: string;
-  fact: string;
+  text: string;
+  done: boolean;
   createdAt: number;
 }
 
-interface LocalDocItem {
-  id: string;
-  name: string;
-  content: string;
-  updatedAt: number;
+interface CalendarEventDraft {
+  title: string;
+  startDate: Date;
+  endDate: Date;
+  displayText: string;
 }
 
 interface SuggestionItem {
@@ -107,10 +134,10 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
-  attachedDocName?: string;
   orchestrationLabel?: string;
-  pluginBadges?: string[];
-  webSources?: WebSearchSource[];
+  integrationBadges?: string[];
+  calendarDraft?: CalendarEventDraft;
+  hasTodoCard?: boolean;
   stage1Title?: string;
   stage1Content?: string;
 }
@@ -148,7 +175,7 @@ const MODELS: Record<ModelKey, ModelSpec> = {
     url: 'https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf',
     promptFormat: 'chatml',
     systemPrompt:
-      '당신은 아이폰 16 Pro 온디바이스 환경에서 동작하는 플래그십 AI 어시스턴트 PocketMind입니다. 한국어로 명확하고 깊이 있게 답변하며, 코드는 마크다운 코드 블록으로 감싸서 제공하세요.',
+      '당신은 아이폰 16 Pro 온디바이스 환경에서 동작하는 AI 어시스턴트 PocketMind입니다. 연동된 GitHub, Google, Notion, 실시간 날씨, 환율·시세, 뉴스·위키, 웹페이지, 캘린더, 할 일 데이터를 정확히 반영해 한국어로 명확하게 답변하세요.',
   },
   math: {
     key: 'math',
@@ -156,7 +183,7 @@ const MODELS: Record<ModelKey, ModelSpec> = {
     badgeColor: '#3B82F6',
     title: 'Qwen2.5-Math 7B',
     shortTitle: 'Math 7B',
-    subtitle: '고난도 방정식·미적분·확률·단계별 수리 증명 특화 모델',
+    subtitle: '고난도 방정식·미적분·환율/투자 계산·단계별 수리 증명 특화 모델',
     sizeLabel: '4.68 GB',
     expectedBytes: 4680000000,
     minBytes: 2300 * 1024 * 1024,
@@ -164,7 +191,7 @@ const MODELS: Record<ModelKey, ModelSpec> = {
     url: 'https://huggingface.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF/resolve/main/Qwen2.5-Math-7B-Instruct-Q4_K_M.gguf',
     promptFormat: 'chatml',
     systemPrompt:
-      '당신은 수학 및 수리 논리 추론 전문 AI입니다. 모든 수리 문제는 풀이 과정을 단계별(Step-by-step)로 엄밀하게 전개하고 검산한 뒤 최종 정답을 명확히 도출하세요.',
+      '당신은 수학 및 수리 논리 추론 전문 AI입니다. 모든 수리·금융 계산 문제는 풀이 과정을 단계별(Step-by-step)로 엄밀하게 전개하고 검산한 뒤 최종 정답을 명확히 도출하세요.',
   },
   korean: {
     key: 'korean',
@@ -172,7 +199,7 @@ const MODELS: Record<ModelKey, ModelSpec> = {
     badgeColor: '#A855F7',
     title: 'LG EXAONE 3.5 7.8B',
     shortTitle: 'EXAONE 7.8B',
-    subtitle: 'LG AI 연구원 7.8B · 최상급 한국어 작문·윤문·문맥 이해',
+    subtitle: 'LG AI 연구원 7.8B · 최상급 한국어 작문·뉴스 브리핑·문맥 이해',
     sizeLabel: '4.77 GB',
     expectedBytes: 4770000000,
     minBytes: 2300 * 1024 * 1024,
@@ -180,137 +207,44 @@ const MODELS: Record<ModelKey, ModelSpec> = {
     url: 'https://huggingface.co/bartowski/EXAONE-3.5-7.8B-Instruct-GGUF/resolve/main/EXAONE-3.5-7.8B-Instruct-Q4_K_M.gguf',
     promptFormat: 'exaone',
     systemPrompt:
-      '당신은 LG AI Research에서 개발한 한국어 특화 언어모델 EXAONE입니다. 유려하고 정확한 한국어 문장과 어휘를 구사하며, 사용자의 의도를 깊이 파악해 품격 있고 논리적으로 답변합니다.',
+      '당신은 LG AI Research에서 개발한 한국어 특화 언어모델 EXAONE입니다. 유려하고 정확한 한국어 문장과 어휘를 구사하며, 실시간 검색·연동 데이터를 바탕으로 품격 있고 논리적으로 답변합니다.',
   },
 };
 
 const MODEL_ORDER: ModelKey[] = ['allrounder', 'math', 'korean'];
 
-const PLUGINS: PluginSpec[] = [
-  {
-    key: 'memory_core',
-    category: 'productivity',
-    icon: '🧠',
-    title: '장기 메모리 (ChatGPT Memory)',
-    desc: '사용자의 선호·프로필·지시사항을 기기에 기억해 모든 대화에서 맥락 유지',
-    requiresInternet: false,
-    samplePrompt: '내가 아이폰 16 Pro를 쓰고 있고 간결한 두괄식 답변을 선호한다는 걸 기억해 줘.',
-  },
-  {
-    key: 'code_interpreter',
-    category: 'compute',
-    icon: '💻',
-    title: '코드 인터프리터 · 데이터 실행기',
-    desc: 'JS 수식·배열 통계(평균·표준편차)·JSON 연산을 로컬 샌드박스에서 실제 실행 검증',
-    requiresInternet: false,
-    samplePrompt: '데이터 [82, 95, 78, 91, 88, 100, 74]의 평균, 중앙값, 표준편차를 계산해서 분석해 줘.',
-  },
-  {
-    key: 'live_weather',
-    category: 'realtime',
-    icon: '🌤️',
-    title: '실시간 세계 날씨 · 기상 브리핑',
-    desc: '서울·청주·제주·도쿄·뉴욕 등 도시의 실시간 기온·습도·풍속·예보 조회',
-    requiresInternet: true,
-    samplePrompt: '지금 서울과 도쿄의 실시간 날씨와 기온을 비교해서 알려줘.',
-  },
-  {
-    key: 'live_currency',
-    category: 'realtime',
-    icon: '💱',
-    title: '실시간 환율 · 통화 변환기',
-    desc: 'USD·JPY·EUR·CNY 등 실시간 기준 환율을 조회해 원화(KRW) 환산값 자동 계산',
-    requiresInternet: true,
-    samplePrompt: '지금 환율 기준으로 1,250달러와 85,000엔이 각각 한국 돈으로 얼마인지 계산해 줘.',
-  },
-  {
-    key: 'doc_reader',
-    category: 'productivity',
-    icon: '📄',
-    title: '로컬 문서 보관함 · 파일 분석',
-    desc: 'TXT·CSV·Markdown 문서를 보관함에 저장하고 대화에 첨부해 요약·질의응답',
-    requiresInternet: false,
-    samplePrompt: '보관함 문서를 첨부해 핵심 내용 3줄 요약과 실행 항목을 뽑아줘.',
-  },
-  {
-    key: 'unit_timezone',
-    category: 'compute',
-    icon: '⚖️',
-    title: '단위 · 세계 시차 · 인코더 변환기',
-    desc: 'km↔mile, kg↔lb, °C↔°F, 세계 주요 도시 시각, Base64 변환 즉시 처리',
-    requiresInternet: false,
-    samplePrompt: '화씨 86도는 섭씨 몇 도이고, 42.195km는 몇 마일인지 변환해 줘.',
-  },
-  {
-    key: 'calculator',
-    category: 'compute',
-    icon: '🧮',
-    title: '정밀 수식 계산기',
-    desc: '사칙연산·거듭제곱·퍼센트 식을 오차 없이 선계산해 AI 추론 정확도 보강',
-    requiresInternet: false,
-    samplePrompt: '(148500 * 1.1) - (24500 * 3) 값을 정확히 계산하고 내역을 설명해 줘.',
-  },
-  {
-    key: 'url_reader',
-    category: 'realtime',
-    icon: '🔗',
-    title: '웹페이지 URL 요약기',
-    desc: '메시지에 포함된 https:// 링크의 본문을 직접 읽어 핵심 내용 요약',
-    requiresInternet: true,
-    samplePrompt: 'https://ko.wikipedia.org/wiki/인공지능 페이지의 핵심 내용을 요약해 줘.',
-  },
-  {
-    key: 'datetime_tool',
-    category: 'productivity',
-    icon: '📅',
-    title: '현재 시각 · D-Day 엔진',
-    desc: '정확한 한국 표준시(KST) 날짜·요일 및 특정 날짜까지의 D-Day 일수 계산',
-    requiresInternet: false,
-    samplePrompt: '오늘 정확한 날짜와 요일을 알려주고 올해 말까지 며칠 남았는지 계산해 줘.',
-  },
-  {
-    key: 'clipboard_reader',
-    category: 'productivity',
-    icon: '📋',
-    title: '클립보드 스마트 분석',
-    desc: '아이폰 클립보드에 복사된 텍스트를 원탭으로 불러와 요약·번역·교정',
-    requiresInternet: false,
-    samplePrompt: '클립보드 내용을 불러와 자연스러운 한국어로 다듬어 줘.',
-  },
-];
-
-const AUTO_SUGGESTIONS: SuggestionItem[] = [
+const INTEGRATION_SUGGESTIONS: SuggestionItem[] = [
   {
     badge: '🌤️ 실시간 날씨 + EXAONE 7.8B',
-    title: '실시간 도시 날씨 및 옷차림 추천',
-    desc: '기상 플러그인이 현재 기온·습도를 조회하고 한국어로 브리핑',
-    prompt: '지금 서울 실시간 날씨와 기온, 습도를 확인하고 오늘 외출 옷차림을 추천해 줘.',
+    title: '오늘 서울·청주 실시간 날씨와 옷차림 추천',
+    desc: '기온·습도·강수 확률을 실시간 조회해 외출 브리핑 생성',
+    prompt: '오늘 서울 실시간 날씨와 기온을 확인하고 옷차림을 추천해 줘.',
   },
   {
-    badge: '💻 코드 인터프리터 + Math 7B',
-    title: '데이터 통계 실행 및 수리 분석',
-    desc: '로컬 샌드박스에서 평균·표준편차를 실행 검증한 뒤 심층 해석',
-    prompt: '데이터 [82, 95, 78, 91, 88, 100, 74]의 평균, 중앙값, 표준편차를 계산해서 분석해 줘.',
+    badge: '💱 실시간 환율·시세 + Math 7B',
+    title: '실시간 달러·엔화 환율 및 비트코인 시세 계산',
+    desc: '현재 시장 환율을 불러와 원화 환산 금액까지 정밀 계산',
+    prompt: '오늘 실시간 달러·엔화 환율과 비트코인 시세를 확인하고 1,500달러가 원화로 얼마인지 계산해 줘.',
   },
   {
-    badge: '💱 실시간 환율 + 복합 협업',
-    title: '외화 환율 자동 환산 및 예산 보고서',
-    desc: '실시간 환율 조회 후 Math 7B 검증 + EXAONE 한국어 정리',
-    prompt: '지금 환율 기준으로 1,250달러와 85,000엔이 각각 한국 돈으로 얼마인지 계산하고 여행 예산 안내문으로 정리해 줘.',
+    badge: '📰 실시간 뉴스 + EXAONE 7.8B',
+    title: '오늘 대한민국 주요 뉴스 헤드라인 브리핑',
+    desc: '최신 실시간 뉴스 피드를 수집해 핵심 이슈만 깔끔하게 요약',
+    prompt: '오늘 주요 실시간 뉴스 헤드라인을 모아서 핵심만 브리핑해 줘.',
   },
   {
-    badge: '🧠 장기 메모리 + Qwen3 8B',
-    title: '나만의 AI 맞춤 설정 기억시키기',
-    desc: 'ChatGPT 메모리처럼 내 선호와 작업 환경을 기기에 영구 저장',
-    prompt: '내가 아이폰 16 Pro를 쓰고 있고 코딩 답변은 핵심 코드와 간단한 설명 위주로 받는 걸 좋아한다고 기억해 줘.',
+    badge: '✅ 할 일 · 📅 캘린더 연동',
+    title: '할 일 체크리스트 등록 및 iOS 캘린더 일정 추가',
+    desc: '대화 속 할 일과 약속을 자동으로 추출해 체크리스트·캘린더에 등록',
+    prompt: '프로젝트 코드 리뷰, 운동하기, 내일 오후 3시 팀 미팅을 할 일에 추가해 줘.',
   },
 ];
 
-const STORAGE_SESSIONS_KEY = '@pocketmind_sessions_v5';
-const STORAGE_MODE_KEY = '@pocketmind_selection_mode_v5';
-const STORAGE_SETTINGS_KEY = '@pocketmind_settings_v5';
-const STORAGE_MEMORY_KEY = '@pocketmind_memory_v5';
-const STORAGE_DOCS_KEY = '@pocketmind_docs_v5';
+const STORAGE_SESSIONS_KEY = '@pocketmind_sessions_v8';
+const STORAGE_MODE_KEY = '@pocketmind_selection_mode_v8';
+const STORAGE_SETTINGS_KEY = '@pocketmind_settings_v8';
+const STORAGE_INTEGRATIONS_KEY = '@pocketmind_integrations_v8';
+const STORAGE_TODOS_KEY = '@pocketmind_todos_v8';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const DRAWER_WIDTH = Math.min(295, SCREEN_WIDTH * 0.8);
@@ -331,11 +265,13 @@ function cleanModelOutput(raw: string): string {
 
 function decodeHtmlEntities(str: string): string {
   return str
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
     .replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -343,470 +279,6 @@ function decodeHtmlEntities(str: string): string {
 
 function stripHtmlTags(html: string): string {
   return decodeHtmlEntities(html.replace(/<[^>]*>/g, ' '));
-}
-
-function safeEvaluateMath(promptText: string): string | null {
-  const candidates = promptText.match(/[0-9().+\-*/%^ ]{3,}/g);
-  if (!candidates) return null;
-
-  const validExpr = candidates
-    .map((c) => c.trim())
-    .find((c) => /\d+\s*[+\-*/%^]\s*\d+/.test(c));
-  if (!validExpr) return null;
-
-  const sanitized = validExpr.replace(/\^/g, '**').replace(/%/g, '/100');
-  if (!/^[0-9().+\-*/\s]+$/.test(sanitized)) return null;
-
-  try {
-    // eslint-disable-next-line no-new-func
-    const fn = new Function(`"use strict"; return (${sanitized});`);
-    const result = fn();
-    if (typeof result === 'number' && Number.isFinite(result)) {
-      const rounded = Number.isInteger(result)
-        ? String(result)
-        : Number(result.toFixed(6)).toString();
-      return `${validExpr} = ${rounded}`;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function runCodeInterpreterSandbox(promptText: string): string | null {
-  // 1. 배열 통계 분석 감지 ([10, 20, 30, ...])
-  const arrayMatch = promptText.match(/\[\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?){2,}\s*\]/);
-  if (arrayMatch) {
-    try {
-      const nums: number[] = JSON.parse(arrayMatch[0]);
-      if (Array.isArray(nums) && nums.length >= 3) {
-        const n = nums.length;
-        const sum = nums.reduce((acc, v) => acc + v, 0);
-        const mean = sum / n;
-        const sorted = [...nums].sort((a, b) => a - b);
-        const median =
-          n % 2 === 1
-            ? sorted[Math.floor(n / 2)]
-            : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
-        const variance =
-          nums.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / n;
-        const stdDev = Math.sqrt(variance);
-        const min = sorted[0];
-        const max = sorted[n - 1];
-        return (
-          `배열 데이터(N=${n}): [${nums.join(', ')}]\n` +
-          `• 합계: ${Number(sum.toFixed(4))}\n` +
-          `• 평균(Mean): ${Number(mean.toFixed(4))}\n` +
-          `• 중앙값(Median): ${Number(median.toFixed(4))}\n` +
-          `• 모표준편차(SD): ${Number(stdDev.toFixed(4))}\n` +
-          `• 최솟값 / 최댓값: ${min} / ${max}`
-        );
-      }
-    } catch {
-      // 무시
-    }
-  }
-
-  // 2. JS 코드 블록 실행 감지 (```js ... ``` 또는 ```javascript ... ```)
-  const fence = '\x60\x60\x60';
-  const jsBlockRegex = new RegExp(
-    fence + '(?:js|javascript)\\n([\\s\\S]*?)' + fence,
-    'i',
-  );
-  const codeMatch = promptText.match(jsBlockRegex);
-  if (codeMatch && codeMatch[1]) {
-    const code = codeMatch[1];
-    const forbidden =
-      /(fetch|XMLHttpRequest|require|import|process|global|window|eval|Function|AsyncStorage|RNFS)/;
-    if (!forbidden.test(code) && code.length <= 1200) {
-      try {
-        const logs: string[] = [];
-        const sandboxConsole = {
-          log: (...args: any[]) => logs.push(args.map((a) => String(a)).join(' ')),
-        };
-        // eslint-disable-next-line no-new-func
-        const runner = new Function('console', `"use strict";\n${code}`);
-        const ret = runner(sandboxConsole);
-        const outputParts: string[] = [];
-        if (logs.length > 0) outputParts.push(`console.log 출력:\n${logs.join('\n')}`);
-        if (ret !== undefined) outputParts.push(`반환값: ${JSON.stringify(ret)}`);
-        if (outputParts.length > 0) {
-          return outputParts.join('\n');
-        }
-      } catch (err) {
-        return `샌드박스 실행 오류: ${String(err)}`;
-      }
-    }
-  }
-
-  return null;
-}
-
-function runUnitAndTimezoneConverter(promptText: string): string | null {
-  const results: string[] = [];
-
-  // 온도 변환 (°C <-> °F)
-  const fMatch = promptText.match(/화씨\s*(-?\d+(?:\.\d+)?)\s*도?|(-?\d+(?:\.\d+)?)\s*°?\s*F\b/i);
-  if (fMatch) {
-    const f = parseFloat(fMatch[1] ?? fMatch[2]);
-    if (!Number.isNaN(f)) {
-      const c = ((f - 32) * 5) / 9;
-      results.push(`화씨 ${f}°F = 섭씨 ${c.toFixed(2)}°C`);
-    }
-  }
-  const cMatch = promptText.match(/섭씨\s*(-?\d+(?:\.\d+)?)\s*도?|(-?\d+(?:\.\d+)?)\s*°?\s*C\b/i);
-  if (cMatch) {
-    const c = parseFloat(cMatch[1] ?? cMatch[2]);
-    if (!Number.isNaN(c)) {
-      const f = (c * 9) / 5 + 32;
-      results.push(`섭씨 ${c}°C = 화씨 ${f.toFixed(2)}°F`);
-    }
-  }
-
-  // 거리 변환 (km <-> mile)
-  const kmMatch = promptText.match(/(\d+(?:\.\d+)?)\s*(?:km|킬로미터)/i);
-  if (kmMatch && /(마일|mile|변환|환산)/i.test(promptText)) {
-    const km = parseFloat(kmMatch[1]);
-    results.push(`${km} km = ${(km * 0.621371).toFixed(4)} miles`);
-  }
-  const mileMatch = promptText.match(/(\d+(?:\.\d+)?)\s*(?:miles?|마일)/i);
-  if (mileMatch && /(km|킬로|변환|환산)/i.test(promptText)) {
-    const mi = parseFloat(mileMatch[1]);
-    results.push(`${mi} miles = ${(mi * 1.609344).toFixed(4)} km`);
-  }
-
-  // 무게 변환 (kg <-> lb)
-  const kgMatch = promptText.match(/(\d+(?:\.\d+)?)\s*(?:kg|킬로그램)/i);
-  if (kgMatch && /(파운드|lb|lbs|변환|환산)/i.test(promptText)) {
-    const kg = parseFloat(kgMatch[1]);
-    results.push(`${kg} kg = ${(kg * 2.20462).toFixed(3)} lbs`);
-  }
-  const lbMatch = promptText.match(/(\d+(?:\.\d+)?)\s*(?:lbs?|파운드)/i);
-  if (lbMatch && /(kg|킬로|변환|환산)/i.test(promptText)) {
-    const lb = parseFloat(lbMatch[1]);
-    results.push(`${lb} lbs = ${(lb * 0.453592).toFixed(3)} kg`);
-  }
-
-  // 세계 주요 도시 시각
-  if (/(뉴욕|런던|도쿄|파리|시차|현지\s*시간|세계\s*시간)/i.test(promptText)) {
-    const now = new Date();
-    const formatZone = (offsetHours: number, label: string) => {
-      const d = new Date(now.getTime() + offsetHours * 3600 * 1000);
-      const hh = String(d.getUTCHours()).padStart(2, '0');
-      const mm = String(d.getUTCMinutes()).padStart(2, '0');
-      const mo = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const da = String(d.getUTCDate()).padStart(2, '0');
-      return `${label} ${mo}/${da} ${hh}:${mm}`;
-    };
-    results.push(
-      `세계 주요 도시 현재 시각: ${formatZone(9, '서울/도쿄(UTC+9)')}, ${formatZone(
-        0,
-        '런던(UTC+0)',
-      )}, ${formatZone(-5, '뉴욕(EST, UTC-5)')}`,
-    );
-  }
-
-  return results.length > 0 ? results.join(' | ') : null;
-}
-
-function getKoreanDateTimeContext(): string {
-  const now = new Date();
-  const kstMs = now.getTime() + 9 * 60 * 60 * 1000;
-  const kst = new Date(kstMs);
-  const days = ['일', '월', '화', '수', '목', '금', '토'];
-  const y = kst.getUTCFullYear();
-  const m = String(kst.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(kst.getUTCDate()).padStart(2, '0');
-  const hh = String(kst.getUTCHours()).padStart(2, '0');
-  const mm = String(kst.getUTCMinutes()).padStart(2, '0');
-  const dayName = days[kst.getUTCDay()];
-
-  const endOfYear = Date.UTC(y, 11, 31, 23, 59, 59);
-  const todayUtc = Date.UTC(y, kst.getUTCMonth(), kst.getUTCDate());
-  const daysLeftInYear = Math.max(
-    0,
-    Math.ceil((endOfYear - todayUtc) / (1000 * 60 * 60 * 24)),
-  );
-
-  return `${y}년 ${m}월 ${d}일 (${dayName}요일) ${hh}:${mm} KST (올해 말까지 D-${daysLeftInYear})`;
-}
-
-function extractMemoryFactFromPrompt(promptText: string): string | null {
-  const trimmed = promptText.trim();
-  const triggerRegex =
-    /(기억해\s*줘|기억해줘|기억해\s*둬|메모해\s*줘|메모해줘|잊지\s*마|저장해\s*줘)/i;
-  if (!triggerRegex.test(trimmed)) return null;
-
-  const cleaned = trimmed
-    .replace(triggerRegex, '')
-    .replace(/^(내가|나는|앞으로)\s*/i, '')
-    .replace(/라는\s*걸\s*$/i, '')
-    .replace(/라고\s*$/i, '')
-    .replace(/[.!?]+$/, '')
-    .trim();
-
-  if (cleaned.length < 3 || cleaned.length > 180) return null;
-  return cleaned;
-}
-
-const CITY_COORDS: Array<{ keywords: string[]; name: string; lat: number; lon: number }> = [
-  { keywords: ['서울', 'seoul'], name: '서울', lat: 37.5665, lon: 126.978 },
-  { keywords: ['청주', 'cheongju'], name: '청주', lat: 36.6424, lon: 127.489 },
-  { keywords: ['부산', 'busan'], name: '부산', lat: 35.1796, lon: 129.0756 },
-  { keywords: ['제주', 'jeju'], name: '제주', lat: 33.4996, lon: 126.5312 },
-  { keywords: ['인천', 'incheon'], name: '인천', lat: 37.4563, lon: 126.7052 },
-  { keywords: ['대구', 'daegu'], name: '대구', lat: 35.8714, lon: 128.6014 },
-  { keywords: ['대전', 'daejeon'], name: '대전', lat: 36.3504, lon: 127.3845 },
-  { keywords: ['광주', 'gwangju'], name: '광주', lat: 35.1595, lon: 126.8526 },
-  { keywords: ['도쿄', 'tokyo'], name: '도쿄', lat: 35.6762, lon: 139.6503 },
-  { keywords: ['오사카', 'osaka'], name: '오사카', lat: 34.6937, lon: 135.5023 },
-  { keywords: ['뉴욕', 'new york'], name: '뉴욕', lat: 40.7128, lon: -74.006 },
-  { keywords: ['런던', 'london'], name: '런던', lat: 51.5074, lon: -0.1278 },
-  { keywords: ['파리', 'paris'], name: '파리', lat: 48.8566, lon: 2.3522 },
-  { keywords: ['방콕', 'bangkok'], name: '방콕', lat: 13.7563, lon: 100.5018 },
-];
-
-function weatherCodeToKorean(code: number): string {
-  if (code === 0) return '맑음';
-  if (code <= 3) return '구름 조금·흐림';
-  if (code === 45 || code === 48) return '안개';
-  if (code >= 51 && code <= 67) return '비·이슬비';
-  if (code >= 71 && code <= 77) return '눈';
-  if (code >= 80 && code <= 82) return '소나기';
-  if (code >= 95) return '뇌우';
-  return '대체로 흐림';
-}
-
-async function fetchLiveWeatherContext(promptText: string): Promise<string | null> {
-  if (!/(날씨|기온|온도|비\s*오|눈\s*오|미세먼지|옷차림|습도|weather)/i.test(promptText)) {
-    return null;
-  }
-
-  const lower = promptText.toLowerCase();
-  const matchedCities = CITY_COORDS.filter((c) =>
-    c.keywords.some((kw) => lower.includes(kw)),
-  );
-  const targets = matchedCities.length > 0 ? matchedCities.slice(0, 2) : [CITY_COORDS[0]];
-
-  const summaries: string[] = [];
-  for (const city of targets) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1`;
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timer);
-      if (res.ok) {
-        const data = await res.json();
-        const cur = data?.current;
-        const daily = data?.daily;
-        if (cur) {
-          const cond = weatherCodeToKorean(Number(cur.weather_code ?? 0));
-          const maxT = daily?.temperature_2m_max?.[0];
-          const minT = daily?.temperature_2m_min?.[0];
-          const rangeStr =
-            maxT !== undefined && minT !== undefined
-              ? ` (최저 ${minT}°C / 최고 ${maxT}°C)`
-              : '';
-          summaries.push(
-            `${city.name}: 현재 ${cur.temperature_2m}°C (체감 ${cur.apparent_temperature}°C), 상태 ${cond}, 습도 ${cur.relative_humidity_2m}%, 풍속 ${cur.wind_speed_10m}km/h${rangeStr}`,
-          );
-        }
-      }
-    } catch {
-      // 무시
-    }
-  }
-
-  return summaries.length > 0 ? summaries.join('\n') : null;
-}
-
-async function fetchLiveCurrencyContext(promptText: string): Promise<string | null> {
-  if (!/(환율|달러|usd|엔화|엔|jpy|유로|eur|위안|cny|파운드|gbp|외화)/i.test(promptText)) {
-    return null;
-  }
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6500);
-    const res = await fetch('https://open.er-api.com/v6/latest/USD', {
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) return null;
-
-    const json = await res.json();
-    const rates = json?.rates;
-    if (!rates || !rates.KRW) return null;
-
-    const krwPerUsd = Number(rates.KRW);
-    const krwPerJpy100 = (krwPerUsd / Number(rates.JPY)) * 100;
-    const krwPerEur = krwPerUsd / Number(rates.EUR);
-    const krwPerCny = krwPerUsd / Number(rates.CNY);
-
-    const lines: string[] = [
-      `실시간 기준 환율: 1 USD = ${krwPerUsd.toFixed(2)} KRW | 100 JPY = ${krwPerJpy100.toFixed(
-        2,
-      )} KRW | 1 EUR = ${krwPerEur.toFixed(2)} KRW | 1 CNY = ${krwPerCny.toFixed(2)} KRW`,
-    ];
-
-    // 프롬프트 내 외화 금액 자동 계산
-    const usdAmountMatch = promptText.match(/([\d,]+(?:\.\d+)?)\s*(?:달러|불|usd)/i);
-    if (usdAmountMatch) {
-      const amt = parseFloat(usdAmountMatch[1].replace(/,/g, ''));
-      if (!Number.isNaN(amt)) {
-        lines.push(
-          `• ${amt.toLocaleString()} USD = 약 ${Math.round(amt * krwPerUsd).toLocaleString()} 원`,
-        );
-      }
-    }
-
-    const jpyAmountMatch = promptText.match(/([\d,]+(?:\.\d+)?)\s*(?:엔|jpy)/i);
-    if (jpyAmountMatch) {
-      const amt = parseFloat(jpyAmountMatch[1].replace(/,/g, ''));
-      if (!Number.isNaN(amt)) {
-        const krwVal = (amt / 100) * krwPerJpy100;
-        lines.push(
-          `• ${amt.toLocaleString()} JPY = 약 ${Math.round(krwVal).toLocaleString()} 원`,
-        );
-      }
-    }
-
-    const eurAmountMatch = promptText.match(/([\d,]+(?:\.\d+)?)\s*(?:유로|eur)/i);
-    if (eurAmountMatch) {
-      const amt = parseFloat(eurAmountMatch[1].replace(/,/g, ''));
-      if (!Number.isNaN(amt)) {
-        lines.push(
-          `• ${amt.toLocaleString()} EUR = 약 ${Math.round(amt * krwPerEur).toLocaleString()} 원`,
-        );
-      }
-    }
-
-    return lines.join('\n');
-  } catch {
-    return null;
-  }
-}
-
-async function performLiveWebSearch(query: string): Promise<WebSearchSource[]> {
-  const results: WebSearchSource[] = [];
-  const cleanedQuery = query
-    .replace(/(검색해서|검색해\s*줘|검색해|알려줘|알려\s*줘|요약해\s*줘|찾아줘)/g, '')
-    .trim();
-  const searchQuery = cleanedQuery.length >= 2 ? cleanedQuery : query;
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 7000);
-    const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`;
-    const res = await fetch(ddgUrl, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-
-    if (res.ok) {
-      const html = await res.text();
-      const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
-      const snippetRegex = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-
-      const titles: Array<{ url: string; title: string }> = [];
-      const snippets: string[] = [];
-
-      let tMatch: RegExpExecArray | null;
-      while ((tMatch = titleRegex.exec(html)) !== null && titles.length < 4) {
-        titles.push({
-          url: decodeHtmlEntities(tMatch[1]),
-          title: stripHtmlTags(tMatch[2]),
-        });
-      }
-
-      let sMatch: RegExpExecArray | null;
-      while ((sMatch = snippetRegex.exec(html)) !== null && snippets.length < 4) {
-        snippets.push(stripHtmlTags(sMatch[1]));
-      }
-
-      for (let i = 0; i < titles.length; i++) {
-        if (titles[i].title && snippets[i]) {
-          results.push({
-            title: titles[i].title,
-            snippet: snippets[i],
-            url: titles[i].url,
-          });
-        }
-      }
-    }
-  } catch {
-    // 폴백으로 진행
-  }
-
-  if (results.length < 2) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
-      const wikiUrl = `https://ko.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(
-        searchQuery,
-      )}&srlimit=3&utf8=&format=json`;
-      const res = await fetch(wikiUrl, { signal: controller.signal });
-      clearTimeout(timer);
-
-      if (res.ok) {
-        const json = await res.json();
-        const items = json?.query?.search ?? [];
-        for (const item of items) {
-          if (results.length >= 4) break;
-          const cleanSnippet = stripHtmlTags(item.snippet || '');
-          if (item.title && cleanSnippet) {
-            results.push({
-              title: `${item.title} (위키백과)`,
-              snippet: cleanSnippet,
-              url: `https://ko.wikipedia.org/wiki/${encodeURIComponent(item.title)}`,
-            });
-          }
-        }
-      }
-    } catch {
-      // 무시
-    }
-  }
-
-  return results.slice(0, 4);
-}
-
-async function fetchUrlReadableText(url: string): Promise<{ url: string; text: string } | null> {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) return null;
-
-    const rawHtml = await res.text();
-    const noScript = rawHtml
-      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style[\s\S]*?<\/style>/gi, ' ');
-    const plain = stripHtmlTags(noScript).slice(0, 3200);
-    if (plain.length < 40) return null;
-    return { url, text: plain };
-  } catch {
-    return null;
-  }
-}
-
-function shouldTriggerWebSearch(promptText: string): boolean {
-  return /(검색|최신|오늘|현재|지금|요즘|뉴스|주가|실시간|순위|결과|발표|출시|근황|2025|2026|누구|어디|가격|시세)/i.test(
-    promptText,
-  );
 }
 
 function parseMessageBlocks(raw: string): ContentBlock[] {
@@ -844,6 +316,752 @@ function parseMessageBlocks(raw: string): ContentBlock[] {
   return blocks;
 }
 
+function normalizeGitHubRepo(rawInput: string): string {
+  const trimmed = rawInput.trim();
+  const urlMatch = trimmed.match(/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/i);
+  if (urlMatch) {
+    return urlMatch[1].replace(/\.git$/, '');
+  }
+  return trimmed.replace(/^\/+|\/+$/g, '');
+}
+
+async function fetchGitHubIntegrationContext(
+  promptText: string,
+  gh: GitHubIntegrationState,
+): Promise<{ contextText: string; badge: string } | null> {
+  if (!gh.enabled) return null;
+
+  const fileUrlMatch = promptText.match(
+    /https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/blob\/([^/\s]+)\/([^\s)]+)/i,
+  );
+  const repoUrlMatch = promptText.match(
+    /https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/i,
+  );
+  const mentionsGitHub =
+    /(깃허브|github|커밋|commit|이슈|issue|풀리퀘|pr|저장소|repo|레포|소스코드)/i.test(
+      promptText,
+    );
+
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'PocketMind-iOS',
+  };
+  if (gh.token.trim()) {
+    headers.Authorization = `Bearer ${gh.token.trim()}`;
+  }
+
+  if (fileUrlMatch) {
+    const repoPath = fileUrlMatch[1];
+    const branch = fileUrlMatch[2];
+    const filePath = fileUrlMatch[3];
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const rawUrl = `https://raw.githubusercontent.com/${repoPath}/${branch}/${filePath}`;
+      const res = await fetch(rawUrl, { headers, signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const codeText = (await res.text()).slice(0, 3600);
+        return {
+          contextText: `[GitHub 파일 원문: ${repoPath}/${filePath} (${branch})]\n${codeText}`,
+          badge: `🐙 GitHub (${filePath})`,
+        };
+      }
+    } catch {
+      // 폴백
+    }
+  }
+
+  const targetRepo = repoUrlMatch
+    ? repoUrlMatch[1].replace(/\.git$/, '')
+    : mentionsGitHub && gh.repo.trim()
+      ? normalizeGitHubRepo(gh.repo)
+      : '';
+
+  if (!targetRepo || !targetRepo.includes('/')) return null;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+
+    const [repoRes, commitsRes, issuesRes] = await Promise.all([
+      fetch(`https://api.github.com/repos/${targetRepo}`, {
+        headers,
+        signal: controller.signal,
+      }),
+      fetch(`https://api.github.com/repos/${targetRepo}/commits?per_page=5`, {
+        headers,
+        signal: controller.signal,
+      }),
+      fetch(`https://api.github.com/repos/${targetRepo}/issues?state=open&per_page=5`, {
+        headers,
+        signal: controller.signal,
+      }),
+    ]);
+    clearTimeout(timer);
+
+    if (!repoRes.ok) return null;
+
+    const repoData = await repoRes.json();
+    const commitsData = commitsRes.ok ? await commitsRes.json() : [];
+    const issuesData = issuesRes.ok ? await issuesRes.json() : [];
+
+    const lines: string[] = [
+      `[GitHub 저장소: ${repoData.full_name}]`,
+      `• 설명: ${repoData.description || '없음'}`,
+      `• 주 사용 언어: ${repoData.language || '미지정'} | ⭐ ${repoData.stargazers_count ?? 0} | 기본 브랜치: ${repoData.default_branch ?? 'main'}`,
+    ];
+
+    if (Array.isArray(commitsData) && commitsData.length > 0) {
+      lines.push('• 최근 커밋 내역:');
+      for (const c of commitsData.slice(0, 5)) {
+        const msg = String(c?.commit?.message || '').split('\n')[0];
+        const author = c?.commit?.author?.name || 'unknown';
+        const sha = String(c?.sha || '').slice(0, 7);
+        lines.push(`  - [${sha}] ${msg} (${author})`);
+      }
+    }
+
+    if (Array.isArray(issuesData) && issuesData.length > 0) {
+      const realIssues = issuesData.filter((it: any) => !it.pull_request);
+      if (realIssues.length > 0) {
+        lines.push('• 열린 이슈:');
+        for (const iss of realIssues.slice(0, 4)) {
+          lines.push(`  - #${iss.number} ${iss.title}`);
+        }
+      }
+    }
+
+    return {
+      contextText: lines.join('\n'),
+      badge: `🐙 GitHub (${repoData.full_name})`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchGoogleIntegrationContext(
+  promptText: string,
+  google: GoogleIntegrationState,
+): Promise<{ contextText: string; badge: string } | null> {
+  if (!google.enabled) return null;
+
+  const docsMatch = promptText.match(
+    /https?:\/\/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/i,
+  );
+  const sheetsMatch = promptText.match(
+    /https?:\/\/docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/i,
+  );
+  const driveFileMatch = promptText.match(
+    /https?:\/\/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/i,
+  );
+  const mentionsGoogleDrive =
+    /(구글\s*드라이브|google\s*drive|구글\s*문서|google\s*docs|구글\s*시트|내\s*드라이브)/i.test(
+      promptText,
+    );
+
+  const authHeaders: Record<string, string> = {};
+  if (google.accessToken.trim()) {
+    authHeaders.Authorization = `Bearer ${google.accessToken.trim()}`;
+  }
+
+  if (docsMatch) {
+    const docId = docsMatch[1];
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const exportUrl = google.accessToken.trim()
+        ? `https://www.googleapis.com/drive/v3/files/${docId}/export?mimeType=text/plain`
+        : `https://docs.google.com/document/d/${docId}/export?format=txt`;
+      const res = await fetch(exportUrl, {
+        headers: authHeaders,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        const text = (await res.text()).trim().slice(0, 3600);
+        if (text.length > 10 && !text.startsWith('<!DOCTYPE html')) {
+          return {
+            contextText: `[Google Docs 문서 내용 (ID: ${docId})]\n${text}`,
+            badge: '🔵 Google Docs',
+          };
+        }
+      }
+    } catch {
+      // 무시
+    }
+  }
+
+  if (sheetsMatch) {
+    const sheetId = sheetsMatch[1];
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const exportUrl = google.accessToken.trim()
+        ? `https://www.googleapis.com/drive/v3/files/${sheetId}/export?mimeType=text/csv`
+        : `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+      const res = await fetch(exportUrl, {
+        headers: authHeaders,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        const csvText = (await res.text()).trim().slice(0, 3600);
+        if (csvText.length > 5 && !csvText.startsWith('<!DOCTYPE html')) {
+          return {
+            contextText: `[Google Sheets 데이터 (ID: ${sheetId})]\n${csvText}`,
+            badge: '🔵 Google Sheets',
+          };
+        }
+      }
+    } catch {
+      // 무시
+    }
+  }
+
+  if (driveFileMatch && google.accessToken.trim()) {
+    const fileId = driveFileMatch[1];
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const metaRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,modifiedTime,size`,
+        { headers: authHeaders, signal: controller.signal },
+      );
+      clearTimeout(timer);
+      if (metaRes.ok) {
+        const meta = await metaRes.json();
+        return {
+          contextText: `[Google Drive 파일 정보]\n• 파일명: ${meta.name}\n• 형식: ${meta.mimeType}\n• 수정일: ${meta.modifiedTime}`,
+          badge: `🔵 Google Drive (${meta.name})`,
+        };
+      }
+    } catch {
+      // 무시
+    }
+  }
+
+  if (mentionsGoogleDrive && google.accessToken.trim()) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const listRes = await fetch(
+        'https://www.googleapis.com/drive/v3/files?pageSize=7&orderBy=modifiedTime desc&fields=files(id,name,mimeType,modifiedTime)',
+        { headers: authHeaders, signal: controller.signal },
+      );
+      clearTimeout(timer);
+      if (listRes.ok) {
+        const json = await listRes.json();
+        const files = json?.files ?? [];
+        if (files.length > 0) {
+          const listText = files
+            .map(
+              (f: any, i: number) =>
+                `${i + 1}. ${f.name} (${f.mimeType}, 수정: ${String(f.modifiedTime || '').slice(0, 10)})`,
+            )
+            .join('\n');
+          return {
+            contextText: `[연동된 Google Drive 최근 파일 목록]\n${listText}`,
+            badge: `🔵 Google Drive (${files.length}개 파일)`,
+          };
+        }
+      }
+    } catch {
+      // 무시
+    }
+  }
+
+  return null;
+}
+
+function extractNotionPageTitle(pageObj: any): string {
+  const props = pageObj?.properties ?? {};
+  for (const key of Object.keys(props)) {
+    const prop = props[key];
+    if (prop?.type === 'title' && Array.isArray(prop.title)) {
+      const joined = prop.title.map((t: any) => t?.plain_text || '').join('');
+      if (joined.trim()) return joined.trim();
+    }
+  }
+  return '제목 없는 페이지';
+}
+
+async function fetchNotionIntegrationContext(
+  promptText: string,
+  notion: NotionIntegrationState,
+): Promise<{ contextText: string; badge: string } | null> {
+  if (!notion.enabled || !notion.token.trim()) return null;
+  if (!/(노션|notion|워크스페이스|페이지|노트|회의록)/i.test(promptText)) {
+    return null;
+  }
+
+  const headers = {
+    Authorization: `Bearer ${notion.token.trim()}`,
+    'Notion-Version': '2022-06-28',
+    'Content-Type': 'application/json',
+  };
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const searchRes = await fetch('https://api.notion.com/v1/search', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        filter: { value: 'page', property: 'object' },
+        sort: { direction: 'descending', timestamp: 'last_edited_time' },
+        page_size: 4,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (!searchRes.ok) return null;
+    const data = await searchRes.json();
+    const pages = data?.results ?? [];
+    if (pages.length === 0) return null;
+
+    const lines: string[] = ['[연동된 Notion 최근 페이지 목록]'];
+    for (let i = 0; i < pages.length; i++) {
+      const p = pages[i];
+      const title = extractNotionPageTitle(p);
+      const edited = String(p.last_edited_time || '').slice(0, 10);
+      lines.push(`${i + 1}. ${title} (수정일: ${edited})`);
+
+      if (i === 0 && p.id) {
+        try {
+          const blkRes = await fetch(
+            `https://api.notion.com/v1/blocks/${p.id}/children?page_size=12`,
+            { headers },
+          );
+          if (blkRes.ok) {
+            const blkJson = await blkRes.json();
+            const texts: string[] = [];
+            for (const b of blkJson?.results ?? []) {
+              const rich = b?.[b.type]?.rich_text;
+              if (Array.isArray(rich)) {
+                const line = rich.map((r: any) => r?.plain_text || '').join('');
+                if (line.trim()) texts.push(line.trim());
+              }
+            }
+            if (texts.length > 0) {
+              lines.push(`   └ 본문 미리보기: ${texts.join(' / ').slice(0, 900)}`);
+            }
+          }
+        } catch {
+          // 무시
+        }
+      }
+    }
+
+    return {
+      contextText: lines.join('\n'),
+      badge: `📝 Notion (${pages.length}개 페이지)`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function saveSummaryToNotionPage(
+  notion: NotionIntegrationState,
+  title: string,
+  content: string,
+): Promise<boolean> {
+  if (!notion.enabled || !notion.token.trim()) return false;
+  const headers = {
+    Authorization: `Bearer ${notion.token.trim()}`,
+    'Notion-Version': '2022-06-28',
+    'Content-Type': 'application/json',
+  };
+
+  try {
+    const searchRes = await fetch('https://api.notion.com/v1/search', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        filter: { value: 'page', property: 'object' },
+        page_size: 1,
+      }),
+    });
+    if (!searchRes.ok) return false;
+    const searchData = await searchRes.json();
+    const parentId = searchData?.results?.[0]?.id;
+    if (!parentId) return false;
+
+    const createRes = await fetch('https://api.notion.com/v1/pages', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        parent: { page_id: parentId },
+        properties: {
+          title: {
+            title: [{ text: { content: title.slice(0, 80) } }],
+          },
+        },
+        children: [
+          {
+            object: 'block',
+            type: 'paragraph',
+            paragraph: {
+              rich_text: [{ type: 'text', text: { content: content.slice(0, 1900) } }],
+            },
+          },
+        ],
+      }),
+    });
+    return createRes.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchGenericWebUrlContext(
+  promptText: string,
+  enabled: boolean,
+): Promise<{ contextText: string; badge: string } | null> {
+  if (!enabled) return null;
+  const urlMatches = promptText.match(/https?:\/\/[^\s)]+/gi);
+  if (!urlMatches) return null;
+
+  const targetUrl = urlMatches.find(
+    (u) =>
+      !/github\.com/i.test(u) &&
+      !/docs\.google\.com/i.test(u) &&
+      !/drive\.google\.com/i.test(u),
+  );
+  if (!targetUrl) return null;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8500);
+    const res = await fetch(targetUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+
+    const html = await res.text();
+    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const pageTitle = titleMatch ? stripHtmlTags(titleMatch[1]) : targetUrl;
+    const cleanedBody = stripHtmlTags(
+      html
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' '),
+    ).slice(0, 3200);
+
+    if (cleanedBody.length < 40) return null;
+
+    return {
+      contextText: `[웹페이지 본문 추출: ${pageTitle} (${targetUrl})]\n${cleanedBody}`,
+      badge: `🌐 웹 URL (${pageTitle.slice(0, 16)})`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function describeWeatherCode(code: number): string {
+  if (code === 0) return '맑음';
+  if (code <= 3) return '구름 조금·흐림';
+  if (code <= 48) return '안개';
+  if (code <= 67) return '비·이슬비';
+  if (code <= 77) return '눈';
+  if (code <= 82) return '소나기';
+  if (code <= 99) return '뇌우';
+  return '보통';
+}
+
+async function fetchWeatherContext(
+  promptText: string,
+  enabled: boolean,
+): Promise<{ contextText: string; badge: string } | null> {
+  if (!enabled) return null;
+  if (!/(날씨|기온|온도|비\s*오|비\s*와|눈\s*와|미세먼지|우산|옷차림|일기예보)/i.test(promptText)) {
+    return null;
+  }
+
+  const cityPresets: { pattern: RegExp; label: string; lat: number; lon: number }[] = [
+    { pattern: /서울/, label: '서울', lat: 37.5665, lon: 126.978 },
+    { pattern: /청주/, label: '청주', lat: 36.6424, lon: 127.489 },
+    { pattern: /부산/, label: '부산', lat: 35.1796, lon: 129.0756 },
+    { pattern: /인천/, label: '인천', lat: 37.4563, lon: 126.7052 },
+    { pattern: /대구/, label: '대구', lat: 35.8714, lon: 128.6014 },
+    { pattern: /대전/, label: '대전', lat: 36.3504, lon: 127.3845 },
+    { pattern: /광주/, label: '광주', lat: 35.1595, lon: 126.8526 },
+    { pattern: /제주/, label: '제주', lat: 33.4996, lon: 126.5312 },
+    { pattern: /도쿄/, label: '도쿄', lat: 35.6762, lon: 139.6503 },
+    { pattern: /뉴욕/, label: '뉴욕', lat: 40.7128, lon: -74.006 },
+  ];
+
+  const matched = cityPresets.find((c) => c.pattern.test(promptText)) ?? cityPresets[0];
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7500);
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${matched.lat}&longitude=${matched.lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FSeoul&forecast_days=2`;
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const cur = data?.current;
+    const daily = data?.daily;
+    if (!cur) return null;
+
+    const statusStr = describeWeatherCode(Number(cur.weather_code ?? 0));
+    const lines = [
+      `[실시간 날씨 데이터: ${matched.label}]`,
+      `• 현재 상태: ${statusStr} | 현재 기온: ${cur.temperature_2m}°C (체감 ${cur.apparent_temperature}°C)`,
+      `• 습도: ${cur.relative_humidity_2m}% | 풍속: ${cur.wind_speed_10m} km/h | 강수량: ${cur.precipitation} mm`,
+    ];
+    if (daily?.temperature_2m_min && daily?.temperature_2m_max) {
+      lines.push(
+        `• 오늘 최저/최고: ${daily.temperature_2m_min[0]}°C / ${daily.temperature_2m_max[0]}°C (강수확률 ${daily.precipitation_probability_max?.[0] ?? 0}%)`,
+      );
+      if (daily.temperature_2m_min.length > 1) {
+        lines.push(
+          `• 내일 최저/최고: ${daily.temperature_2m_min[1]}°C / ${daily.temperature_2m_max[1]}°C (강수확률 ${daily.precipitation_probability_max?.[1] ?? 0}%)`,
+        );
+      }
+    }
+
+    return {
+      contextText: lines.join('\n'),
+      badge: `🌤️ ${matched.label} ${cur.temperature_2m}°C`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchFinanceMarketContext(
+  promptText: string,
+  enabled: boolean,
+): Promise<{ contextText: string; badge: string } | null> {
+  if (!enabled) return null;
+  const wantsFx = /(환율|달러|엔화|유로|위안|usd|jpy|eur|krw)/i.test(promptText);
+  const wantsCrypto = /(비트코인|이더리움|솔라나|코인|암호화폐|btc|eth|sol)/i.test(promptText);
+  if (!wantsFx && !wantsCrypto) return null;
+
+  const lines: string[] = ['[실시간 금융·환율 시장 데이터]'];
+  let badgeText = '💱 실시간 시세';
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7500);
+
+    if (wantsFx) {
+      const fxRes = await fetch('https://open.er-api.com/v6/latest/USD', {
+        signal: controller.signal,
+      });
+      if (fxRes.ok) {
+        const fx = await fxRes.json();
+        const rates = fx?.rates;
+        if (rates?.KRW) {
+          const usdKrw = Number(rates.KRW);
+          const jpy100Krw = rates.JPY ? (usdKrw / Number(rates.JPY)) * 100 : 0;
+          const eurKrw = rates.EUR ? usdKrw / Number(rates.EUR) : 0;
+          lines.push(`• 미국 달러 (1 USD): ${usdKrw.toFixed(2)} 원`);
+          if (jpy100Krw > 0) {
+            lines.push(`• 일본 엔화 (100 JPY): ${jpy100Krw.toFixed(2)} 원`);
+          }
+          if (eurKrw > 0) {
+            lines.push(`• 유럽 유로 (1 EUR): ${eurKrw.toFixed(2)} 원`);
+          }
+          badgeText = `💱 1달러=${Math.round(usdKrw)}원`;
+        }
+      }
+    }
+
+    if (wantsCrypto) {
+      const cryptoRes = await fetch(
+        'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=krw,usd',
+        { signal: controller.signal },
+      );
+      if (cryptoRes.ok) {
+        const c = await cryptoRes.json();
+        if (c?.bitcoin?.krw) {
+          lines.push(
+            `• 비트코인 (BTC): ${Number(c.bitcoin.krw).toLocaleString()} 원 ($${Number(c.bitcoin.usd).toLocaleString()})`,
+          );
+          if (!wantsFx) {
+            badgeText = `₿ BTC ${(Number(c.bitcoin.krw) / 10000).toFixed(0)}만원`;
+          }
+        }
+        if (c?.ethereum?.krw) {
+          lines.push(
+            `• 이더리움 (ETH): ${Number(c.ethereum.krw).toLocaleString()} 원 ($${Number(c.ethereum.usd).toLocaleString()})`,
+          );
+        }
+        if (c?.solana?.krw) {
+          lines.push(
+            `• 솔라나 (SOL): ${Number(c.solana.krw).toLocaleString()} 원 ($${Number(c.solana.usd).toLocaleString()})`,
+          );
+        }
+      }
+    }
+
+    clearTimeout(timer);
+    if (lines.length <= 1) return null;
+
+    return {
+      contextText: lines.join('\n'),
+      badge: badgeText,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchKnowledgeAndNewsContext(
+  promptText: string,
+  enabled: boolean,
+): Promise<{ contextText: string; badge: string } | null> {
+  if (!enabled) return null;
+
+  const wantsNews = /(오늘\s*뉴스|최신\s*뉴스|주요\s*뉴스|헤드라인|속보|뉴스\s*브리핑|뉴스\s*요약)/i.test(
+    promptText,
+  );
+  const wikiMatch = promptText.match(
+    /([가-힣A-Za-z0-9_]+)\s*(?:위키|백과|정의|개념|란\s*무엇|이\s*뭐야)/i,
+  );
+
+  if (wantsNews) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 7500);
+      const res = await fetch(
+        'https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko',
+        { signal: controller.signal },
+      );
+      clearTimeout(timer);
+      if (res.ok) {
+        const xml = await res.text();
+        const itemMatches = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>/gi)];
+        const headlines = itemMatches
+          .slice(0, 7)
+          .map((m, idx) => `${idx + 1}. ${decodeHtmlEntities(m[1])}`);
+        if (headlines.length > 0) {
+          return {
+            contextText: `[실시간 대한민국 주요 뉴스 헤드라인]\n${headlines.join('\n')}`,
+            badge: `📰 실시간 뉴스 (${headlines.length}건)`,
+          };
+        }
+      }
+    } catch {
+      // 무시
+    }
+  }
+
+  if (wikiMatch) {
+    const keyword = wikiMatch[1].trim();
+    if (keyword.length >= 2) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 7500);
+        const res = await fetch(
+          `https://ko.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(keyword)}`,
+          { signal: controller.signal },
+        );
+        clearTimeout(timer);
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.extract) {
+            return {
+              contextText: `[한국어 위키백과 백과사전: ${data.title}]\n${String(data.extract).slice(0, 1800)}`,
+              badge: `📚 위키백과 (${data.title})`,
+            };
+          }
+        }
+      } catch {
+        // 무시
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseCalendarDraftFromPrompt(
+  promptText: string,
+  enabled: boolean,
+): CalendarEventDraft | null {
+  if (!enabled) return null;
+  if (
+    !/(일정\s*등록|캘린더에\s*추가|캘린더\s*등록|일정\s*잡아|약속\s*추가|스케줄\s*등록|미팅)/i.test(
+      promptText,
+    )
+  ) {
+    return null;
+  }
+
+  const now = new Date();
+  const target = new Date(now.getTime());
+
+  if (/내일/.test(promptText)) {
+    target.setDate(target.getDate() + 1);
+  } else if (/모레/.test(promptText)) {
+    target.setDate(target.getDate() + 2);
+  } else {
+    const mdMatch = promptText.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+    if (mdMatch) {
+      target.setMonth(parseInt(mdMatch[1], 10) - 1, parseInt(mdMatch[2], 10));
+    }
+  }
+
+  let hour = 10;
+  let minute = 0;
+  const timeMatch = promptText.match(/(오전|오후)?\s*(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분)?/);
+  if (timeMatch) {
+    const meridiem = timeMatch[1];
+    let h = parseInt(timeMatch[2], 10);
+    const m = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
+    if (meridiem === '오후' && h < 12) h += 12;
+    if (meridiem === '오전' && h === 12) h = 0;
+    hour = h;
+    minute = m;
+  }
+
+  target.setHours(hour, minute, 0, 0);
+  const end = new Date(target.getTime() + 60 * 60 * 1000);
+
+  const cleanedTitle = promptText
+    .replace(/(오늘|내일|모레|\d{1,2}\s*월\s*\d{1,2}\s*일)/g, '')
+    .replace(/(오전|오후)?\s*\d{1,2}\s*시(?:\s*\d{1,2}\s*분)?/g, '')
+    .replace(/(일정을?|캘린더에|추가해\s*줘|등록해\s*줘|잡아\s*줘|할\s*일에|해줘)/g, '')
+    .trim();
+
+  const title = cleanedTitle.length >= 2 ? cleanedTitle.slice(0, 36) : 'PocketMind 새 일정';
+  const yyyy = target.getFullYear();
+  const mm = String(target.getMonth() + 1).padStart(2, '0');
+  const dd = String(target.getDate()).padStart(2, '0');
+  const hh = String(target.getHours()).padStart(2, '0');
+  const min = String(target.getMinutes()).padStart(2, '0');
+
+  return {
+    title,
+    startDate: target,
+    endDate: end,
+    displayText: `${yyyy}.${mm}.${dd} ${hh}:${min} · ${title}`,
+  };
+}
+
+function formatIcsUtc(d: Date): string {
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const da = String(d.getUTCDate()).padStart(2, '0');
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mi = String(d.getUTCMinutes()).padStart(2, '0');
+  const ss = String(d.getUTCSeconds()).padStart(2, '0');
+  return `${y}${mo}${da}T${hh}${mi}${ss}Z`;
+}
+
 function analyzeAutonomousPlan(
   promptText: string,
   installed: Record<ModelKey, boolean>,
@@ -851,11 +1069,11 @@ function analyzeAutonomousPlan(
   const lower = promptText.toLowerCase();
 
   const mathRegex =
-    /(수학|방정식|미분|적분|극댓값|극솟값|확률|통계|기댓값|복리|단리|연리|이율|원리금|행렬|벡터|기하|삼각함수|로그|지수|수열|점화식|극한|순열|조합|경우의\s*수|증명|연립방정식|계산해|풀어\s*줘|풀이|평균|중앙값|표준편차|sin|cos|tan|log|sqrt|\^2|\^3|\d+\s*[+\-*/=]\s*\d+)/i;
+    /(수학|방정식|미분|적분|극댓값|극솟값|확률|통계|기댓값|복리|단리|연리|이율|원리금|환율|원화|달러|엔화|시세|행렬|벡터|기하|삼각함수|로그|지수|수열|점화식|극한|순열|조합|경우의\s*수|증명|연립방정식|계산해|풀어\s*줘|풀이|sin|cos|tan|log|sqrt|\^2|\^3|\d+\s*[+\-*/=]\s*\d+)/i;
   const koreanWritingRegex =
-    /(이메일|메일|초안|자기소개서|자소서|에세이|윤문|교정|맞춤법|띄어쓰기|보고서|제안서|기획서|안내문|공지문|사과문|편지|작문|문장|다듬어|사자성어|어휘|뉘앙스|소설|시\s*써|기사|번역|요약해|브리핑|추천해)/i;
+    /(이메일|메일|초안|자기소개서|자소서|에세이|윤문|교정|맞춤법|띄어쓰기|보고서|제안서|기획서|안내문|공지문|사과문|편지|작문|문장|다듬어|사자성어|어휘|뉘앙스|소설|시\s*써|기사|번역|요약해|노션|회의록|뉴스|브리핑|날씨)/i;
   const codeTechRegex =
-    /(코드|파이썬|python|javascript|typescript|react|sql|html|css|알고리즘|함수|클래스|버그|에러|디버깅|api|아키텍처|스크립트|자동화|프로그램)/i;
+    /(코드|파이썬|python|javascript|typescript|react|sql|html|css|알고리즘|함수|클래스|버그|에러|디버깅|api|아키텍처|스크립트|깃허브|github|커밋|저장소)/i;
 
   const hasMath = mathRegex.test(lower);
   const hasKoreanWriting = koreanWritingRegex.test(lower);
@@ -890,13 +1108,13 @@ function analyzeAutonomousPlan(
 
   if (hasCodeTech && hasKoreanWriting && installed.allrounder && installed.korean) {
     return {
-      summaryLabel: `복합 협업 · ${MODELS.allrounder.shortTitle} 기술 설계 → ${MODELS.korean.shortTitle} 한국어 문서화`,
+      summaryLabel: `복합 협업 · ${MODELS.allrounder.shortTitle} 기술 분석 → ${MODELS.korean.shortTitle} 한국어 정리`,
       steps: [
         {
           modelKey: 'allrounder',
-          roleTitle: `1단계 · ${MODELS.allrounder.shortTitle} 기술 설계 및 코드 구현`,
+          roleTitle: `1단계 · ${MODELS.allrounder.shortTitle} 기술·코드 핵심 분석`,
           instructionHint:
-            '다음 요청에서 필요한 핵심 기술 구조와 실행 가능한 코드만 정확하게 설계해 출력하세요:\n\n',
+            '다음 요청에서 필요한 기술적 분석과 핵심 코드·구조만 정확하게 정리해 출력하세요:\n\n',
         },
         {
           modelKey: 'korean',
@@ -1211,33 +1429,29 @@ export default function App(): React.JSX.Element {
   const [engineBannerText, setEngineBannerText] = useState<string>('');
   const [qwenThinkingMode, setQwenThinkingMode] = useState<boolean>(false);
 
-  // 네트워크 및 설정 토글 상태
+  // 네트워크 및 셀룰러 설정 상태
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [networkType, setNetworkType] = useState<'wifi' | 'cellular' | 'none' | 'unknown'>(
     'unknown',
   );
-  const [webSearchEnabled, setWebSearchEnabled] = useState<boolean>(true);
   const [allowCellularDownload, setAllowCellularDownload] = useState<boolean>(false);
-  const [enabledPlugins, setEnabledPlugins] = useState<Record<PluginKey, boolean>>({
-    memory_core: true,
-    code_interpreter: true,
-    live_weather: true,
-    live_currency: true,
-    doc_reader: true,
-    unit_timezone: true,
-    calculator: true,
-    url_reader: true,
-    datetime_tool: true,
-    clipboard_reader: true,
-  });
 
-  // ChatGPT 스타일 장기 메모리 및 로컬 문서 보관함 상태
-  const [memories, setMemories] = useState<MemoryItem[]>([]);
-  const [newMemoryInput, setNewMemoryInput] = useState<string>('');
-  const [localDocs, setLocalDocs] = useState<LocalDocItem[]>([]);
-  const [attachedDoc, setAttachedDoc] = useState<LocalDocItem | null>(null);
-  const [newDocTitle, setNewDocTitle] = useState<string>('');
-  const [newDocBody, setNewDocBody] = useState<string>('');
+  // 10종 핵심 외부·로컬 연동 플러그인
+  const [integrations, setIntegrations] = useState<IntegrationsBundle>({
+    github: { enabled: true, repo: '', token: '' },
+    google: { enabled: true, accessToken: '', accountNote: '' },
+    notion: { enabled: true, token: '', workspaceNote: '' },
+    web_reader: { enabled: true },
+    calendar: { enabled: true },
+    weather: { enabled: true },
+    finance: { enabled: true },
+    knowledge: { enabled: true },
+    reminders: { enabled: true },
+    kakao: { enabled: true, accessToken: '', nicknameNote: '' },
+  });
+  const [todos, setTodos] = useState<TodoItem[]>([]);
+  const [expandedCard, setExpandedCard] = useState<IntegrationKey | null>('github');
+  const [testingIntegration, setTestingIntegration] = useState<IntegrationKey | null>(null);
 
   const [downloadingKey, setDownloadingKey] = useState<ModelKey | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
@@ -1258,8 +1472,6 @@ export default function App(): React.JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
   const [modelModalVisible, setModelModalVisible] = useState<boolean>(false);
   const [pluginModalVisible, setPluginModalVisible] = useState<boolean>(false);
-  const [memoryModalVisible, setMemoryModalVisible] = useState<boolean>(false);
-  const [docModalVisible, setDocModalVisible] = useState<boolean>(false);
 
   const drawerAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const backdropAnim = useRef(new Animated.Value(0)).current;
@@ -1270,8 +1482,8 @@ export default function App(): React.JSX.Element {
   const flatListRef = useRef<FlatList<ChatMessage> | null>(null);
   const sessionsRef = useRef<ChatSession[]>([]);
   sessionsRef.current = sessions;
-  const memoriesRef = useRef<MemoryItem[]>([]);
-  memoriesRef.current = memories;
+  const todosRef = useRef<TodoItem[]>([]);
+  todosRef.current = todos;
   const stopRequestedRef = useRef<boolean>(false);
   const allowCellularRef = useRef<boolean>(false);
   allowCellularRef.current = allowCellularDownload;
@@ -1280,132 +1492,44 @@ export default function App(): React.JSX.Element {
     setToastText(msg);
     setTimeout(() => {
       setToastText((prev) => (prev === msg ? '' : prev));
-    }, 2000);
+    }, 2200);
   };
 
-  const persistSettings = async (nextSettings: {
-    webSearchEnabled: boolean;
-    allowCellularDownload: boolean;
-    enabledPlugins: Record<PluginKey, boolean>;
-  }) => {
+  const persistIntegrations = async (next: IntegrationsBundle) => {
+    setIntegrations(next);
     try {
-      await AsyncStorage.setItem(STORAGE_SETTINGS_KEY, JSON.stringify(nextSettings));
+      await AsyncStorage.setItem(STORAGE_INTEGRATIONS_KEY, JSON.stringify(next));
     } catch {
       // 무시
     }
   };
 
-  const persistMemories = async (nextMemories: MemoryItem[]) => {
-    setMemories(nextMemories);
+  const persistTodos = async (next: TodoItem[]) => {
+    setTodos(next);
     try {
-      await AsyncStorage.setItem(STORAGE_MEMORY_KEY, JSON.stringify(nextMemories));
+      await AsyncStorage.setItem(STORAGE_TODOS_KEY, JSON.stringify(next));
     } catch {
       // 무시
     }
   };
 
-  const persistDocs = async (nextDocs: LocalDocItem[]) => {
-    setLocalDocs(nextDocs);
-    try {
-      await AsyncStorage.setItem(STORAGE_DOCS_KEY, JSON.stringify(nextDocs));
-    } catch {
-      // 무시
-    }
-  };
-
-  const handleAddManualMemory = async () => {
-    const fact = newMemoryInput.trim();
-    if (!fact) return;
-    const item: MemoryItem = {
-      id: `mem-${Date.now()}`,
-      fact,
-      createdAt: Date.now(),
-    };
-    await persistMemories([item, ...memoriesRef.current]);
-    setNewMemoryInput('');
-    showToast('🧠 장기 메모리에 저장되었습니다');
-  };
-
-  const handleDeleteMemory = async (id: string) => {
-    await persistMemories(memoriesRef.current.filter((m) => m.id !== id));
-  };
-
-  const handleCreateDoc = async () => {
-    const title = newDocTitle.trim() || `메모_${localDocs.length + 1}.txt`;
-    const body = newDocBody.trim();
-    if (!body) {
-      Alert.alert('내용 필요', '보관함에 저장할 문서 내용을 입력해 주세요.');
-      return;
-    }
-    const newDoc: LocalDocItem = {
-      id: `doc-${Date.now()}`,
-      name: title,
-      content: body.slice(0, 6000),
-      updatedAt: Date.now(),
-    };
-    const updated = [newDoc, ...localDocs];
-    await persistDocs(updated);
-    setNewDocTitle('');
-    setNewDocBody('');
-    setAttachedDoc(newDoc);
-    setDocModalVisible(false);
-    showToast(`📄 '${newDoc.name}' 문서가 대화에 첨부되었습니다`);
-  };
-
-  const handleSaveClipboardAsDoc = async () => {
-    try {
-      const clip = await Clipboard.getString();
-      if (!clip || !clip.trim()) {
-        showToast('클립보드에 텍스트가 없습니다');
-        return;
-      }
-      const newDoc: LocalDocItem = {
-        id: `doc-${Date.now()}`,
-        name: `클립보드_${new Date().toLocaleTimeString('ko-KR', {
-          hour: '2-digit',
-          minute: '2-digit',
-        })}.txt`,
-        content: clip.trim().slice(0, 6000),
-        updatedAt: Date.now(),
-      };
-      await persistDocs([newDoc, ...localDocs]);
-      setAttachedDoc(newDoc);
-      setDocModalVisible(false);
-      showToast(`📄 클립보드 문서를 첨부했습니다`);
-    } catch {
-      showToast('클립보드를 읽지 못했습니다');
-    }
-  };
-
-  const handleDeleteDoc = async (id: string) => {
-    if (attachedDoc?.id === id) {
-      setAttachedDoc(null);
-    }
-    await persistDocs(localDocs.filter((d) => d.id !== id));
-  };
-
-  const toggleWebSearch = async () => {
-    if (!isConnected) {
-      showToast('인터넷에 연결되어 있지 않아 웹 검색을 켤 수 없습니다');
-      return;
-    }
-    const next = !webSearchEnabled;
-    setWebSearchEnabled(next);
-    await persistSettings({
-      webSearchEnabled: next,
-      allowCellularDownload,
-      enabledPlugins,
-    });
-    showToast(next ? '🌐 실시간 웹 검색 활성화됨' : '웹 검색 꺼짐 (순수 로컬 추론)');
+  const toggleTodoItem = async (id: string) => {
+    const updated = todosRef.current.map((t) =>
+      t.id === id ? { ...t, done: !t.done } : t,
+    );
+    await persistTodos(updated);
   };
 
   const toggleAllowCellular = async (val: boolean) => {
     setAllowCellularDownload(val);
-    await persistSettings({
-      webSearchEnabled,
-      allowCellularDownload: val,
-      enabledPlugins,
-    });
+    try {
+      await AsyncStorage.setItem(
+        STORAGE_SETTINGS_KEY,
+        JSON.stringify({ allowCellularDownload: val }),
+      );
+    } catch {
+      // 무시
+    }
     showToast(
       val
         ? '📶 셀룰러 데이터 모델 다운로드 허용됨'
@@ -1413,21 +1537,89 @@ export default function App(): React.JSX.Element {
     );
   };
 
-  const togglePlugin = async (key: PluginKey) => {
-    const nextPlugins = { ...enabledPlugins, [key]: !enabledPlugins[key] };
-    setEnabledPlugins(nextPlugins);
-    await persistSettings({
-      webSearchEnabled,
-      allowCellularDownload,
-      enabledPlugins: nextPlugins,
-    });
+  const handleExportCalendarIcs = async (draft: CalendarEventDraft) => {
+    try {
+      const startObj = new Date(draft.startDate);
+      const endObj = new Date(draft.endDate);
+      const uid = `pocketmind-${Date.now()}@ios`;
+      const icsBody = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//PocketMind//iOS Calendar Plugin//KO',
+        'BEGIN:VEVENT',
+        `UID:${uid}`,
+        `DTSTAMP:${formatIcsUtc(new Date())}`,
+        `DTSTART:${formatIcsUtc(startObj)}`,
+        `DTEND:${formatIcsUtc(endObj)}`,
+        `SUMMARY:${draft.title}`,
+        'END:VEVENT',
+        'END:VCALENDAR',
+      ].join('\r\n');
+
+      const icsPath = `${RNFS.CachesDirectoryPath}/event_${Date.now()}.ics`;
+      await RNFS.writeFile(icsPath, icsBody, 'utf8');
+      await Share.share({
+        url: `file://${icsPath}`,
+        title: draft.title,
+      });
+    } catch {
+      try {
+        await Linking.openURL('calshow://');
+      } catch {
+        showToast('캘린더 앱을 열 수 없습니다');
+      }
+    }
   };
 
-  const handlePasteFromClipboard = async () => {
-    if (!enabledPlugins.clipboard_reader) {
-      showToast('플러그인 허브에서 클립보드 분석을 먼저 켜주세요');
-      return;
-    }
+  // 카카오톡 온디맨드 전송 (명시적 요청 시에만 실행)
+  const sendMessageToKakaoTalk = useCallback(
+    async (textToSend: string) => {
+      if (!integrations.kakao.enabled) return;
+
+      const trimmed = textToSend.trim();
+      if (!trimmed) return;
+
+      const token = integrations.kakao.accessToken.trim();
+      if (token && isConnected) {
+        try {
+          const templateObj = JSON.stringify({
+            object_type: 'text',
+            text: trimmed.slice(0, 1000),
+            link: {
+              web_url: 'https://developers.kakao.com',
+              mobile_web_url: 'https://developers.kakao.com',
+            },
+            button_title: 'PocketMind AI 요약',
+          });
+
+          const res = await fetch('https://kapi.kakao.com/v2/api/talk/memo/default/send', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
+            },
+            body: `template_object=${encodeURIComponent(templateObj)}`,
+          });
+
+          if (res.ok) {
+            showToast('💬 카카오톡 나에게 보내기 완료!');
+            return;
+          }
+        } catch {
+          // 폴백 진행
+        }
+      }
+
+      try {
+        await Share.share({ message: trimmed });
+      } catch {
+        // 무시
+      }
+    },
+    [integrations.kakao.accessToken, integrations.kakao.enabled, isConnected],
+  );
+
+  const handlePullClipboard = async () => {
     try {
       const clip = await Clipboard.getString();
       if (!clip || !clip.trim()) {
@@ -1438,7 +1630,7 @@ export default function App(): React.JSX.Element {
       setInputText((prev) =>
         prev.trim()
           ? `${prev.trim()}\n\n[클립보드 내용]\n${trimmed}`
-          : `다음 클립보드 내용을 핵심 요약하고 자연스럽게 정리해 줘:\n\n${trimmed}`,
+          : `다음 클립보드 내용을 핵심 요약해 줘:\n\n${trimmed}`,
       );
       showToast('📋 클립보드 내용을 불러왔습니다');
     } catch {
@@ -1446,7 +1638,119 @@ export default function App(): React.JSX.Element {
     }
   };
 
-  // 실시간 네트워크 연결 감지
+  const handleTestIntegration = async (key: IntegrationKey) => {
+    setTestingIntegration(key);
+    try {
+      if (key === 'github') {
+        const repo = normalizeGitHubRepo(integrations.github.repo);
+        if (!repo || !repo.includes('/')) {
+          Alert.alert(
+            '저장소 형식 확인',
+            '예시처럼 "소유자/저장소이름" 형식으로 입력해 주세요.\n(예: facebook/react-native)',
+          );
+          return;
+        }
+        const headers: Record<string, string> = {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'PocketMind-iOS',
+        };
+        if (integrations.github.token.trim()) {
+          headers.Authorization = `Bearer ${integrations.github.token.trim()}`;
+        }
+        const res = await fetch(`https://api.github.com/repos/${repo}`, { headers });
+        if (res.ok) {
+          const data = await res.json();
+          Alert.alert(
+            'GitHub 연동 성공 ✓',
+            `저장소: ${data.full_name}\n언어: ${data.language || '없음'} · ⭐ ${data.stargazers_count}`,
+          );
+        } else {
+          Alert.alert(
+            'GitHub 연결 실패',
+            `저장소를 찾을 수 없거나 비공개 저장소입니다. (HTTP ${res.status})`,
+          );
+        }
+      } else if (key === 'google') {
+        const token = integrations.google.accessToken.trim();
+        if (!token) {
+          Alert.alert(
+            'Google 기본 연동 안내',
+            '토큰 없이도 대화창에 공개 Google Docs/Sheets 링크를 붙여넣으면 즉시 내용을 읽어옵니다.',
+          );
+          return;
+        }
+        const res = await fetch(
+          'https://www.googleapis.com/drive/v3/about?fields=user(displayName,emailAddress)',
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const email = data?.user?.emailAddress || '연결됨';
+          await persistIntegrations({
+            ...integrations,
+            google: { ...integrations.google, accountNote: email },
+          });
+          Alert.alert('Google Drive 연동 성공 ✓', `연결된 계정: ${email}`);
+        } else {
+          Alert.alert('Google 토큰 오류', `토큰을 확인해 주세요. (HTTP ${res.status})`);
+        }
+      } else if (key === 'notion') {
+        const token = integrations.notion.token.trim();
+        if (!token) {
+          Alert.alert(
+            'Notion 토큰 필요',
+            'Notion 내 통합(Internal Integration) 시크릿 토큰(ntn_... 또는 secret_...)을 입력해 주세요.',
+          );
+          return;
+        }
+        const res = await fetch('https://api.notion.com/v1/users/me', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Notion-Version': '2022-06-28',
+          },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const botName = data?.name || 'Notion 워크스페이스';
+          await persistIntegrations({
+            ...integrations,
+            notion: { ...integrations.notion, workspaceNote: botName },
+          });
+          Alert.alert('Notion 연동 성공 ✓', `연결된 통합 앱: ${botName}`);
+        } else {
+          Alert.alert('Notion 토큰 오류', `토큰을 확인해 주세요. (HTTP ${res.status})`);
+        }
+      } else if (key === 'kakao') {
+        const token = integrations.kakao.accessToken.trim();
+        if (!token) {
+          Alert.alert(
+            '카카오톡 온디맨드 연동 안내',
+            '평소에는 화면에 버튼을 띄우지 않으며, 대화 중 "카톡으로 보내줘"라고 말할 때만 전송됩니다.',
+          );
+          return;
+        }
+        const res = await fetch('https://kapi.kakao.com/v2/user/me', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const nick = data?.kakao_account?.profile?.nickname || `회원 #${data.id}`;
+          await persistIntegrations({
+            ...integrations,
+            kakao: { ...integrations.kakao, nicknameNote: nick },
+          });
+          Alert.alert('카카오톡 연동 성공 ✓', `연결된 프로필: ${nick}`);
+        } else {
+          Alert.alert('카카오톡 토큰 오류', `토큰을 확인해 주세요. (HTTP ${res.status})`);
+        }
+      }
+    } catch (err) {
+      Alert.alert('네트워크 오류', `연결 테스트 중 오류가 발생했습니다.\n(${String(err)})`);
+    } finally {
+      setTestingIntegration(null);
+    }
+  };
+
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -1614,25 +1918,31 @@ export default function App(): React.JSX.Element {
         const savedSettingsRaw = await AsyncStorage.getItem(STORAGE_SETTINGS_KEY);
         if (savedSettingsRaw && mounted) {
           const parsed = JSON.parse(savedSettingsRaw);
-          if (typeof parsed.webSearchEnabled === 'boolean') {
-            setWebSearchEnabled(parsed.webSearchEnabled);
-          }
           if (typeof parsed.allowCellularDownload === 'boolean') {
             setAllowCellularDownload(parsed.allowCellularDownload);
           }
-          if (parsed.enabledPlugins) {
-            setEnabledPlugins((prev) => ({ ...prev, ...parsed.enabledPlugins }));
-          }
         }
 
-        const savedMemRaw = await AsyncStorage.getItem(STORAGE_MEMORY_KEY);
-        if (savedMemRaw && mounted) {
-          setMemories(JSON.parse(savedMemRaw));
+        const savedIntRaw = await AsyncStorage.getItem(STORAGE_INTEGRATIONS_KEY);
+        if (savedIntRaw && mounted) {
+          const parsedInt = JSON.parse(savedIntRaw);
+          setIntegrations((prev) => ({
+            github: { ...prev.github, ...(parsedInt.github || {}) },
+            google: { ...prev.google, ...(parsedInt.google || {}) },
+            notion: { ...prev.notion, ...(parsedInt.notion || {}) },
+            web_reader: { ...prev.web_reader, ...(parsedInt.web_reader || {}) },
+            calendar: { ...prev.calendar, ...(parsedInt.calendar || {}) },
+            weather: { ...prev.weather, ...(parsedInt.weather || {}) },
+            finance: { ...prev.finance, ...(parsedInt.finance || {}) },
+            knowledge: { ...prev.knowledge, ...(parsedInt.knowledge || {}) },
+            reminders: { ...prev.reminders, ...(parsedInt.reminders || {}) },
+            kakao: { ...prev.kakao, ...(parsedInt.kakao || {}) },
+          }));
         }
 
-        const savedDocsRaw = await AsyncStorage.getItem(STORAGE_DOCS_KEY);
-        if (savedDocsRaw && mounted) {
-          setLocalDocs(JSON.parse(savedDocsRaw));
+        const savedTodosRaw = await AsyncStorage.getItem(STORAGE_TODOS_KEY);
+        if (savedTodosRaw && mounted) {
+          setTodos(JSON.parse(savedTodosRaw));
         }
 
         const savedSessionsRaw = await AsyncStorage.getItem(STORAGE_SESSIONS_KEY);
@@ -1792,7 +2102,7 @@ export default function App(): React.JSX.Element {
         discretionary: false,
         cacheable: false,
         headers: {
-          'User-Agent': 'PocketMind-iOS/4.0',
+          'User-Agent': 'PocketMind-iOS/8.0',
         },
         progressInterval: 250,
         begin: (res) => {
@@ -1897,7 +2207,7 @@ export default function App(): React.JSX.Element {
   ): { prompt: string; stop: string[]; penaltyRepeat: number } => {
     const contextSlice = history.slice(-6);
     const enrichedSystem = externalContextBlock
-      ? `${spec.systemPrompt}\n\n[활성 플러그인 · 장기 메모리 · 실시간 검증 데이터]\n${externalContextBlock}\n위 데이터를 최우선 근거로 삼아 정확하게 답변하세요.`
+      ? `${spec.systemPrompt}\n\n[외부 연동 플러그인 실시간 데이터]\n${externalContextBlock}\n위 연동 데이터를 바탕으로 사용자 요청에 정확하게 답변하세요.`
       : spec.systemPrompt;
 
     if (spec.promptFormat === 'exaone') {
@@ -1940,7 +2250,6 @@ export default function App(): React.JSX.Element {
     sessionId: string,
     historyBeforeUser: ChatMessage[],
     userText: string,
-    docForThisTurn: LocalDocItem | null,
   ) => {
     const hasAnyModel = MODEL_ORDER.some((k) => downloadedModels[k]);
     if (!hasAnyModel) {
@@ -1969,7 +2278,6 @@ export default function App(): React.JSX.Element {
       role: 'user',
       content: userText,
       timestamp: Date.now(),
-      attachedDocName: docForThisTurn?.name,
     };
     const assistantMsgId = `msg-${Date.now()}-a`;
     const assistantPlaceholder: ChatMessage = {
@@ -1999,149 +2307,172 @@ export default function App(): React.JSX.Element {
     await persistSessions(initialSessions);
     setIsGenerating(true);
 
-    // 1. ChatGPT 스타일 10종 플러그인 및 실시간 웹 검색 컨텍스트 수집
-    const pluginBadges: string[] = [];
+    // 1. 10종 연동 플러그인 데이터 수집
+    const integrationBadges: string[] = [];
     const contextSections: string[] = [];
-    let fetchedSources: WebSearchSource[] = [];
 
-    // [플러그인 1] 장기 메모리 읽기 및 자동 저장
-    if (enabledPlugins.memory_core) {
-      const newFact = extractMemoryFactFromPrompt(userText);
-      let activeMemories = memoriesRef.current;
-      if (newFact) {
-        const memItem: MemoryItem = {
-          id: `mem-${Date.now()}`,
-          fact: newFact,
-          createdAt: Date.now(),
-        };
-        activeMemories = [memItem, ...activeMemories];
-        await persistMemories(activeMemories);
-        pluginBadges.push('🧠 메모리 업데이트됨');
-      } else if (activeMemories.length > 0) {
-        pluginBadges.push(`🧠 메모리 참조 (${activeMemories.length}건)`);
+    if (isConnected && integrations.github.enabled) {
+      setEngineBannerText('🐙 GitHub 저장소 데이터 동기화 중...');
+      const ghRes = await fetchGitHubIntegrationContext(userText, integrations.github);
+      if (ghRes) {
+        contextSections.push(ghRes.contextText);
+        integrationBadges.push(ghRes.badge);
       }
-
-      if (activeMemories.length > 0) {
-        const memLines = activeMemories
-          .slice(0, 8)
-          .map((m) => `• ${m.fact}`)
-          .join('\n');
-        contextSections.push(`- 사용자 장기 메모리 프로필:\n${memLines}`);
-      }
+      setEngineBannerText('');
     }
 
-    // [플러그인 2] 로컬 첨부 문서 리더
-    if (enabledPlugins.doc_reader && docForThisTurn) {
-      contextSections.push(
-        `- 첨부 문서 [${docForThisTurn.name}] 본문:\n${docForThisTurn.content.slice(0, 3500)}`,
+    if (isConnected && integrations.google.enabled) {
+      setEngineBannerText('🔵 Google Drive · Docs 데이터 확인 중...');
+      const googleRes = await fetchGoogleIntegrationContext(userText, integrations.google);
+      if (googleRes) {
+        contextSections.push(googleRes.contextText);
+        integrationBadges.push(googleRes.badge);
+      }
+      setEngineBannerText('');
+    }
+
+    if (isConnected && integrations.notion.enabled) {
+      setEngineBannerText('📝 Notion 워크스페이스 검색 중...');
+      const notionRes = await fetchNotionIntegrationContext(userText, integrations.notion);
+      if (notionRes) {
+        contextSections.push(notionRes.contextText);
+        integrationBadges.push(notionRes.badge);
+      }
+      setEngineBannerText('');
+    }
+
+    if (isConnected && integrations.weather.enabled) {
+      setEngineBannerText('🌤️ 실시간 기상·날씨 데이터 수신 중...');
+      const weatherRes = await fetchWeatherContext(
+        userText,
+        integrations.weather.enabled,
       );
-      pluginBadges.push(`📄 문서 (${docForThisTurn.name})`);
-    }
-
-    // [플러그인 3] 현재 시각 · D-Day 엔진
-    if (enabledPlugins.datetime_tool) {
-      const kstStr = getKoreanDateTimeContext();
-      contextSections.push(`- 현재 시각: ${kstStr}`);
-      if (/(오늘|내일|모레|며칠|날짜|요일|시간|디데이|d-day|몇\s*년)/i.test(userText)) {
-        pluginBadges.push(`📅 시각·D-Day (${kstStr.split(' ')[0]})`);
-      }
-    }
-
-    // [플러그인 4] 코드 인터프리터 · 데이터 샌드박스
-    if (enabledPlugins.code_interpreter) {
-      const sandboxOut = runCodeInterpreterSandbox(userText);
-      if (sandboxOut) {
-        contextSections.push(`- 코드 인터프리터 샌드박스 실행 결과:\n${sandboxOut}`);
-        pluginBadges.push('💻 코드 인터프리터 실행');
-      }
-    }
-
-    // [플러그인 5] 정밀 수식 계산기
-    if (enabledPlugins.calculator) {
-      const calcResult = safeEvaluateMath(userText);
-      if (calcResult) {
-        contextSections.push(`- 정밀 계산기 검증값: ${calcResult}`);
-        pluginBadges.push(`🧮 계산기 (${calcResult})`);
-      }
-    }
-
-    // [플러그인 6] 단위 · 세계 시차 변환기
-    if (enabledPlugins.unit_timezone) {
-      const unitOut = runUnitAndTimezoneConverter(userText);
-      if (unitOut) {
-        contextSections.push(`- 단위·세계시차 변환기 결과: ${unitOut}`);
-        pluginBadges.push('⚖️ 단위·시차 변환');
-      }
-    }
-
-    // [플러그인 7] 실시간 세계 날씨 브리핑 (온라인)
-    if (isConnected && enabledPlugins.live_weather) {
-      setEngineBannerText('🌤️ 실시간 기상 데이터 조회 중...');
-      const weatherOut = await fetchLiveWeatherContext(userText);
-      if (weatherOut) {
-        contextSections.push(`- 실시간 기상 관측 데이터:\n${weatherOut}`);
-        pluginBadges.push('🌤️ 실시간 날씨');
+      if (weatherRes) {
+        contextSections.push(weatherRes.contextText);
+        integrationBadges.push(weatherRes.badge);
       }
       setEngineBannerText('');
     }
 
-    // [플러그인 8] 실시간 환율 · 통화 변환기 (온라인)
-    if (isConnected && enabledPlugins.live_currency) {
-      setEngineBannerText('💱 실시간 외환 환율 조회 중...');
-      const currencyOut = await fetchLiveCurrencyContext(userText);
-      if (currencyOut) {
-        contextSections.push(`- 실시간 외환 환율 데이터:\n${currencyOut}`);
-        pluginBadges.push('💱 실시간 환율');
+    if (isConnected && integrations.finance.enabled) {
+      setEngineBannerText('💱 실시간 환율·시세 데이터 수신 중...');
+      const finRes = await fetchFinanceMarketContext(
+        userText,
+        integrations.finance.enabled,
+      );
+      if (finRes) {
+        contextSections.push(finRes.contextText);
+        integrationBadges.push(finRes.badge);
       }
       setEngineBannerText('');
     }
 
-    // [플러그인 9] 웹페이지 URL 요약기 (온라인)
-    if (isConnected && enabledPlugins.url_reader) {
-      const urlMatch = userText.match(/https?:\/\/[^\s)]+/i);
-      if (urlMatch) {
-        setEngineBannerText('🔗 웹페이지 본문을 읽어오는 중...');
-        const pageData = await fetchUrlReadableText(urlMatch[0]);
-        if (pageData) {
+    if (isConnected && integrations.knowledge.enabled) {
+      setEngineBannerText('📰 실시간 뉴스·백과 데이터 검색 중...');
+      const knowRes = await fetchKnowledgeAndNewsContext(
+        userText,
+        integrations.knowledge.enabled,
+      );
+      if (knowRes) {
+        contextSections.push(knowRes.contextText);
+        integrationBadges.push(knowRes.badge);
+      }
+      setEngineBannerText('');
+    }
+
+    if (isConnected && integrations.web_reader.enabled) {
+      setEngineBannerText('🌐 웹페이지 본문 추출 중...');
+      const webRes = await fetchGenericWebUrlContext(
+        userText,
+        integrations.web_reader.enabled,
+      );
+      if (webRes) {
+        contextSections.push(webRes.contextText);
+        integrationBadges.push(webRes.badge);
+      }
+      setEngineBannerText('');
+    }
+
+    // 할 일 · 미리 알림 플러그인 처리
+    let hasTodoCard = false;
+    if (integrations.reminders.enabled) {
+      const wantsAddTodo = /(할\s*일에\s*추가|할\s*일\s*등록|체크리스트에\s*추가|미리\s*알림에\s*추가)/i.test(
+        userText,
+      );
+      const wantsShowTodo = /(할\s*일\s*목록|할\s*일\s*보여|체크리스트\s*보여|남은\s*할\s*일)/i.test(
+        userText,
+      );
+
+      if (wantsAddTodo) {
+        const cleaned = userText
+          .replace(/(할\s*일에\s*추가해\s*줘|할\s*일에\s*추가|할\s*일\s*등록해\s*줘|체크리스트에\s*추가해\s*줘|미리\s*알림에\s*추가해\s*줘)/gi, '')
+          .trim();
+        const items = cleaned
+          .split(/[,/\n]/)
+          .map((s) => s.trim())
+          .filter((s) => s.length >= 2);
+        if (items.length > 0) {
+          const newItems: TodoItem[] = items.map((text, idx) => ({
+            id: `todo-${Date.now()}-${idx}`,
+            text,
+            done: false,
+            createdAt: Date.now(),
+          }));
+          const merged = [...newItems, ...todosRef.current];
+          await persistTodos(merged);
+          hasTodoCard = true;
+          integrationBadges.push(`✅ 할 일 ${items.length}건 추가됨`);
           contextSections.push(
-            `- 웹페이지 본문 (${pageData.url}):\n${pageData.text}`,
+            `[할 일 체크리스트 업데이트됨]\n방금 추가된 항목: ${items.join(', ')}\n전체 활성 할 일: ${merged
+              .filter((t) => !t.done)
+              .map((t) => t.text)
+              .join(', ')}`,
           );
-          pluginBadges.push('🔗 URL 본문 추출');
         }
-        setEngineBannerText('');
+      } else if (wantsShowTodo) {
+        hasTodoCard = true;
+        integrationBadges.push(`✅ 할 일 (${todosRef.current.length}건)`);
+        const listStr =
+          todosRef.current.length > 0
+            ? todosRef.current
+                .map((t, i) => `${i + 1}. [${t.done ? '완료' : '진행중'}] ${t.text}`)
+                .join('\n')
+            : '등록된 할 일이 없습니다.';
+        contextSections.push(`[현재 저장된 할 일 목록]\n${listStr}`);
       }
     }
 
-    // [플러그인 10] 실시간 웹 검색 (온라인)
-    if (isConnected && webSearchEnabled && shouldTriggerWebSearch(userText)) {
-      setEngineBannerText('🌐 실시간 웹 검색 수행 중...');
-      fetchedSources = await performLiveWebSearch(userText);
-      if (fetchedSources.length > 0) {
-        const formattedSearch = fetchedSources
-          .map((src, idx) => `[${idx + 1}] ${src.title}: ${src.snippet}`)
-          .join('\n');
-        contextSections.push(`- 실시간 웹 검색 결과:\n${formattedSearch}`);
-        pluginBadges.push(`🌐 웹 검색 (${fetchedSources.length}건)`);
-      }
-      setEngineBannerText('');
+    const calendarDraft = parseCalendarDraftFromPrompt(
+      userText,
+      integrations.calendar.enabled,
+    );
+    if (calendarDraft) {
+      contextSections.push(
+        `[Apple 캘린더 일정 감지됨]\n• 일정명: ${calendarDraft.title}\n• 일시: ${calendarDraft.displayText}\n사용자에게 일정이 준비되었음을 안내해 주세요.`,
+      );
+      integrationBadges.push('📅 Apple 캘린더 준비됨');
     }
 
-    const externalContextBlock = contextSections.join('\n');
+    const wantsNotionSave =
+      isConnected &&
+      integrations.notion.enabled &&
+      Boolean(integrations.notion.token.trim()) &&
+      /(노션에\s*저장|노션에\s*기록|노션에\s*정리|노션\s*페이지\s*만들어)/i.test(userText);
 
-    if (pluginBadges.length > 0 || fetchedSources.length > 0) {
+    const wantsKakaoSend =
+      integrations.kakao.enabled &&
+      /(카톡으로\s*보내|카카오톡으로\s*보내|카톡\s*전송|나에게\s*보내)/i.test(userText);
+
+    const externalContextBlock = contextSections.join('\n\n');
+
+    if (integrationBadges.length > 0) {
       setSessions((prev) =>
         prev.map((s) =>
           s.id === sessionId
             ? {
                 ...s,
                 messages: s.messages.map((m) =>
-                  m.id === assistantMsgId
-                    ? {
-                        ...m,
-                        pluginBadges,
-                        webSources: fetchedSources.length > 0 ? fetchedSources : undefined,
-                      }
-                    : m,
+                  m.id === assistantMsgId ? { ...m, integrationBadges } : m,
                 ),
               }
             : s,
@@ -2348,6 +2679,24 @@ export default function App(): React.JSX.Element {
       }
     } finally {
       const finalText = cleanModelOutput(finalAnswer) || '(응답이 중지되었습니다)';
+      const finalizedBadges = [...integrationBadges];
+
+      if (wantsNotionSave && finalText && !finalText.startsWith('(응답이 중지')) {
+        const saved = await saveSummaryToNotionPage(
+          integrations.notion,
+          `PocketMind 노트 · ${userText.slice(0, 24)}`,
+          finalText,
+        );
+        if (saved) {
+          finalizedBadges.push('📝 Notion 페이지 생성됨');
+          showToast('📝 Notion에 새 페이지로 저장되었습니다');
+        }
+      }
+
+      if (wantsKakaoSend && finalText && !finalText.startsWith('(응답이 중지')) {
+        finalizedBadges.push('💬 카카오톡 전송됨');
+      }
+
       const finalizedSessions = sessionsRef.current.map((s) =>
         s.id === sessionId
           ? {
@@ -2358,9 +2707,10 @@ export default function App(): React.JSX.Element {
                   ? {
                       ...m,
                       content: finalText,
-                      pluginBadges: pluginBadges.length > 0 ? pluginBadges : undefined,
-                      webSources:
-                        fetchedSources.length > 0 ? fetchedSources : undefined,
+                      integrationBadges:
+                        finalizedBadges.length > 0 ? finalizedBadges : undefined,
+                      calendarDraft: calendarDraft ?? undefined,
+                      hasTodoCard: hasTodoCard || undefined,
                       stage1Title: stage1TitleSnapshot || undefined,
                       stage1Content: stage1OutputSnapshot || undefined,
                     }
@@ -2371,6 +2721,10 @@ export default function App(): React.JSX.Element {
       );
       await persistSessions(finalizedSessions);
       setIsGenerating(false);
+
+      if (wantsKakaoSend && finalText && !finalText.startsWith('(응답이 중지')) {
+        await sendMessageToKakaoTalk(finalText);
+      }
     }
   };
 
@@ -2388,20 +2742,13 @@ export default function App(): React.JSX.Element {
       return;
     }
 
-    const docSnapshot = attachedDoc;
     if (!overrideText) {
       setInputText('');
     }
-    setAttachedDoc(null);
     Keyboard.dismiss();
 
     const targetSession = activeSession ?? (await createNewSession());
-    await runCompletion(
-      targetSession.id,
-      targetSession.messages,
-      textToSend,
-      docSnapshot,
-    );
+    await runCompletion(targetSession.id, targetSession.messages, textToSend);
   };
 
   const handleStopGeneration = async () => {
@@ -2423,7 +2770,7 @@ export default function App(): React.JSX.Element {
     if (lastMsg.role !== 'assistant' || prevUserMsg.role !== 'user') return;
 
     const historyBefore = currentMessages.slice(0, -2);
-    await runCompletion(activeSession.id, historyBefore, prevUserMsg.content, null);
+    await runCompletion(activeSession.id, historyBefore, prevUserMsg.content);
   };
 
   const handleCopyText = (id: string, text: string) => {
@@ -2463,7 +2810,18 @@ export default function App(): React.JSX.Element {
   };
 
   const installedCount = MODEL_ORDER.filter((k) => downloadedModels[k]).length;
-  const activePluginCount = Object.values(enabledPlugins).filter(Boolean).length;
+  const activeIntegrationCount = [
+    integrations.github.enabled,
+    integrations.google.enabled,
+    integrations.notion.enabled,
+    integrations.web_reader.enabled,
+    integrations.calendar.enabled,
+    integrations.weather.enabled,
+    integrations.finance.enabled,
+    integrations.knowledge.enabled,
+    integrations.reminders.enabled,
+    integrations.kakao.enabled,
+  ].filter(Boolean).length;
   const activeAccentColor =
     selectionMode === 'auto' ? '#10A37F' : MODELS[selectionMode].badgeColor;
 
@@ -2483,13 +2841,6 @@ export default function App(): React.JSX.Element {
       return (
         <AnimatedMessageRow>
           <View style={styles.userRow}>
-            {item.attachedDocName ? (
-              <View style={styles.userDocBadge}>
-                <Text style={styles.userDocBadgeText}>
-                  📄 {item.attachedDocName}
-                </Text>
-              </View>
-            ) : null}
             <View style={styles.userBubble}>
               <Text style={styles.userText}>{item.content}</Text>
             </View>
@@ -2515,25 +2866,12 @@ export default function App(): React.JSX.Element {
               </View>
             ) : null}
 
-            {item.pluginBadges && item.pluginBadges.length > 0 ? (
+            {item.integrationBadges && item.integrationBadges.length > 0 ? (
               <View style={styles.pluginBadgeRow}>
-                {item.pluginBadges.map((b, bIdx) => (
+                {item.integrationBadges.map((b, bIdx) => (
                   <View key={bIdx} style={styles.pluginUsedChip}>
                     <Text style={styles.pluginUsedChipText}>{b}</Text>
                   </View>
-                ))}
-              </View>
-            ) : null}
-
-            {item.webSources && item.webSources.length > 0 ? (
-              <View style={styles.sourcesCard}>
-                <Text style={styles.sourcesHeader}>
-                  🌐 실시간 웹 검색 근거 ({item.webSources.length}건)
-                </Text>
-                {item.webSources.map((src, sIdx) => (
-                  <Text key={sIdx} numberOfLines={1} style={styles.sourceItemText}>
-                    • {src.title}
-                  </Text>
                 ))}
               </View>
             ) : null}
@@ -2581,6 +2919,44 @@ export default function App(): React.JSX.Element {
               })
             )}
 
+            {/* 할 일 체크리스트 카드 (할 일 관련 대화 시에만 표시) */}
+            {item.hasTodoCard && todos.length > 0 && !isGenerating ? (
+              <View style={styles.todoCard}>
+                <Text style={styles.todoCardHeader}>
+                  ✅ 내 할 일 체크리스트 ({todos.filter((t) => !t.done).length}개 남음)
+                </Text>
+                {todos.slice(0, 6).map((t) => (
+                  <TouchableOpacity
+                    key={t.id}
+                    onPress={() => toggleTodoItem(t.id)}
+                    style={styles.todoItemRow}>
+                    <Text style={styles.todoCheckbox}>{t.done ? '☑' : '☐'}</Text>
+                    <Text
+                      style={[
+                        styles.todoItemText,
+                        t.done && styles.todoItemTextDone,
+                      ]}>
+                      {t.text}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+
+            {/* Apple 캘린더 등록 카드 (일정 관련 대화 시에만 표시) */}
+            {item.calendarDraft && !isGenerating ? (
+              <TouchableOpacity
+                onPress={() => handleExportCalendarIcs(item.calendarDraft!)}
+                style={styles.calendarActionCard}>
+                <Text style={styles.calendarActionTitle}>
+                  📅 Apple 캘린더에 일정 등록하기
+                </Text>
+                <Text style={styles.calendarActionSub}>
+                  {item.calendarDraft.displayText}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+
             {item.content.length > 0 && !isGenerating && (
               <View style={styles.actionBar}>
                 <TouchableOpacity
@@ -2590,6 +2966,7 @@ export default function App(): React.JSX.Element {
                     {copiedId === item.id ? '복사 완료 ✓' : '복사'}
                   </Text>
                 </TouchableOpacity>
+
                 {isLastAssistant && (
                   <TouchableOpacity
                     onPress={handleRegenerateLast}
@@ -2646,61 +3023,102 @@ export default function App(): React.JSX.Element {
         </TouchableOpacity>
       </View>
 
-      {/* 인터넷·웹검색·플러그인·메모리 빠른 제어 상태 바 */}
-      <View style={styles.quickFeatureBar}>
-        <TouchableOpacity
-          onPress={toggleWebSearch}
-          style={[
-            styles.featurePill,
-            isConnected && webSearchEnabled
-              ? styles.featurePillOnline
-              : styles.featurePillOffline,
-          ]}>
-          <Text
-            style={[
-              styles.featurePillText,
-              isConnected && webSearchEnabled && styles.featurePillTextOnline,
-            ]}>
-            {!isConnected
-              ? '📴 오프라인'
-              : webSearchEnabled
-                ? `🌐 웹 검색 ON`
-                : '🌐 웹 검색 OFF'}
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => setPluginModalVisible(true)}
-          style={styles.featurePill}>
-          <Text style={styles.featurePillText}>
-            🧩 플러그인 ({activePluginCount}/{PLUGINS.length})
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => setMemoryModalVisible(true)}
-          style={styles.featurePill}>
-          <Text style={styles.featurePillText}>
-            🧠 메모리 ({memories.length})
-          </Text>
-        </TouchableOpacity>
-
-        {loadedModelKey === 'allrounder' && (
+      {/* 10종 플러그인 가로 슬라이드 빠른 진입 바 */}
+      <View style={styles.quickFeatureBarWrap}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.quickFeatureScroll}>
           <TouchableOpacity
-            onPress={() => setQwenThinkingMode((prev) => !prev)}
-            style={[
-              styles.featurePill,
-              qwenThinkingMode && styles.featurePillOnline,
-            ]}>
-            <Text
-              style={[
-                styles.featurePillText,
-                qwenThinkingMode && styles.featurePillTextOnline,
-              ]}>
-              {qwenThinkingMode ? '깊은 사고 ON' : '빠른 응답'}
+            onPress={() => setPluginModalVisible(true)}
+            style={[styles.featurePill, styles.featurePillGithub]}>
+            <Text style={[styles.featurePillText, styles.featurePillTextGithub]}>
+              🔌 허브 ({activeIntegrationCount}/10)
             </Text>
           </TouchableOpacity>
-        )}
+
+          <TouchableOpacity
+            onPress={() => {
+              setExpandedCard('weather');
+              setPluginModalVisible(true);
+            }}
+            style={styles.featurePill}>
+            <Text style={styles.featurePillText}>🌤️ 날씨</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              setExpandedCard('finance');
+              setPluginModalVisible(true);
+            }}
+            style={styles.featurePill}>
+            <Text style={styles.featurePillText}>💱 환율·시세</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              setExpandedCard('knowledge');
+              setPluginModalVisible(true);
+            }}
+            style={styles.featurePill}>
+            <Text style={styles.featurePillText}>📰 뉴스·위키</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              setExpandedCard('reminders');
+              setPluginModalVisible(true);
+            }}
+            style={styles.featurePill}>
+            <Text style={styles.featurePillText}>
+              ✅ 할 일 ({todos.filter((t) => !t.done).length})
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              setExpandedCard('github');
+              setPluginModalVisible(true);
+            }}
+            style={styles.featurePill}>
+            <Text style={styles.featurePillText}>🐙 GitHub</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              setExpandedCard('google');
+              setPluginModalVisible(true);
+            }}
+            style={styles.featurePill}>
+            <Text style={styles.featurePillText}>🔵 Google</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              setExpandedCard('notion');
+              setPluginModalVisible(true);
+            }}
+            style={styles.featurePill}>
+            <Text style={styles.featurePillText}>📝 Notion</Text>
+          </TouchableOpacity>
+
+          {loadedModelKey === 'allrounder' && (
+            <TouchableOpacity
+              onPress={() => setQwenThinkingMode((prev) => !prev)}
+              style={[
+                styles.featurePill,
+                qwenThinkingMode && styles.featurePillGoogle,
+              ]}>
+              <Text
+                style={[
+                  styles.featurePillText,
+                  qwenThinkingMode && styles.featurePillTextGoogle,
+                ]}>
+                {qwenThinkingMode ? '깊은 사고 ON' : '빠른 응답'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </ScrollView>
       </View>
 
       {/* 토스트 알림 배지 */}
@@ -2710,7 +3128,7 @@ export default function App(): React.JSX.Element {
         </View>
       ) : null}
 
-      {/* 모델 적재·웹 검색·플러그인 실행 배너 */}
+      {/* 모델 적재·외부 연동 동기화 배너 */}
       {engineBannerText ? (
         <View style={styles.loadingBanner}>
           <ActivityIndicator color="#10A37F" size="small" />
@@ -2718,7 +3136,7 @@ export default function App(): React.JSX.Element {
         </View>
       ) : null}
 
-      {/* 메인 대화 영역 또는 복합 협업 추천 뷰 */}
+      {/* 메인 대화 영역 또는 추천 카드 뷰 */}
       {currentMessages.length === 0 ? (
         <ScrollView
           contentContainerStyle={styles.emptyStateContainer}
@@ -2735,21 +3153,19 @@ export default function App(): React.JSX.Element {
                   styles.activeSpecialtyText,
                   { color: activeAccentColor },
                 ]}>
-                {isConnected && webSearchEnabled
-                  ? 'CHATGPT-GRADE PLUGINS + 8B HYBRID ORCHESTRATOR'
-                  : 'ON-DEVICE PLUGINS + 8B MULTI-AI ORCHESTRATOR'}
+                10 PLUGINS · WEATHER · FX · NEWS · GITHUB · NOTION
               </Text>
             </View>
             <Text style={styles.centerTitle}>무엇을 도와드릴까요?</Text>
             <Text style={styles.centerSubtitle}>
               {installedCount > 0
-                ? `10종 플러그인·장기 메모리와 8B 전문 AI ${installedCount}종이 능동 협업합니다`
+                ? `활성 플러그인 ${activeIntegrationCount}종과 8B 전문 AI ${installedCount}종이 능동 협업합니다`
                 : '상단 버튼을 눌러 아이폰 16 Pro용 7B~8B AI 모델을 다운로드하세요'}
             </Text>
           </View>
 
           <View style={styles.suggestionsGrid}>
-            {AUTO_SUGGESTIONS.map((card, idx) => (
+            {INTEGRATION_SUGGESTIONS.map((card, idx) => (
               <AnimatedSuggestionCard
                 key={idx}
                 index={idx}
@@ -2779,18 +3195,6 @@ export default function App(): React.JSX.Element {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={6}>
         <View style={styles.bottomDock}>
-          {/* 첨부된 로컬 문서 칩 (ChatGPT 파일 첨부 스타일) */}
-          {attachedDoc ? (
-            <View style={styles.attachedDocBar}>
-              <Text numberOfLines={1} style={styles.attachedDocText}>
-                📄 첨부됨: {attachedDoc.name} ({attachedDoc.content.length}자)
-              </Text>
-              <TouchableOpacity onPress={() => setAttachedDoc(null)}>
-                <Text style={styles.attachedDocRemove}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
-
           <View style={styles.inputCapsule}>
             <TouchableOpacity
               onPress={() => setPluginModalVisible(true)}
@@ -2803,11 +3207,7 @@ export default function App(): React.JSX.Element {
               maxLength={2000}
               multiline
               onChangeText={setInputText}
-              placeholder={
-                isConnected && webSearchEnabled
-                  ? '웹 검색, 날씨, 환율, 코드 실행, 수학, 작문 입력'
-                  : '오프라인 모드 · 코드 실행, 문서 요약, 수학, 작문 입력'
-              }
+              placeholder="날씨, 환율, 뉴스, 할 일, GitHub, Google, Notion, 수학 입력"
               placeholderTextColor="#8E8EA0"
               style={styles.textInput}
               value={inputText}
@@ -2832,8 +3232,8 @@ export default function App(): React.JSX.Element {
           </View>
           <Text style={styles.footerDisclaimer}>
             {isConnected
-              ? `온라인(${networkType === 'cellular' ? '셀룰러' : 'Wi-Fi'}) · 실시간 플러그인 활성 · AI 연산은 기기 내부 실행`
-              : '오프라인 상태 · 메모리·코드인터프리터·문서 등 로컬 플러그인 활성'}
+              ? `온라인(${networkType === 'cellular' ? '셀룰러' : 'Wi-Fi'}) · 10종 플러그인 활성 · AI 추론은 기기 내 실행`
+              : '오프라인 상태 · 로컬 8B AI 추론은 인터넷 없이 정상 작동'}
           </Text>
         </View>
       </KeyboardAvoidingView>
@@ -2905,31 +3305,11 @@ export default function App(): React.JSX.Element {
                 <TouchableOpacity
                   onPress={() => {
                     toggleDrawer(false);
-                    setMemoryModalVisible(true);
-                  }}
-                  style={styles.drawerFooterBtn}>
-                  <Text style={styles.drawerFooterText}>
-                    🧠 AI 장기 메모리 관리 ({memories.length}개)
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => {
-                    toggleDrawer(false);
-                    setDocModalVisible(true);
-                  }}
-                  style={styles.drawerFooterBtn}>
-                  <Text style={styles.drawerFooterText}>
-                    📄 로컬 문서 보관함 ({localDocs.length}개)
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => {
-                    toggleDrawer(false);
                     setPluginModalVisible(true);
                   }}
                   style={styles.drawerFooterBtn}>
                   <Text style={styles.drawerFooterText}>
-                    🧩 10종 플러그인 · 웹 검색 스토어
+                    🔌 연동 플러그인 허브 (10종 관리)
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -2948,7 +3328,7 @@ export default function App(): React.JSX.Element {
         </View>
       )}
 
-      {/* ChatGPT 스타일 플러그인 스토어 & 빠른 도구 모달 */}
+      {/* 10종 플러그인 통합 허브 모달 */}
       <Modal
         animationType="slide"
         onRequestClose={() => setPluginModalVisible(false)}
@@ -2957,264 +3337,452 @@ export default function App(): React.JSX.Element {
         <View style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>ChatGPT 스타일 플러그인 허브</Text>
+              <Text style={styles.modalTitle}>플러그인 통합 허브 (10종)</Text>
               <TouchableOpacity onPress={() => setPluginModalVisible(false)}>
                 <Text style={styles.modalClose}>닫기</Text>
               </TouchableOpacity>
             </View>
             <Text style={styles.modalDesc}>
-              켜둔 플러그인은 대화 내용을 분석해 자동으로 작동합니다. 각 카드의 '예시 실행'을 누르면 바로 테스트할 수 있습니다.
-            </Text>
-
-            {/* ChatGPT '+' 빠른 액션 그리드 */}
-            <View style={styles.quickActionGrid}>
-              <TouchableOpacity
-                onPress={() => {
-                  setPluginModalVisible(false);
-                  handlePasteFromClipboard();
-                }}
-                style={styles.quickActionTile}>
-                <Text style={styles.quickActionTileIcon}>📋</Text>
-                <Text style={styles.quickActionTileLabel}>클립보드 분석</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => {
-                  setPluginModalVisible(false);
-                  setDocModalVisible(true);
-                }}
-                style={styles.quickActionTile}>
-                <Text style={styles.quickActionTileIcon}>📄</Text>
-                <Text style={styles.quickActionTileLabel}>
-                  문서 첨부 ({localDocs.length})
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => {
-                  setPluginModalVisible(false);
-                  setMemoryModalVisible(true);
-                }}
-                style={styles.quickActionTile}>
-                <Text style={styles.quickActionTileIcon}>🧠</Text>
-                <Text style={styles.quickActionTileLabel}>
-                  메모리 ({memories.length})
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* 실시간 웹 검색 마스터 토글 */}
-            <View style={styles.toggleSettingCard}>
-              <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleTitle}>
-                  🌐 실시간 웹 검색 ({isConnected ? '온라인 연결됨' : '오프라인'})
-                </Text>
-                <Text style={styles.toggleSub}>
-                  최신 뉴스·정보 질문 시 인터넷 검색 결과를 AI에 자동 주입
-                </Text>
-              </View>
-              <Switch
-                value={isConnected && webSearchEnabled}
-                onValueChange={toggleWebSearch}
-                trackColor={{ false: '#3F3F46', true: '#10A37F' }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            <ScrollView
-              style={styles.modalScroll}
-              contentContainerStyle={styles.modalScrollContent}>
-              {PLUGINS.map((plugin) => {
-                const active = enabledPlugins[plugin.key];
-                return (
-                  <View key={plugin.key} style={styles.pluginRowCard}>
-                    <View style={styles.pluginInfoCol}>
-                      <View style={styles.pluginTitleLine}>
-                        <Text style={styles.pluginTitleText}>
-                          {plugin.icon} {plugin.title}
-                        </Text>
-                        <View
-                          style={[
-                            styles.onlineOnlyTag,
-                            !plugin.requiresInternet && styles.localTag,
-                          ]}>
-                          <Text
-                            style={[
-                              styles.onlineOnlyTagText,
-                              !plugin.requiresInternet && styles.localTagText,
-                            ]}>
-                            {plugin.requiresInternet ? '온라인' : '로컬'}
-                          </Text>
-                        </View>
-                      </View>
-                      <Text style={styles.pluginDescText}>{plugin.desc}</Text>
-                      <TouchableOpacity
-                        onPress={() => {
-                          if (!active) {
-                            togglePlugin(plugin.key);
-                          }
-                          setPluginModalVisible(false);
-                          if (plugin.key === 'doc_reader') {
-                            setDocModalVisible(true);
-                          } else if (plugin.key === 'clipboard_reader') {
-                            handlePasteFromClipboard();
-                          } else {
-                            setInputText(plugin.samplePrompt);
-                          }
-                        }}
-                        style={styles.tryPluginBtn}>
-                        <Text style={styles.tryPluginBtnText}>
-                          ▶ 예시 프롬프트 채우기
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                    <Switch
-                      value={active}
-                      onValueChange={() => togglePlugin(plugin.key)}
-                      trackColor={{ false: '#3F3F46', true: '#3B82F6' }}
-                      thumbColor="#FFFFFF"
-                    />
-                  </View>
-                );
-              })}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ChatGPT 장기 메모리 관리 모달 */}
-      <Modal
-        animationType="slide"
-        onRequestClose={() => setMemoryModalVisible(false)}
-        transparent
-        visible={memoryModalVisible}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>🧠 AI 장기 메모리 (Memory)</Text>
-              <TouchableOpacity onPress={() => setMemoryModalVisible(false)}>
-                <Text style={styles.modalClose}>닫기</Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.modalDesc}>
-              저장된 정보는 새 채팅을 시작해도 모든 AI 모델이 항상 기억하고 답변에 반영합니다.
-            </Text>
-
-            <View style={styles.memoryInputRow}>
-              <TextInput
-                value={newMemoryInput}
-                onChangeText={setNewMemoryInput}
-                placeholder="예: 나는 청주에 살고 파이썬 개발자야"
-                placeholderTextColor="#7A7A7A"
-                style={styles.memoryInputBox}
-              />
-              <TouchableOpacity
-                onPress={handleAddManualMemory}
-                style={styles.memoryAddBtn}>
-                <Text style={styles.memoryAddBtnText}>저장</Text>
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              style={styles.modalScroll}
-              contentContainerStyle={styles.modalScrollContent}>
-              {memories.length === 0 ? (
-                <Text style={styles.emptyListHint}>
-                  저장된 메모리가 없습니다. 대화창에서 "~라고 기억해 줘"라고 말하거나 위 입력칸에서 직접 추가하세요.
-                </Text>
-              ) : (
-                memories.map((mem) => (
-                  <View key={mem.id} style={styles.memoryCard}>
-                    <Text style={styles.memoryFactText}>• {mem.fact}</Text>
-                    <TouchableOpacity onPress={() => handleDeleteMemory(mem.id)}>
-                      <Text style={styles.memoryDelText}>삭제</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* 로컬 문서 보관함 & 파일 첨부 모달 */}
-      <Modal
-        animationType="slide"
-        onRequestClose={() => setDocModalVisible(false)}
-        transparent
-        visible={docModalVisible}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>📄 로컬 문서 보관함 · 첨부</Text>
-              <TouchableOpacity onPress={() => setDocModalVisible(false)}>
-                <Text style={styles.modalClose}>닫기</Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.modalDesc}>
-              문서를 저장하거나 클립보드에서 가져온 뒤 선택하면 현재 대화에 첨부되어 AI가 문서 기반으로 답변합니다.
+              실시간 날씨·환율·뉴스·할 일은 별도 키 없이 즉시 작동하며, GitHub·Google·Notion은 토큰 등록 시 비공개 문서까지 읽어옵니다.
             </Text>
 
             <TouchableOpacity
-              onPress={handleSaveClipboardAsDoc}
-              style={styles.clipboardQuickAction}>
-              <Text style={styles.clipboardQuickActionText}>
-                📋 클립보드 텍스트를 새 문서로 저장 후 즉시 첨부
+              onPress={() => {
+                setPluginModalVisible(false);
+                handlePullClipboard();
+              }}
+              style={styles.clipboardBannerBtn}>
+              <Text style={styles.clipboardBannerBtnText}>
+                📋 아이폰 클립보드 텍스트를 입력창에 바로 불러오기
               </Text>
             </TouchableOpacity>
 
-            <View style={styles.docCreateBox}>
-              <TextInput
-                value={newDocTitle}
-                onChangeText={setNewDocTitle}
-                placeholder="문서 제목 (예: 회의록.txt, 매출데이터.csv)"
-                placeholderTextColor="#7A7A7A"
-                style={styles.docTitleInput}
-              />
-              <TextInput
-                value={newDocBody}
-                onChangeText={setNewDocBody}
-                placeholder="여기에 분석할 긴 글, 기사, CSV 데이터, 코드를 붙여넣으세요..."
-                placeholderTextColor="#7A7A7A"
-                multiline
-                style={styles.docBodyInput}
-              />
-              <TouchableOpacity
-                onPress={handleCreateDoc}
-                style={styles.docSaveAttachBtn}>
-                <Text style={styles.docSaveAttachBtnText}>저장하고 대화에 첨부하기</Text>
-              </TouchableOpacity>
-            </View>
-
             <ScrollView
               style={styles.modalScroll}
-              contentContainerStyle={styles.modalScrollContent}>
-              {localDocs.map((doc) => (
-                <View key={doc.id} style={styles.docCard}>
-                  <View style={styles.docCardInfo}>
-                    <Text style={styles.docCardTitle}>📄 {doc.name}</Text>
-                    <Text numberOfLines={2} style={styles.docCardPreview}>
-                      {doc.content}
+              contentContainerStyle={styles.modalScrollContent}
+              keyboardShouldPersistTaps="handled">
+              {/* 1. 실시간 날씨 · 주간 예보 */}
+              <View style={styles.integrationCard}>
+                <View style={styles.integrationHeaderRow}>
+                  <View style={styles.integrationTitleCol}>
+                    <Text style={styles.integrationTitle}>
+                      🌤️ 실시간 날씨 · 주간 예보 (키 불필요)
+                    </Text>
+                    <Text style={styles.integrationSub}>
+                      "서울 날씨 어때?", "청주 내일 비 와?" 입력 시 실시간 기상 조회
                     </Text>
                   </View>
-                  <View style={styles.docCardBtns}>
-                    <TouchableOpacity
-                      onPress={() => {
-                        setAttachedDoc(doc);
-                        setDocModalVisible(false);
-                        showToast(`📄 '${doc.name}' 첨부됨`);
-                      }}
-                      style={styles.docAttachChip}>
-                      <Text style={styles.docAttachChipText}>첨부</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => handleDeleteDoc(doc.id)}
-                      style={styles.docDelChip}>
-                      <Text style={styles.docDelChipText}>삭제</Text>
-                    </TouchableOpacity>
-                  </View>
+                  <Switch
+                    value={integrations.weather.enabled}
+                    onValueChange={(val) =>
+                      persistIntegrations({
+                        ...integrations,
+                        weather: { enabled: val },
+                      })
+                    }
+                    trackColor={{ false: '#3F3F46', true: '#10A37F' }}
+                    thumbColor="#FFFFFF"
+                  />
                 </View>
-              ))}
+              </View>
+
+              {/* 2. 실시간 환율 · 코인 시세 */}
+              <View style={styles.integrationCard}>
+                <View style={styles.integrationHeaderRow}>
+                  <View style={styles.integrationTitleCol}>
+                    <Text style={styles.integrationTitle}>
+                      💱 실시간 환율 · 암호화폐 시세 (키 불필요)
+                    </Text>
+                    <Text style={styles.integrationSub}>
+                      USD/KRW, JPY/KRW, EUR/KRW 및 비트코인·이더리움 실시간 시세 연동
+                    </Text>
+                  </View>
+                  <Switch
+                    value={integrations.finance.enabled}
+                    onValueChange={(val) =>
+                      persistIntegrations({
+                        ...integrations,
+                        finance: { enabled: val },
+                      })
+                    }
+                    trackColor={{ false: '#3F3F46', true: '#3B82F6' }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+              </View>
+
+              {/* 3. 실시간 뉴스 · 위키백과 */}
+              <View style={styles.integrationCard}>
+                <View style={styles.integrationHeaderRow}>
+                  <View style={styles.integrationTitleCol}>
+                    <Text style={styles.integrationTitle}>
+                      📰 실시간 뉴스 · 한국어 위키백과 (키 불필요)
+                    </Text>
+                    <Text style={styles.integrationSub}>
+                      "오늘 주요 뉴스 요약해줘" 또는 "OO 위키에서 찾아줘" 지원
+                    </Text>
+                  </View>
+                  <Switch
+                    value={integrations.knowledge.enabled}
+                    onValueChange={(val) =>
+                      persistIntegrations({
+                        ...integrations,
+                        knowledge: { enabled: val },
+                      })
+                    }
+                    trackColor={{ false: '#3F3F46', true: '#A855F7' }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+              </View>
+
+              {/* 4. 할 일 · 미리 알림 체크리스트 */}
+              <View style={styles.integrationCard}>
+                <View style={styles.integrationHeaderRow}>
+                  <View style={styles.integrationTitleCol}>
+                    <Text style={styles.integrationTitle}>
+                      ✅ 할 일 · 미리 알림 매니저 (오프라인 작동)
+                    </Text>
+                    <Text style={styles.integrationSub}>
+                      현재 {todos.filter((t) => !t.done).length}개의 미완료 할 일 저장됨
+                    </Text>
+                  </View>
+                  <Switch
+                    value={integrations.reminders.enabled}
+                    onValueChange={(val) =>
+                      persistIntegrations({
+                        ...integrations,
+                        reminders: { enabled: val },
+                      })
+                    }
+                    trackColor={{ false: '#3F3F46', true: '#10A37F' }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+              </View>
+
+              {/* 5. 웹 URL · 아티클 리더 */}
+              <View style={styles.integrationCard}>
+                <View style={styles.integrationHeaderRow}>
+                  <View style={styles.integrationTitleCol}>
+                    <Text style={styles.integrationTitle}>
+                      🌐 웹 URL · 아티클 리더 (키 불필요)
+                    </Text>
+                    <Text style={styles.integrationSub}>
+                      대화에 포함된 https:// 웹페이지 본문을 직접 읽어 요약·번역
+                    </Text>
+                  </View>
+                  <Switch
+                    value={integrations.web_reader.enabled}
+                    onValueChange={(val) =>
+                      persistIntegrations({
+                        ...integrations,
+                        web_reader: { enabled: val },
+                      })
+                    }
+                    trackColor={{ false: '#3F3F46', true: '#10A37F' }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+              </View>
+
+              {/* 6. Apple 캘린더 (.ics) 일정 연동 */}
+              <View style={styles.integrationCard}>
+                <View style={styles.integrationHeaderRow}>
+                  <View style={styles.integrationTitleCol}>
+                    <Text style={styles.integrationTitle}>
+                      📅 Apple 캘린더 (.ics) 일정 등록 (키 불필요)
+                    </Text>
+                    <Text style={styles.integrationSub}>
+                      "내일 오후 3시 회의 일정 등록해 줘" 입력 시 iOS 캘린더에 즉시 추가
+                    </Text>
+                  </View>
+                  <Switch
+                    value={integrations.calendar.enabled}
+                    onValueChange={(val) =>
+                      persistIntegrations({
+                        ...integrations,
+                        calendar: { enabled: val },
+                      })
+                    }
+                    trackColor={{ false: '#3F3F46', true: '#3B82F6' }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+              </View>
+
+              {/* 7. GitHub 연동 */}
+              <View style={styles.integrationCard}>
+                <View style={styles.integrationHeaderRow}>
+                  <TouchableOpacity
+                    onPress={() =>
+                      setExpandedCard(expandedCard === 'github' ? null : 'github')
+                    }
+                    style={styles.integrationTitleCol}>
+                    <Text style={styles.integrationTitle}>
+                      🐙 GitHub 연동 (저장소 · 코드 · 커밋)
+                    </Text>
+                    <Text style={styles.integrationSub}>
+                      {integrations.github.repo
+                        ? `기본 저장소: ${integrations.github.repo}`
+                        : '저장소(owner/repo)를 등록하거나 대화에 GitHub URL 입력'}
+                    </Text>
+                  </TouchableOpacity>
+                  <Switch
+                    value={integrations.github.enabled}
+                    onValueChange={(val) =>
+                      persistIntegrations({
+                        ...integrations,
+                        github: { ...integrations.github, enabled: val },
+                      })
+                    }
+                    trackColor={{ false: '#3F3F46', true: '#10A37F' }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                {expandedCard === 'github' && (
+                  <View style={styles.integrationBody}>
+                    <Text style={styles.inputLabel}>기본 GitHub 저장소 (owner/repo)</Text>
+                    <TextInput
+                      value={integrations.github.repo}
+                      onChangeText={(txt) =>
+                        persistIntegrations({
+                          ...integrations,
+                          github: { ...integrations.github, repo: txt },
+                        })
+                      }
+                      placeholder="예: username/PocketMind"
+                      placeholderTextColor="#71717A"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      style={styles.integrationInput}
+                    />
+
+                    <Text style={styles.inputLabel}>
+                      Personal Access Token (비공개 저장소용 · 선택)
+                    </Text>
+                    <TextInput
+                      value={integrations.github.token}
+                      onChangeText={(txt) =>
+                        persistIntegrations({
+                          ...integrations,
+                          github: { ...integrations.github, token: txt },
+                        })
+                      }
+                      placeholder="ghp_... (공개 저장소는 비워두셔도 됩니다)"
+                      placeholderTextColor="#71717A"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry
+                      style={styles.integrationInput}
+                    />
+
+                    <View style={styles.integrationBtnRow}>
+                      <TouchableOpacity
+                        onPress={() => handleTestIntegration('github')}
+                        disabled={testingIntegration === 'github'}
+                        style={styles.testConnBtn}>
+                        <Text style={styles.testConnBtnText}>
+                          {testingIntegration === 'github' ? '확인 중...' : '연결 확인'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              {/* 8. Google 연동 */}
+              <View style={styles.integrationCard}>
+                <View style={styles.integrationHeaderRow}>
+                  <TouchableOpacity
+                    onPress={() =>
+                      setExpandedCard(expandedCard === 'google' ? null : 'google')
+                    }
+                    style={styles.integrationTitleCol}>
+                    <Text style={styles.integrationTitle}>
+                      🔵 Google 연동 (Drive · Docs · Sheets)
+                    </Text>
+                    <Text style={styles.integrationSub}>
+                      {integrations.google.accountNote
+                        ? `연결 계정: ${integrations.google.accountNote}`
+                        : 'Google Docs/Sheets 링크 읽기 및 Google Drive 파일 조회'}
+                    </Text>
+                  </TouchableOpacity>
+                  <Switch
+                    value={integrations.google.enabled}
+                    onValueChange={(val) =>
+                      persistIntegrations({
+                        ...integrations,
+                        google: { ...integrations.google, enabled: val },
+                      })
+                    }
+                    trackColor={{ false: '#3F3F46', true: '#3B82F6' }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                {expandedCard === 'google' && (
+                  <View style={styles.integrationBody}>
+                    <Text style={styles.inputLabel}>
+                      Google OAuth Access Token (비공개 Drive 조회용 · 선택)
+                    </Text>
+                    <TextInput
+                      value={integrations.google.accessToken}
+                      onChangeText={(txt) =>
+                        persistIntegrations({
+                          ...integrations,
+                          google: { ...integrations.google, accessToken: txt },
+                        })
+                      }
+                      placeholder="ya29...."
+                      placeholderTextColor="#71717A"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry
+                      style={styles.integrationInput}
+                    />
+                    <View style={styles.integrationBtnRow}>
+                      <TouchableOpacity
+                        onPress={() => handleTestIntegration('google')}
+                        disabled={testingIntegration === 'google'}
+                        style={styles.testConnBtn}>
+                        <Text style={styles.testConnBtnText}>
+                          {testingIntegration === 'google' ? '확인 중...' : '연결 확인'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              {/* 9. Notion 연동 */}
+              <View style={styles.integrationCard}>
+                <View style={styles.integrationHeaderRow}>
+                  <TouchableOpacity
+                    onPress={() =>
+                      setExpandedCard(expandedCard === 'notion' ? null : 'notion')
+                    }
+                    style={styles.integrationTitleCol}>
+                    <Text style={styles.integrationTitle}>
+                      📝 Notion 연동 (페이지 검색 · 읽기 · 노트 저장)
+                    </Text>
+                    <Text style={styles.integrationSub}>
+                      {integrations.notion.workspaceNote
+                        ? `연결됨: ${integrations.notion.workspaceNote}`
+                        : '노션 페이지 내용 요약 및 새 페이지로 답변 자동 저장'}
+                    </Text>
+                  </TouchableOpacity>
+                  <Switch
+                    value={integrations.notion.enabled}
+                    onValueChange={(val) =>
+                      persistIntegrations({
+                        ...integrations,
+                        notion: { ...integrations.notion, enabled: val },
+                      })
+                    }
+                    trackColor={{ false: '#3F3F46', true: '#A855F7' }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                {expandedCard === 'notion' && (
+                  <View style={styles.integrationBody}>
+                    <Text style={styles.inputLabel}>
+                      Notion Internal Integration Token (ntn_... / secret_...)
+                    </Text>
+                    <TextInput
+                      value={integrations.notion.token}
+                      onChangeText={(txt) =>
+                        persistIntegrations({
+                          ...integrations,
+                          notion: { ...integrations.notion, token: txt },
+                        })
+                      }
+                      placeholder="ntn_... 또는 secret_..."
+                      placeholderTextColor="#71717A"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry
+                      style={styles.integrationInput}
+                    />
+                    <View style={styles.integrationBtnRow}>
+                      <TouchableOpacity
+                        onPress={() => handleTestIntegration('notion')}
+                        disabled={testingIntegration === 'notion'}
+                        style={styles.testConnBtn}>
+                        <Text style={styles.testConnBtnText}>
+                          {testingIntegration === 'notion' ? '확인 중...' : '연결 확인'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              {/* 10. 카카오톡 연동 (온디맨드 전송) */}
+              <View style={styles.integrationCard}>
+                <View style={styles.integrationHeaderRow}>
+                  <TouchableOpacity
+                    onPress={() =>
+                      setExpandedCard(expandedCard === 'kakao' ? null : 'kakao')
+                    }
+                    style={styles.integrationTitleCol}>
+                    <Text style={styles.integrationTitle}>
+                      💬 카카오톡 연동 (요청 시에만 전송)
+                    </Text>
+                    <Text style={styles.integrationSub}>
+                      {integrations.kakao.nicknameNote
+                        ? `연결 프로필: ${integrations.kakao.nicknameNote}`
+                        : '평소 버튼 숨김 · "카톡으로 보내줘" 입력 시에만 발송'}
+                    </Text>
+                  </TouchableOpacity>
+                  <Switch
+                    value={integrations.kakao.enabled}
+                    onValueChange={(val) =>
+                      persistIntegrations({
+                        ...integrations,
+                        kakao: { ...integrations.kakao, enabled: val },
+                      })
+                    }
+                    trackColor={{ false: '#3F3F46', true: '#EAB308' }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                {expandedCard === 'kakao' && (
+                  <View style={styles.integrationBody}>
+                    <Text style={styles.inputLabel}>
+                      Kakao REST API Access Token (나에게 보내기 자동 발송용 · 선택)
+                    </Text>
+                    <TextInput
+                      value={integrations.kakao.accessToken}
+                      onChangeText={(txt) =>
+                        persistIntegrations({
+                          ...integrations,
+                          kakao: { ...integrations.kakao, accessToken: txt },
+                        })
+                      }
+                      placeholder="토큰 미입력 시에도 '카톡으로 보내줘' 요청 시 공유 시트로 연결됩니다"
+                      placeholderTextColor="#71717A"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry
+                      style={styles.integrationInput}
+                    />
+                    <View style={styles.integrationBtnRow}>
+                      <TouchableOpacity
+                        onPress={() => handleTestIntegration('kakao')}
+                        disabled={testingIntegration === 'kakao'}
+                        style={styles.testConnBtn}>
+                        <Text style={styles.testConnBtnText}>
+                          {testingIntegration === 'kakao' ? '확인 중...' : '연결 확인'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+              </View>
             </ScrollView>
           </View>
         </View>
@@ -3238,7 +3806,6 @@ export default function App(): React.JSX.Element {
               8GB RAM 한계에 맞춘 7B~8B 플래그십 모델을 내려받으면 능동형 AI가 작업에 맞춰 모델을 자동 선택·협업합니다.
             </Text>
 
-            {/* 셀룰러 데이터 다운로드 허용 토글 */}
             <View style={styles.toggleSettingCard}>
               <View style={styles.toggleTextCol}>
                 <Text style={styles.toggleTitle}>
@@ -3258,7 +3825,6 @@ export default function App(): React.JSX.Element {
               />
             </View>
 
-            {/* 능동형 복합 AI 모드 선택 카드 */}
             <TouchableOpacity
               onPress={() => handleSelectMode('auto')}
               style={[
@@ -3274,7 +3840,7 @@ export default function App(): React.JSX.Element {
                 )}
               </View>
               <Text style={styles.autoModeDesc}>
-                질문 성격을 자동 분석해 최적의 AI를 고르거나, 수리+한국어·코드+기획서 같은 복합 요청 시 두 AI가 순차 협업합니다.
+                질문 성격을 자동 분석해 최적의 AI를 고르거나, 수리+한국어·GitHub 코드+한국어 정리 같은 복합 요청 시 두 AI가 순차 협업합니다.
               </Text>
             </TouchableOpacity>
 
@@ -3444,38 +4010,40 @@ const styles = StyleSheet.create({
     color: '#9B9B9B',
     fontSize: 13,
   },
-  quickFeatureBar: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 10,
+  quickFeatureBarWrap: {
     paddingBottom: 6,
-    gap: 5,
+  },
+  quickFeatureScroll: {
+    paddingHorizontal: 12,
+    gap: 6,
+    alignItems: 'center',
   },
   featurePill: {
     backgroundColor: '#2A2A2A',
     borderWidth: 1,
     borderColor: '#3A3A3A',
-    paddingHorizontal: 9,
+    paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
   },
-  featurePillOnline: {
+  featurePillGithub: {
     backgroundColor: '#132E26',
     borderColor: '#10A37F',
   },
-  featurePillOffline: {
-    backgroundColor: '#262626',
-    borderColor: '#383838',
+  featurePillGoogle: {
+    backgroundColor: '#172554',
+    borderColor: '#3B82F6',
   },
   featurePillText: {
-    color: '#B4B4B4',
+    color: '#A1A1AA',
     fontSize: 11,
     fontWeight: '600',
   },
-  featurePillTextOnline: {
+  featurePillTextGithub: {
     color: '#6EE7B7',
+  },
+  featurePillTextGoogle: {
+    color: '#93C5FD',
   },
   toastWrap: {
     alignSelf: 'center',
@@ -3600,20 +4168,6 @@ const styles = StyleSheet.create({
   },
   userRow: {
     alignItems: 'flex-end',
-    gap: 5,
-  },
-  userDocBadge: {
-    backgroundColor: '#1E293B',
-    borderWidth: 1,
-    borderColor: '#334155',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 10,
-  },
-  userDocBadgeText: {
-    color: '#93C5FD',
-    fontSize: 11,
-    fontWeight: '600',
   },
   userBubble: {
     maxWidth: '82%',
@@ -3680,24 +4234,6 @@ const styles = StyleSheet.create({
     color: '#93C5FD',
     fontSize: 11,
     fontWeight: '600',
-  },
-  sourcesCard: {
-    backgroundColor: '#162420',
-    borderWidth: 1,
-    borderColor: '#244239',
-    borderRadius: 10,
-    padding: 10,
-    gap: 3,
-  },
-  sourcesHeader: {
-    color: '#6EE7B7',
-    fontSize: 11,
-    fontWeight: '700',
-    marginBottom: 2,
-  },
-  sourceItemText: {
-    color: '#D1FAE5',
-    fontSize: 11,
   },
   stage1Card: {
     backgroundColor: '#19222C',
@@ -3773,8 +4309,61 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     padding: 12,
   },
+  todoCard: {
+    backgroundColor: '#142620',
+    borderWidth: 1,
+    borderColor: '#10A37F',
+    borderRadius: 12,
+    padding: 12,
+    gap: 7,
+  },
+  todoCardHeader: {
+    color: '#6EE7B7',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  todoItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  todoCheckbox: {
+    color: '#10A37F',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  todoItemText: {
+    color: '#ECFDF5',
+    fontSize: 13,
+    flex: 1,
+  },
+  todoItemTextDone: {
+    color: '#6EE7B7',
+    textDecorationLine: 'line-through',
+    opacity: 0.65,
+  },
+  calendarActionCard: {
+    backgroundColor: '#172554',
+    borderWidth: 1,
+    borderColor: '#3B82F6',
+    borderRadius: 12,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    gap: 3,
+  },
+  calendarActionTitle: {
+    color: '#93C5FD',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  calendarActionSub: {
+    color: '#DBEAFE',
+    fontSize: 12,
+  },
   actionBar: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     marginTop: 2,
   },
@@ -3794,29 +4383,6 @@ const styles = StyleSheet.create({
     paddingTop: 6,
     paddingBottom: 10,
     backgroundColor: '#212121',
-  },
-  attachedDocBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#1E293B',
-    borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginBottom: 6,
-  },
-  attachedDocText: {
-    color: '#93C5FD',
-    fontSize: 12,
-    fontWeight: '600',
-    flex: 1,
-  },
-  attachedDocRemove: {
-    color: '#94A3B8',
-    fontSize: 14,
-    paddingLeft: 8,
   },
   inputCapsule: {
     flexDirection: 'row',
@@ -3966,7 +4532,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   drawerFooterBtn: {
-    paddingVertical: 3,
+    paddingVertical: 4,
     paddingHorizontal: 6,
   },
   drawerFooterText: {
@@ -4009,28 +4575,85 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: 12,
   },
-  quickActionGrid: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
-  },
-  quickActionTile: {
-    flex: 1,
-    backgroundColor: '#2A2A2A',
+  clipboardBannerBtn: {
+    backgroundColor: '#1E293B',
     borderWidth: 1,
-    borderColor: '#3D3D3D',
+    borderColor: '#334155',
     borderRadius: 12,
     paddingVertical: 10,
+    paddingHorizontal: 14,
     alignItems: 'center',
-    gap: 4,
+    marginBottom: 12,
   },
-  quickActionTileIcon: {
-    fontSize: 18,
+  clipboardBannerBtnText: {
+    color: '#93C5FD',
+    fontSize: 13,
+    fontWeight: '700',
   },
-  quickActionTileLabel: {
-    color: '#ECECEC',
+  integrationCard: {
+    backgroundColor: '#2A2A2A',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#3A3A3A',
+    gap: 10,
+  },
+  integrationHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  integrationTitleCol: {
+    flex: 1,
+    gap: 3,
+  },
+  integrationTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  integrationSub: {
+    color: '#A1A1AA',
+    fontSize: 12,
+  },
+  integrationBody: {
+    borderTopWidth: 1,
+    borderTopColor: '#383838',
+    paddingTop: 10,
+    gap: 7,
+  },
+  inputLabel: {
+    color: '#D4D4D8',
     fontSize: 11,
     fontWeight: '600',
+  },
+  integrationInput: {
+    backgroundColor: '#1B1B1B',
+    borderWidth: 1,
+    borderColor: '#3F3F46',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    color: '#FFFFFF',
+    fontSize: 13,
+  },
+  integrationBtnRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  testConnBtn: {
+    backgroundColor: '#10A37F',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 9,
+    alignItems: 'center',
+  },
+  testConnBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
   },
   toggleSettingCard: {
     flexDirection: 'row',
@@ -4057,221 +4680,6 @@ const styles = StyleSheet.create({
     color: '#A1A1AA',
     fontSize: 11,
     lineHeight: 16,
-  },
-  clipboardQuickAction: {
-    backgroundColor: '#1E293B',
-    borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 12,
-    paddingVertical: 11,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  clipboardQuickActionText: {
-    color: '#93C5FD',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  pluginRowCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#2A2A2A',
-    borderRadius: 13,
-    padding: 13,
-    borderWidth: 1,
-    borderColor: '#3A3A3A',
-    gap: 10,
-  },
-  pluginInfoCol: {
-    flex: 1,
-    gap: 4,
-  },
-  pluginTitleLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    flexWrap: 'wrap',
-  },
-  pluginTitleText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  onlineOnlyTag: {
-    backgroundColor: '#13392E',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 5,
-  },
-  onlineOnlyTagText: {
-    color: '#6EE7B7',
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  localTag: {
-    backgroundColor: '#1E293B',
-  },
-  localTagText: {
-    color: '#93C5FD',
-  },
-  pluginDescText: {
-    color: '#B4B4B4',
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  tryPluginBtn: {
-    alignSelf: 'flex-start',
-    marginTop: 4,
-    backgroundColor: '#343434',
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 7,
-  },
-  tryPluginBtnText: {
-    color: '#E5E7EB',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  memoryInputRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
-  },
-  memoryInputBox: {
-    flex: 1,
-    backgroundColor: '#2A2A2A',
-    borderWidth: 1,
-    borderColor: '#3E3E3E',
-    borderRadius: 11,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    color: '#FFFFFF',
-    fontSize: 13,
-  },
-  memoryAddBtn: {
-    backgroundColor: '#10A37F',
-    paddingHorizontal: 16,
-    borderRadius: 11,
-    justifyContent: 'center',
-  },
-  memoryAddBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  emptyListHint: {
-    color: '#8E8EA0',
-    fontSize: 13,
-    textAlign: 'center',
-    paddingVertical: 24,
-    lineHeight: 19,
-  },
-  memoryCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#2A2A2A',
-    borderRadius: 11,
-    padding: 12,
-    gap: 10,
-  },
-  memoryFactText: {
-    color: '#ECECEC',
-    fontSize: 13,
-    flex: 1,
-    lineHeight: 19,
-  },
-  memoryDelText: {
-    color: '#F87171',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  docCreateBox: {
-    backgroundColor: '#262626',
-    borderRadius: 13,
-    padding: 12,
-    gap: 8,
-    marginBottom: 12,
-  },
-  docTitleInput: {
-    backgroundColor: '#1B1B1B',
-    borderRadius: 9,
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-    color: '#FFFFFF',
-    fontSize: 13,
-  },
-  docBodyInput: {
-    backgroundColor: '#1B1B1B',
-    borderRadius: 9,
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-    color: '#FFFFFF',
-    fontSize: 13,
-    minHeight: 74,
-    maxHeight: 120,
-    textAlignVertical: 'top',
-  },
-  docSaveAttachBtn: {
-    backgroundColor: '#3B82F6',
-    borderRadius: 9,
-    paddingVertical: 9,
-    alignItems: 'center',
-  },
-  docSaveAttachBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  docCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#2A2A2A',
-    borderRadius: 11,
-    padding: 12,
-    gap: 10,
-  },
-  docCardInfo: {
-    flex: 1,
-    gap: 3,
-  },
-  docCardTitle: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  docCardPreview: {
-    color: '#9B9B9B',
-    fontSize: 11,
-  },
-  docCardBtns: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  docAttachChip: {
-    backgroundColor: '#10A37F',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  docAttachChipText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  docDelChip: {
-    backgroundColor: '#3A2323',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  docDelChipText: {
-    color: '#F87171',
-    fontSize: 12,
-    fontWeight: '600',
   },
   autoModeCard: {
     backgroundColor: '#172A24',
