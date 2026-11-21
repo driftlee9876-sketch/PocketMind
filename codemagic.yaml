@@ -1,0 +1,39 @@
+workflows:
+  ios-pocketmind-sideload:
+    name: PocketMind iOS Build (Increased RAM)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      node: 20
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Install npm dependencies
+        script: |
+          npm install
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios && pod install
+      - name: Build unsigned iOS archive
+        script: |
+          xcodebuild archive \
+            -workspace ios/PocketMind.xcworkspace \
+            -scheme PocketMind \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/PocketMind.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Embed Increased Memory Limit entitlement
+        script: |
+          codesign --force --sign - \
+            --entitlements ios/PocketMind/PocketMind.entitlements \
+            build/PocketMind.xcarchive/Products/Applications/PocketMind.app
+      - name: Package IPA
+        script: |
+          mkdir -p build/ipa/Payload
+          cp -r build/PocketMind.xcarchive/Products/Applications/PocketMind.app build/ipa/Payload/
+          cd build/ipa && zip -r ../PocketMind-unsigned.ipa Payload
+    artifacts:
+      - build/PocketMind-unsigned.ipa
