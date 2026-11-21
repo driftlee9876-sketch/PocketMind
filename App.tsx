@@ -37,7 +37,18 @@ try {
 type ModelKey = 'allrounder' | 'math' | 'korean';
 type SelectionMode = 'auto' | ModelKey;
 type PromptFormat = 'chatml' | 'exaone';
-type PluginKey = 'calculator' | 'url_reader' | 'datetime_tool' | 'clipboard_reader';
+type PluginCategory = 'realtime' | 'compute' | 'productivity';
+type PluginKey =
+  | 'memory_core'
+  | 'code_interpreter'
+  | 'live_weather'
+  | 'live_currency'
+  | 'doc_reader'
+  | 'unit_timezone'
+  | 'calculator'
+  | 'url_reader'
+  | 'datetime_tool'
+  | 'clipboard_reader';
 
 interface WebSearchSource {
   title: string;
@@ -47,10 +58,25 @@ interface WebSearchSource {
 
 interface PluginSpec {
   key: PluginKey;
+  category: PluginCategory;
   icon: string;
   title: string;
   desc: string;
   requiresInternet: boolean;
+  samplePrompt: string;
+}
+
+interface MemoryItem {
+  id: string;
+  fact: string;
+  createdAt: number;
+}
+
+interface LocalDocItem {
+  id: string;
+  name: string;
+  content: string;
+  updatedAt: number;
 }
 
 interface SuggestionItem {
@@ -81,6 +107,7 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  attachedDocName?: string;
   orchestrationLabel?: string;
   pluginBadges?: string[];
   webSources?: WebSearchSource[];
@@ -161,68 +188,129 @@ const MODEL_ORDER: ModelKey[] = ['allrounder', 'math', 'korean'];
 
 const PLUGINS: PluginSpec[] = [
   {
+    key: 'memory_core',
+    category: 'productivity',
+    icon: '🧠',
+    title: '장기 메모리 (ChatGPT Memory)',
+    desc: '사용자의 선호·프로필·지시사항을 기기에 기억해 모든 대화에서 맥락 유지',
+    requiresInternet: false,
+    samplePrompt: '내가 아이폰 16 Pro를 쓰고 있고 간결한 두괄식 답변을 선호한다는 걸 기억해 줘.',
+  },
+  {
+    key: 'code_interpreter',
+    category: 'compute',
+    icon: '💻',
+    title: '코드 인터프리터 · 데이터 실행기',
+    desc: 'JS 수식·배열 통계(평균·표준편차)·JSON 연산을 로컬 샌드박스에서 실제 실행 검증',
+    requiresInternet: false,
+    samplePrompt: '데이터 [82, 95, 78, 91, 88, 100, 74]의 평균, 중앙값, 표준편차를 계산해서 분석해 줘.',
+  },
+  {
+    key: 'live_weather',
+    category: 'realtime',
+    icon: '🌤️',
+    title: '실시간 세계 날씨 · 기상 브리핑',
+    desc: '서울·청주·제주·도쿄·뉴욕 등 도시의 실시간 기온·습도·풍속·예보 조회',
+    requiresInternet: true,
+    samplePrompt: '지금 서울과 도쿄의 실시간 날씨와 기온을 비교해서 알려줘.',
+  },
+  {
+    key: 'live_currency',
+    category: 'realtime',
+    icon: '💱',
+    title: '실시간 환율 · 통화 변환기',
+    desc: 'USD·JPY·EUR·CNY 등 실시간 기준 환율을 조회해 원화(KRW) 환산값 자동 계산',
+    requiresInternet: true,
+    samplePrompt: '지금 환율 기준으로 1,250달러와 85,000엔이 각각 한국 돈으로 얼마인지 계산해 줘.',
+  },
+  {
+    key: 'doc_reader',
+    category: 'productivity',
+    icon: '📄',
+    title: '로컬 문서 보관함 · 파일 분석',
+    desc: 'TXT·CSV·Markdown 문서를 보관함에 저장하고 대화에 첨부해 요약·질의응답',
+    requiresInternet: false,
+    samplePrompt: '보관함 문서를 첨부해 핵심 내용 3줄 요약과 실행 항목을 뽑아줘.',
+  },
+  {
+    key: 'unit_timezone',
+    category: 'compute',
+    icon: '⚖️',
+    title: '단위 · 세계 시차 · 인코더 변환기',
+    desc: 'km↔mile, kg↔lb, °C↔°F, 세계 주요 도시 시각, Base64 변환 즉시 처리',
+    requiresInternet: false,
+    samplePrompt: '화씨 86도는 섭씨 몇 도이고, 42.195km는 몇 마일인지 변환해 줘.',
+  },
+  {
     key: 'calculator',
+    category: 'compute',
     icon: '🧮',
     title: '정밀 수식 계산기',
-    desc: '사칙연산·거듭제곱·삼각함수·로그를 오차 없이 선계산해 AI 추론 정확도 보강',
+    desc: '사칙연산·거듭제곱·퍼센트 식을 오차 없이 선계산해 AI 추론 정확도 보강',
     requiresInternet: false,
+    samplePrompt: '(148500 * 1.1) - (24500 * 3) 값을 정확히 계산하고 내역을 설명해 줘.',
   },
   {
     key: 'url_reader',
+    category: 'realtime',
     icon: '🔗',
     title: '웹페이지 URL 요약기',
-    desc: '메시지에 포함된 https:// 링크의 본문을 직접 읽어 요약·분석 (온라인 전용)',
+    desc: '메시지에 포함된 https:// 링크의 본문을 직접 읽어 핵심 내용 요약',
     requiresInternet: true,
+    samplePrompt: 'https://ko.wikipedia.org/wiki/인공지능 페이지의 핵심 내용을 요약해 줘.',
   },
   {
     key: 'datetime_tool',
+    category: 'productivity',
     icon: '📅',
     title: '현재 시각 · D-Day 엔진',
-    desc: '정확한 한국 표준시(KST) 날짜·요일 및 D-Day 일수 계산 제공',
+    desc: '정확한 한국 표준시(KST) 날짜·요일 및 특정 날짜까지의 D-Day 일수 계산',
     requiresInternet: false,
+    samplePrompt: '오늘 정확한 날짜와 요일을 알려주고 올해 말까지 며칠 남았는지 계산해 줘.',
   },
   {
     key: 'clipboard_reader',
+    category: 'productivity',
     icon: '📋',
     title: '클립보드 스마트 분석',
-    desc: '복사해 둔 텍스트를 입력창에 원탭으로 불러와 요약·번역·교정',
+    desc: '아이폰 클립보드에 복사된 텍스트를 원탭으로 불러와 요약·번역·교정',
     requiresInternet: false,
+    samplePrompt: '클립보드 내용을 불러와 자연스러운 한국어로 다듬어 줘.',
   },
 ];
 
 const AUTO_SUGGESTIONS: SuggestionItem[] = [
   {
-    badge: '🌐 웹 검색 + EXAONE 7.8B',
-    title: '실시간 최신 이슈 검색 및 요약',
-    desc: '인터넷 연결 시 최신 웹 정보를 검색해 한국어로 깔끔하게 정리',
-    prompt: '오늘 대한민국 주요 IT 및 경제 뉴스 핵심 이슈 3가지를 검색해서 요약해 줘.',
+    badge: '🌤️ 실시간 날씨 + EXAONE 7.8B',
+    title: '실시간 도시 날씨 및 옷차림 추천',
+    desc: '기상 플러그인이 현재 기온·습도를 조회하고 한국어로 브리핑',
+    prompt: '지금 서울 실시간 날씨와 기온, 습도를 확인하고 오늘 외출 옷차림을 추천해 줘.',
   },
   {
-    badge: '복합 협업 · Math + EXAONE',
-    title: '수리 분석 + 한국어 결과 보고서',
-    desc: 'Math 7B가 확률·기댓값을 계산하고 EXAONE 7.8B가 보고서로 정리',
-    prompt:
-      '연이율 4.5% 월복리로 매월 50만 원씩 5년간 적립할 때 만기 원리금 합계를 단계별로 계산하고, 이 결과를 바탕으로 재테크 초보자를 위한 친절한 한국어 안내 보고서를 작성해 줘.',
+    badge: '💻 코드 인터프리터 + Math 7B',
+    title: '데이터 통계 실행 및 수리 분석',
+    desc: '로컬 샌드박스에서 평균·표준편차를 실행 검증한 뒤 심층 해석',
+    prompt: '데이터 [82, 95, 78, 91, 88, 100, 74]의 평균, 중앙값, 표준편차를 계산해서 분석해 줘.',
   },
   {
-    badge: '복합 협업 · Qwen3 + EXAONE',
-    title: '알고리즘 코드 설계 + 한국어 기획서',
-    desc: 'Qwen3 8B가 파이썬 코드를 작성하고 EXAONE이 도입 제안서로 윤문',
-    prompt:
-      '대용량 CSV 로그에서 이상 징후를 탐지하는 파이썬 코드 구조를 설계하고, 팀장에게 제출할 한국어 도입 제안서 형식으로 깔끔하게 정리해 줘.',
+    badge: '💱 실시간 환율 + 복합 협업',
+    title: '외화 환율 자동 환산 및 예산 보고서',
+    desc: '실시간 환율 조회 후 Math 7B 검증 + EXAONE 한국어 정리',
+    prompt: '지금 환율 기준으로 1,250달러와 85,000엔이 각각 한국 돈으로 얼마인지 계산하고 여행 예산 안내문으로 정리해 줘.',
   },
   {
-    badge: '플러그인 · 정밀 계산 + Math 7B',
-    title: '복합 수식 계산 및 미적분 풀이',
-    desc: '정밀 계산기 플러그인과 Math 7B가 결합해 오차 없는 수리 풀이 제공',
-    prompt:
-      '함수 f(x) = x^4 - 4x^3 + 4x^2 + 3의 극댓값과 극솟값을 미분을 이용해 단계별로 구하고 그래프의 개형을 설명해 줘.',
+    badge: '🧠 장기 메모리 + Qwen3 8B',
+    title: '나만의 AI 맞춤 설정 기억시키기',
+    desc: 'ChatGPT 메모리처럼 내 선호와 작업 환경을 기기에 영구 저장',
+    prompt: '내가 아이폰 16 Pro를 쓰고 있고 코딩 답변은 핵심 코드와 간단한 설명 위주로 받는 걸 좋아한다고 기억해 줘.',
   },
 ];
 
-const STORAGE_SESSIONS_KEY = '@pocketmind_sessions_v4';
-const STORAGE_MODE_KEY = '@pocketmind_selection_mode_v4';
-const STORAGE_SETTINGS_KEY = '@pocketmind_settings_v4';
+const STORAGE_SESSIONS_KEY = '@pocketmind_sessions_v5';
+const STORAGE_MODE_KEY = '@pocketmind_selection_mode_v5';
+const STORAGE_SETTINGS_KEY = '@pocketmind_settings_v5';
+const STORAGE_MEMORY_KEY = '@pocketmind_memory_v5';
+const STORAGE_DOCS_KEY = '@pocketmind_docs_v5';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const DRAWER_WIDTH = Math.min(295, SCREEN_WIDTH * 0.8);
@@ -285,6 +373,142 @@ function safeEvaluateMath(promptText: string): string | null {
   return null;
 }
 
+function runCodeInterpreterSandbox(promptText: string): string | null {
+  // 1. 배열 통계 분석 감지 ([10, 20, 30, ...])
+  const arrayMatch = promptText.match(/\[\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?){2,}\s*\]/);
+  if (arrayMatch) {
+    try {
+      const nums: number[] = JSON.parse(arrayMatch[0]);
+      if (Array.isArray(nums) && nums.length >= 3) {
+        const n = nums.length;
+        const sum = nums.reduce((acc, v) => acc + v, 0);
+        const mean = sum / n;
+        const sorted = [...nums].sort((a, b) => a - b);
+        const median =
+          n % 2 === 1
+            ? sorted[Math.floor(n / 2)]
+            : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+        const variance =
+          nums.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / n;
+        const stdDev = Math.sqrt(variance);
+        const min = sorted[0];
+        const max = sorted[n - 1];
+        return (
+          `배열 데이터(N=${n}): [${nums.join(', ')}]\n` +
+          `• 합계: ${Number(sum.toFixed(4))}\n` +
+          `• 평균(Mean): ${Number(mean.toFixed(4))}\n` +
+          `• 중앙값(Median): ${Number(median.toFixed(4))}\n` +
+          `• 모표준편차(SD): ${Number(stdDev.toFixed(4))}\n` +
+          `• 최솟값 / 최댓값: ${min} / ${max}`
+        );
+      }
+    } catch {
+      // 무시
+    }
+  }
+
+  // 2. JS 코드 블록 실행 감지 (```js ... ``` 또는 ```javascript ... ```)
+  const fence = '\x60\x60\x60';
+  const jsBlockRegex = new RegExp(
+    fence + '(?:js|javascript)\\n([\\s\\S]*?)' + fence,
+    'i',
+  );
+  const codeMatch = promptText.match(jsBlockRegex);
+  if (codeMatch && codeMatch[1]) {
+    const code = codeMatch[1];
+    const forbidden =
+      /(fetch|XMLHttpRequest|require|import|process|global|window|eval|Function|AsyncStorage|RNFS)/;
+    if (!forbidden.test(code) && code.length <= 1200) {
+      try {
+        const logs: string[] = [];
+        const sandboxConsole = {
+          log: (...args: any[]) => logs.push(args.map((a) => String(a)).join(' ')),
+        };
+        // eslint-disable-next-line no-new-func
+        const runner = new Function('console', `"use strict";\n${code}`);
+        const ret = runner(sandboxConsole);
+        const outputParts: string[] = [];
+        if (logs.length > 0) outputParts.push(`console.log 출력:\n${logs.join('\n')}`);
+        if (ret !== undefined) outputParts.push(`반환값: ${JSON.stringify(ret)}`);
+        if (outputParts.length > 0) {
+          return outputParts.join('\n');
+        }
+      } catch (err) {
+        return `샌드박스 실행 오류: ${String(err)}`;
+      }
+    }
+  }
+
+  return null;
+}
+
+function runUnitAndTimezoneConverter(promptText: string): string | null {
+  const results: string[] = [];
+
+  // 온도 변환 (°C <-> °F)
+  const fMatch = promptText.match(/화씨\s*(-?\d+(?:\.\d+)?)\s*도?|(-?\d+(?:\.\d+)?)\s*°?\s*F\b/i);
+  if (fMatch) {
+    const f = parseFloat(fMatch[1] ?? fMatch[2]);
+    if (!Number.isNaN(f)) {
+      const c = ((f - 32) * 5) / 9;
+      results.push(`화씨 ${f}°F = 섭씨 ${c.toFixed(2)}°C`);
+    }
+  }
+  const cMatch = promptText.match(/섭씨\s*(-?\d+(?:\.\d+)?)\s*도?|(-?\d+(?:\.\d+)?)\s*°?\s*C\b/i);
+  if (cMatch) {
+    const c = parseFloat(cMatch[1] ?? cMatch[2]);
+    if (!Number.isNaN(c)) {
+      const f = (c * 9) / 5 + 32;
+      results.push(`섭씨 ${c}°C = 화씨 ${f.toFixed(2)}°F`);
+    }
+  }
+
+  // 거리 변환 (km <-> mile)
+  const kmMatch = promptText.match(/(\d+(?:\.\d+)?)\s*(?:km|킬로미터)/i);
+  if (kmMatch && /(마일|mile|변환|환산)/i.test(promptText)) {
+    const km = parseFloat(kmMatch[1]);
+    results.push(`${km} km = ${(km * 0.621371).toFixed(4)} miles`);
+  }
+  const mileMatch = promptText.match(/(\d+(?:\.\d+)?)\s*(?:miles?|마일)/i);
+  if (mileMatch && /(km|킬로|변환|환산)/i.test(promptText)) {
+    const mi = parseFloat(mileMatch[1]);
+    results.push(`${mi} miles = ${(mi * 1.609344).toFixed(4)} km`);
+  }
+
+  // 무게 변환 (kg <-> lb)
+  const kgMatch = promptText.match(/(\d+(?:\.\d+)?)\s*(?:kg|킬로그램)/i);
+  if (kgMatch && /(파운드|lb|lbs|변환|환산)/i.test(promptText)) {
+    const kg = parseFloat(kgMatch[1]);
+    results.push(`${kg} kg = ${(kg * 2.20462).toFixed(3)} lbs`);
+  }
+  const lbMatch = promptText.match(/(\d+(?:\.\d+)?)\s*(?:lbs?|파운드)/i);
+  if (lbMatch && /(kg|킬로|변환|환산)/i.test(promptText)) {
+    const lb = parseFloat(lbMatch[1]);
+    results.push(`${lb} lbs = ${(lb * 0.453592).toFixed(3)} kg`);
+  }
+
+  // 세계 주요 도시 시각
+  if (/(뉴욕|런던|도쿄|파리|시차|현지\s*시간|세계\s*시간)/i.test(promptText)) {
+    const now = new Date();
+    const formatZone = (offsetHours: number, label: string) => {
+      const d = new Date(now.getTime() + offsetHours * 3600 * 1000);
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mm = String(d.getUTCMinutes()).padStart(2, '0');
+      const mo = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const da = String(d.getUTCDate()).padStart(2, '0');
+      return `${label} ${mo}/${da} ${hh}:${mm}`;
+    };
+    results.push(
+      `세계 주요 도시 현재 시각: ${formatZone(9, '서울/도쿄(UTC+9)')}, ${formatZone(
+        0,
+        '런던(UTC+0)',
+      )}, ${formatZone(-5, '뉴욕(EST, UTC-5)')}`,
+    );
+  }
+
+  return results.length > 0 ? results.join(' | ') : null;
+}
+
 function getKoreanDateTimeContext(): string {
   const now = new Date();
   const kstMs = now.getTime() + 9 * 60 * 60 * 1000;
@@ -296,7 +520,172 @@ function getKoreanDateTimeContext(): string {
   const hh = String(kst.getUTCHours()).padStart(2, '0');
   const mm = String(kst.getUTCMinutes()).padStart(2, '0');
   const dayName = days[kst.getUTCDay()];
-  return `${y}년 ${m}월 ${d}일 (${dayName}요일) ${hh}:${mm} KST`;
+
+  const endOfYear = Date.UTC(y, 11, 31, 23, 59, 59);
+  const todayUtc = Date.UTC(y, kst.getUTCMonth(), kst.getUTCDate());
+  const daysLeftInYear = Math.max(
+    0,
+    Math.ceil((endOfYear - todayUtc) / (1000 * 60 * 60 * 24)),
+  );
+
+  return `${y}년 ${m}월 ${d}일 (${dayName}요일) ${hh}:${mm} KST (올해 말까지 D-${daysLeftInYear})`;
+}
+
+function extractMemoryFactFromPrompt(promptText: string): string | null {
+  const trimmed = promptText.trim();
+  const triggerRegex =
+    /(기억해\s*줘|기억해줘|기억해\s*둬|메모해\s*줘|메모해줘|잊지\s*마|저장해\s*줘)/i;
+  if (!triggerRegex.test(trimmed)) return null;
+
+  const cleaned = trimmed
+    .replace(triggerRegex, '')
+    .replace(/^(내가|나는|앞으로)\s*/i, '')
+    .replace(/라는\s*걸\s*$/i, '')
+    .replace(/라고\s*$/i, '')
+    .replace(/[.!?]+$/, '')
+    .trim();
+
+  if (cleaned.length < 3 || cleaned.length > 180) return null;
+  return cleaned;
+}
+
+const CITY_COORDS: Array<{ keywords: string[]; name: string; lat: number; lon: number }> = [
+  { keywords: ['서울', 'seoul'], name: '서울', lat: 37.5665, lon: 126.978 },
+  { keywords: ['청주', 'cheongju'], name: '청주', lat: 36.6424, lon: 127.489 },
+  { keywords: ['부산', 'busan'], name: '부산', lat: 35.1796, lon: 129.0756 },
+  { keywords: ['제주', 'jeju'], name: '제주', lat: 33.4996, lon: 126.5312 },
+  { keywords: ['인천', 'incheon'], name: '인천', lat: 37.4563, lon: 126.7052 },
+  { keywords: ['대구', 'daegu'], name: '대구', lat: 35.8714, lon: 128.6014 },
+  { keywords: ['대전', 'daejeon'], name: '대전', lat: 36.3504, lon: 127.3845 },
+  { keywords: ['광주', 'gwangju'], name: '광주', lat: 35.1595, lon: 126.8526 },
+  { keywords: ['도쿄', 'tokyo'], name: '도쿄', lat: 35.6762, lon: 139.6503 },
+  { keywords: ['오사카', 'osaka'], name: '오사카', lat: 34.6937, lon: 135.5023 },
+  { keywords: ['뉴욕', 'new york'], name: '뉴욕', lat: 40.7128, lon: -74.006 },
+  { keywords: ['런던', 'london'], name: '런던', lat: 51.5074, lon: -0.1278 },
+  { keywords: ['파리', 'paris'], name: '파리', lat: 48.8566, lon: 2.3522 },
+  { keywords: ['방콕', 'bangkok'], name: '방콕', lat: 13.7563, lon: 100.5018 },
+];
+
+function weatherCodeToKorean(code: number): string {
+  if (code === 0) return '맑음';
+  if (code <= 3) return '구름 조금·흐림';
+  if (code === 45 || code === 48) return '안개';
+  if (code >= 51 && code <= 67) return '비·이슬비';
+  if (code >= 71 && code <= 77) return '눈';
+  if (code >= 80 && code <= 82) return '소나기';
+  if (code >= 95) return '뇌우';
+  return '대체로 흐림';
+}
+
+async function fetchLiveWeatherContext(promptText: string): Promise<string | null> {
+  if (!/(날씨|기온|온도|비\s*오|눈\s*오|미세먼지|옷차림|습도|weather)/i.test(promptText)) {
+    return null;
+  }
+
+  const lower = promptText.toLowerCase();
+  const matchedCities = CITY_COORDS.filter((c) =>
+    c.keywords.some((kw) => lower.includes(kw)),
+  );
+  const targets = matchedCities.length > 0 ? matchedCities.slice(0, 2) : [CITY_COORDS[0]];
+
+  const summaries: string[] = [];
+  for (const city of targets) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1`;
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        const cur = data?.current;
+        const daily = data?.daily;
+        if (cur) {
+          const cond = weatherCodeToKorean(Number(cur.weather_code ?? 0));
+          const maxT = daily?.temperature_2m_max?.[0];
+          const minT = daily?.temperature_2m_min?.[0];
+          const rangeStr =
+            maxT !== undefined && minT !== undefined
+              ? ` (최저 ${minT}°C / 최고 ${maxT}°C)`
+              : '';
+          summaries.push(
+            `${city.name}: 현재 ${cur.temperature_2m}°C (체감 ${cur.apparent_temperature}°C), 상태 ${cond}, 습도 ${cur.relative_humidity_2m}%, 풍속 ${cur.wind_speed_10m}km/h${rangeStr}`,
+          );
+        }
+      }
+    } catch {
+      // 무시
+    }
+  }
+
+  return summaries.length > 0 ? summaries.join('\n') : null;
+}
+
+async function fetchLiveCurrencyContext(promptText: string): Promise<string | null> {
+  if (!/(환율|달러|usd|엔화|엔|jpy|유로|eur|위안|cny|파운드|gbp|외화)/i.test(promptText)) {
+    return null;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6500);
+    const res = await fetch('https://open.er-api.com/v6/latest/USD', {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+
+    const json = await res.json();
+    const rates = json?.rates;
+    if (!rates || !rates.KRW) return null;
+
+    const krwPerUsd = Number(rates.KRW);
+    const krwPerJpy100 = (krwPerUsd / Number(rates.JPY)) * 100;
+    const krwPerEur = krwPerUsd / Number(rates.EUR);
+    const krwPerCny = krwPerUsd / Number(rates.CNY);
+
+    const lines: string[] = [
+      `실시간 기준 환율: 1 USD = ${krwPerUsd.toFixed(2)} KRW | 100 JPY = ${krwPerJpy100.toFixed(
+        2,
+      )} KRW | 1 EUR = ${krwPerEur.toFixed(2)} KRW | 1 CNY = ${krwPerCny.toFixed(2)} KRW`,
+    ];
+
+    // 프롬프트 내 외화 금액 자동 계산
+    const usdAmountMatch = promptText.match(/([\d,]+(?:\.\d+)?)\s*(?:달러|불|usd)/i);
+    if (usdAmountMatch) {
+      const amt = parseFloat(usdAmountMatch[1].replace(/,/g, ''));
+      if (!Number.isNaN(amt)) {
+        lines.push(
+          `• ${amt.toLocaleString()} USD = 약 ${Math.round(amt * krwPerUsd).toLocaleString()} 원`,
+        );
+      }
+    }
+
+    const jpyAmountMatch = promptText.match(/([\d,]+(?:\.\d+)?)\s*(?:엔|jpy)/i);
+    if (jpyAmountMatch) {
+      const amt = parseFloat(jpyAmountMatch[1].replace(/,/g, ''));
+      if (!Number.isNaN(amt)) {
+        const krwVal = (amt / 100) * krwPerJpy100;
+        lines.push(
+          `• ${amt.toLocaleString()} JPY = 약 ${Math.round(krwVal).toLocaleString()} 원`,
+        );
+      }
+    }
+
+    const eurAmountMatch = promptText.match(/([\d,]+(?:\.\d+)?)\s*(?:유로|eur)/i);
+    if (eurAmountMatch) {
+      const amt = parseFloat(eurAmountMatch[1].replace(/,/g, ''));
+      if (!Number.isNaN(amt)) {
+        lines.push(
+          `• ${amt.toLocaleString()} EUR = 약 ${Math.round(amt * krwPerEur).toLocaleString()} 원`,
+        );
+      }
+    }
+
+    return lines.join('\n');
+  } catch {
+    return null;
+  }
 }
 
 async function performLiveWebSearch(query: string): Promise<WebSearchSource[]> {
@@ -306,7 +695,6 @@ async function performLiveWebSearch(query: string): Promise<WebSearchSource[]> {
     .trim();
   const searchQuery = cleanedQuery.length >= 2 ? cleanedQuery : query;
 
-  // 1. DuckDuckGo HTML 검색
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 7000);
@@ -353,10 +741,9 @@ async function performLiveWebSearch(query: string): Promise<WebSearchSource[]> {
       }
     }
   } catch {
-    // DuckDuckGo 실패 시 위키백과 API 폴백으로 이어짐
+    // 폴백으로 진행
   }
 
-  // 2. 한국어 위키백과 검색 API (보강 및 폴백)
   if (results.length < 2) {
     try {
       const controller = new AbortController();
@@ -417,7 +804,7 @@ async function fetchUrlReadableText(url: string): Promise<{ url: string; text: s
 }
 
 function shouldTriggerWebSearch(promptText: string): boolean {
-  return /(검색|최신|오늘|현재|지금|요즘|뉴스|날씨|주가|환율|실시간|순위|결과|발표|출시|근황|2025|2026|누구|어디|가격|시세)/i.test(
+  return /(검색|최신|오늘|현재|지금|요즘|뉴스|주가|실시간|순위|결과|발표|출시|근황|2025|2026|누구|어디|가격|시세)/i.test(
     promptText,
   );
 }
@@ -464,9 +851,9 @@ function analyzeAutonomousPlan(
   const lower = promptText.toLowerCase();
 
   const mathRegex =
-    /(수학|방정식|미분|적분|극댓값|극솟값|확률|통계|기댓값|복리|단리|연리|이율|원리금|행렬|벡터|기하|삼각함수|로그|지수|수열|점화식|극한|순열|조합|경우의\s*수|증명|연립방정식|계산해|풀어\s*줘|풀이|sin|cos|tan|log|sqrt|\^2|\^3|\d+\s*[+\-*/=]\s*\d+)/i;
+    /(수학|방정식|미분|적분|극댓값|극솟값|확률|통계|기댓값|복리|단리|연리|이율|원리금|행렬|벡터|기하|삼각함수|로그|지수|수열|점화식|극한|순열|조합|경우의\s*수|증명|연립방정식|계산해|풀어\s*줘|풀이|평균|중앙값|표준편차|sin|cos|tan|log|sqrt|\^2|\^3|\d+\s*[+\-*/=]\s*\d+)/i;
   const koreanWritingRegex =
-    /(이메일|메일|초안|자기소개서|자소서|에세이|윤문|교정|맞춤법|띄어쓰기|보고서|제안서|기획서|안내문|공지문|사과문|편지|작문|문장|다듬어|사자성어|어휘|뉘앙스|소설|시\s*써|기사|번역|요약해)/i;
+    /(이메일|메일|초안|자기소개서|자소서|에세이|윤문|교정|맞춤법|띄어쓰기|보고서|제안서|기획서|안내문|공지문|사과문|편지|작문|문장|다듬어|사자성어|어휘|뉘앙스|소설|시\s*써|기사|번역|요약해|브리핑|추천해)/i;
   const codeTechRegex =
     /(코드|파이썬|python|javascript|typescript|react|sql|html|css|알고리즘|함수|클래스|버그|에러|디버깅|api|아키텍처|스크립트|자동화|프로그램)/i;
 
@@ -824,7 +1211,7 @@ export default function App(): React.JSX.Element {
   const [engineBannerText, setEngineBannerText] = useState<string>('');
   const [qwenThinkingMode, setQwenThinkingMode] = useState<boolean>(false);
 
-  // 네트워크 상태 및 설정 토글 상태
+  // 네트워크 및 설정 토글 상태
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [networkType, setNetworkType] = useState<'wifi' | 'cellular' | 'none' | 'unknown'>(
     'unknown',
@@ -832,11 +1219,25 @@ export default function App(): React.JSX.Element {
   const [webSearchEnabled, setWebSearchEnabled] = useState<boolean>(true);
   const [allowCellularDownload, setAllowCellularDownload] = useState<boolean>(false);
   const [enabledPlugins, setEnabledPlugins] = useState<Record<PluginKey, boolean>>({
+    memory_core: true,
+    code_interpreter: true,
+    live_weather: true,
+    live_currency: true,
+    doc_reader: true,
+    unit_timezone: true,
     calculator: true,
     url_reader: true,
     datetime_tool: true,
     clipboard_reader: true,
   });
+
+  // ChatGPT 스타일 장기 메모리 및 로컬 문서 보관함 상태
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [newMemoryInput, setNewMemoryInput] = useState<string>('');
+  const [localDocs, setLocalDocs] = useState<LocalDocItem[]>([]);
+  const [attachedDoc, setAttachedDoc] = useState<LocalDocItem | null>(null);
+  const [newDocTitle, setNewDocTitle] = useState<string>('');
+  const [newDocBody, setNewDocBody] = useState<string>('');
 
   const [downloadingKey, setDownloadingKey] = useState<ModelKey | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
@@ -857,6 +1258,8 @@ export default function App(): React.JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
   const [modelModalVisible, setModelModalVisible] = useState<boolean>(false);
   const [pluginModalVisible, setPluginModalVisible] = useState<boolean>(false);
+  const [memoryModalVisible, setMemoryModalVisible] = useState<boolean>(false);
+  const [docModalVisible, setDocModalVisible] = useState<boolean>(false);
 
   const drawerAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const backdropAnim = useRef(new Animated.Value(0)).current;
@@ -867,6 +1270,8 @@ export default function App(): React.JSX.Element {
   const flatListRef = useRef<FlatList<ChatMessage> | null>(null);
   const sessionsRef = useRef<ChatSession[]>([]);
   sessionsRef.current = sessions;
+  const memoriesRef = useRef<MemoryItem[]>([]);
+  memoriesRef.current = memories;
   const stopRequestedRef = useRef<boolean>(false);
   const allowCellularRef = useRef<boolean>(false);
   allowCellularRef.current = allowCellularDownload;
@@ -888,6 +1293,95 @@ export default function App(): React.JSX.Element {
     } catch {
       // 무시
     }
+  };
+
+  const persistMemories = async (nextMemories: MemoryItem[]) => {
+    setMemories(nextMemories);
+    try {
+      await AsyncStorage.setItem(STORAGE_MEMORY_KEY, JSON.stringify(nextMemories));
+    } catch {
+      // 무시
+    }
+  };
+
+  const persistDocs = async (nextDocs: LocalDocItem[]) => {
+    setLocalDocs(nextDocs);
+    try {
+      await AsyncStorage.setItem(STORAGE_DOCS_KEY, JSON.stringify(nextDocs));
+    } catch {
+      // 무시
+    }
+  };
+
+  const handleAddManualMemory = async () => {
+    const fact = newMemoryInput.trim();
+    if (!fact) return;
+    const item: MemoryItem = {
+      id: `mem-${Date.now()}`,
+      fact,
+      createdAt: Date.now(),
+    };
+    await persistMemories([item, ...memoriesRef.current]);
+    setNewMemoryInput('');
+    showToast('🧠 장기 메모리에 저장되었습니다');
+  };
+
+  const handleDeleteMemory = async (id: string) => {
+    await persistMemories(memoriesRef.current.filter((m) => m.id !== id));
+  };
+
+  const handleCreateDoc = async () => {
+    const title = newDocTitle.trim() || `메모_${localDocs.length + 1}.txt`;
+    const body = newDocBody.trim();
+    if (!body) {
+      Alert.alert('내용 필요', '보관함에 저장할 문서 내용을 입력해 주세요.');
+      return;
+    }
+    const newDoc: LocalDocItem = {
+      id: `doc-${Date.now()}`,
+      name: title,
+      content: body.slice(0, 6000),
+      updatedAt: Date.now(),
+    };
+    const updated = [newDoc, ...localDocs];
+    await persistDocs(updated);
+    setNewDocTitle('');
+    setNewDocBody('');
+    setAttachedDoc(newDoc);
+    setDocModalVisible(false);
+    showToast(`📄 '${newDoc.name}' 문서가 대화에 첨부되었습니다`);
+  };
+
+  const handleSaveClipboardAsDoc = async () => {
+    try {
+      const clip = await Clipboard.getString();
+      if (!clip || !clip.trim()) {
+        showToast('클립보드에 텍스트가 없습니다');
+        return;
+      }
+      const newDoc: LocalDocItem = {
+        id: `doc-${Date.now()}`,
+        name: `클립보드_${new Date().toLocaleTimeString('ko-KR', {
+          hour: '2-digit',
+          minute: '2-digit',
+        })}.txt`,
+        content: clip.trim().slice(0, 6000),
+        updatedAt: Date.now(),
+      };
+      await persistDocs([newDoc, ...localDocs]);
+      setAttachedDoc(newDoc);
+      setDocModalVisible(false);
+      showToast(`📄 클립보드 문서를 첨부했습니다`);
+    } catch {
+      showToast('클립보드를 읽지 못했습니다');
+    }
+  };
+
+  const handleDeleteDoc = async (id: string) => {
+    if (attachedDoc?.id === id) {
+      setAttachedDoc(null);
+    }
+    await persistDocs(localDocs.filter((d) => d.id !== id));
   };
 
   const toggleWebSearch = async () => {
@@ -952,7 +1446,7 @@ export default function App(): React.JSX.Element {
     }
   };
 
-  // 실시간 네트워크 연결 감지 (NetInfo + Apple Captive Check 폴백)
+  // 실시간 네트워크 연결 감지
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -983,7 +1477,6 @@ export default function App(): React.JSX.Element {
           setNetworkType('none');
         } else if (typeStr === 'cellular') {
           setNetworkType('cellular');
-          // Wi-Fi에서 셀룰러로 전환되었는데 허용 토글이 꺼져 있고 다운로드 중이면 자동 중단
           if (!allowCellularRef.current && downloadJobIdRef.current !== null) {
             RNFS.stopDownload(downloadJobIdRef.current);
             downloadJobIdRef.current = null;
@@ -1130,6 +1623,16 @@ export default function App(): React.JSX.Element {
           if (parsed.enabledPlugins) {
             setEnabledPlugins((prev) => ({ ...prev, ...parsed.enabledPlugins }));
           }
+        }
+
+        const savedMemRaw = await AsyncStorage.getItem(STORAGE_MEMORY_KEY);
+        if (savedMemRaw && mounted) {
+          setMemories(JSON.parse(savedMemRaw));
+        }
+
+        const savedDocsRaw = await AsyncStorage.getItem(STORAGE_DOCS_KEY);
+        if (savedDocsRaw && mounted) {
+          setLocalDocs(JSON.parse(savedDocsRaw));
         }
 
         const savedSessionsRaw = await AsyncStorage.getItem(STORAGE_SESSIONS_KEY);
@@ -1289,7 +1792,7 @@ export default function App(): React.JSX.Element {
         discretionary: false,
         cacheable: false,
         headers: {
-          'User-Agent': 'PocketMind-iOS/3.0',
+          'User-Agent': 'PocketMind-iOS/4.0',
         },
         progressInterval: 250,
         begin: (res) => {
@@ -1394,7 +1897,7 @@ export default function App(): React.JSX.Element {
   ): { prompt: string; stop: string[]; penaltyRepeat: number } => {
     const contextSlice = history.slice(-6);
     const enrichedSystem = externalContextBlock
-      ? `${spec.systemPrompt}\n\n[실시간 도구 및 검색 참조 데이터]\n${externalContextBlock}\n위 검증된 데이터를 우선 근거로 삼아 정확하게 답변하세요.`
+      ? `${spec.systemPrompt}\n\n[활성 플러그인 · 장기 메모리 · 실시간 검증 데이터]\n${externalContextBlock}\n위 데이터를 최우선 근거로 삼아 정확하게 답변하세요.`
       : spec.systemPrompt;
 
     if (spec.promptFormat === 'exaone') {
@@ -1437,6 +1940,7 @@ export default function App(): React.JSX.Element {
     sessionId: string,
     historyBeforeUser: ChatMessage[],
     userText: string,
+    docForThisTurn: LocalDocItem | null,
   ) => {
     const hasAnyModel = MODEL_ORDER.some((k) => downloadedModels[k]);
     if (!hasAnyModel) {
@@ -1465,6 +1969,7 @@ export default function App(): React.JSX.Element {
       role: 'user',
       content: userText,
       timestamp: Date.now(),
+      attachedDocName: docForThisTurn?.name,
     };
     const assistantMsgId = `msg-${Date.now()}-a`;
     const assistantPlaceholder: ChatMessage = {
@@ -1494,19 +1999,64 @@ export default function App(): React.JSX.Element {
     await persistSessions(initialSessions);
     setIsGenerating(true);
 
-    // 1. 플러그인 및 실시간 웹 검색 컨텍스트 수집
+    // 1. ChatGPT 스타일 10종 플러그인 및 실시간 웹 검색 컨텍스트 수집
     const pluginBadges: string[] = [];
     const contextSections: string[] = [];
     let fetchedSources: WebSearchSource[] = [];
 
+    // [플러그인 1] 장기 메모리 읽기 및 자동 저장
+    if (enabledPlugins.memory_core) {
+      const newFact = extractMemoryFactFromPrompt(userText);
+      let activeMemories = memoriesRef.current;
+      if (newFact) {
+        const memItem: MemoryItem = {
+          id: `mem-${Date.now()}`,
+          fact: newFact,
+          createdAt: Date.now(),
+        };
+        activeMemories = [memItem, ...activeMemories];
+        await persistMemories(activeMemories);
+        pluginBadges.push('🧠 메모리 업데이트됨');
+      } else if (activeMemories.length > 0) {
+        pluginBadges.push(`🧠 메모리 참조 (${activeMemories.length}건)`);
+      }
+
+      if (activeMemories.length > 0) {
+        const memLines = activeMemories
+          .slice(0, 8)
+          .map((m) => `• ${m.fact}`)
+          .join('\n');
+        contextSections.push(`- 사용자 장기 메모리 프로필:\n${memLines}`);
+      }
+    }
+
+    // [플러그인 2] 로컬 첨부 문서 리더
+    if (enabledPlugins.doc_reader && docForThisTurn) {
+      contextSections.push(
+        `- 첨부 문서 [${docForThisTurn.name}] 본문:\n${docForThisTurn.content.slice(0, 3500)}`,
+      );
+      pluginBadges.push(`📄 문서 (${docForThisTurn.name})`);
+    }
+
+    // [플러그인 3] 현재 시각 · D-Day 엔진
     if (enabledPlugins.datetime_tool) {
       const kstStr = getKoreanDateTimeContext();
       contextSections.push(`- 현재 시각: ${kstStr}`);
       if (/(오늘|내일|모레|며칠|날짜|요일|시간|디데이|d-day|몇\s*년)/i.test(userText)) {
-        pluginBadges.push(`📅 현재 시각 (${kstStr.split(' ')[0]})`);
+        pluginBadges.push(`📅 시각·D-Day (${kstStr.split(' ')[0]})`);
       }
     }
 
+    // [플러그인 4] 코드 인터프리터 · 데이터 샌드박스
+    if (enabledPlugins.code_interpreter) {
+      const sandboxOut = runCodeInterpreterSandbox(userText);
+      if (sandboxOut) {
+        contextSections.push(`- 코드 인터프리터 샌드박스 실행 결과:\n${sandboxOut}`);
+        pluginBadges.push('💻 코드 인터프리터 실행');
+      }
+    }
+
+    // [플러그인 5] 정밀 수식 계산기
     if (enabledPlugins.calculator) {
       const calcResult = safeEvaluateMath(userText);
       if (calcResult) {
@@ -1515,6 +2065,38 @@ export default function App(): React.JSX.Element {
       }
     }
 
+    // [플러그인 6] 단위 · 세계 시차 변환기
+    if (enabledPlugins.unit_timezone) {
+      const unitOut = runUnitAndTimezoneConverter(userText);
+      if (unitOut) {
+        contextSections.push(`- 단위·세계시차 변환기 결과: ${unitOut}`);
+        pluginBadges.push('⚖️ 단위·시차 변환');
+      }
+    }
+
+    // [플러그인 7] 실시간 세계 날씨 브리핑 (온라인)
+    if (isConnected && enabledPlugins.live_weather) {
+      setEngineBannerText('🌤️ 실시간 기상 데이터 조회 중...');
+      const weatherOut = await fetchLiveWeatherContext(userText);
+      if (weatherOut) {
+        contextSections.push(`- 실시간 기상 관측 데이터:\n${weatherOut}`);
+        pluginBadges.push('🌤️ 실시간 날씨');
+      }
+      setEngineBannerText('');
+    }
+
+    // [플러그인 8] 실시간 환율 · 통화 변환기 (온라인)
+    if (isConnected && enabledPlugins.live_currency) {
+      setEngineBannerText('💱 실시간 외환 환율 조회 중...');
+      const currencyOut = await fetchLiveCurrencyContext(userText);
+      if (currencyOut) {
+        contextSections.push(`- 실시간 외환 환율 데이터:\n${currencyOut}`);
+        pluginBadges.push('💱 실시간 환율');
+      }
+      setEngineBannerText('');
+    }
+
+    // [플러그인 9] 웹페이지 URL 요약기 (온라인)
     if (isConnected && enabledPlugins.url_reader) {
       const urlMatch = userText.match(/https?:\/\/[^\s)]+/i);
       if (urlMatch) {
@@ -1530,6 +2112,7 @@ export default function App(): React.JSX.Element {
       }
     }
 
+    // [플러그인 10] 실시간 웹 검색 (온라인)
     if (isConnected && webSearchEnabled && shouldTriggerWebSearch(userText)) {
       setEngineBannerText('🌐 실시간 웹 검색 수행 중...');
       fetchedSources = await performLiveWebSearch(userText);
@@ -1805,13 +2388,20 @@ export default function App(): React.JSX.Element {
       return;
     }
 
+    const docSnapshot = attachedDoc;
     if (!overrideText) {
       setInputText('');
     }
+    setAttachedDoc(null);
     Keyboard.dismiss();
 
     const targetSession = activeSession ?? (await createNewSession());
-    await runCompletion(targetSession.id, targetSession.messages, textToSend);
+    await runCompletion(
+      targetSession.id,
+      targetSession.messages,
+      textToSend,
+      docSnapshot,
+    );
   };
 
   const handleStopGeneration = async () => {
@@ -1833,7 +2423,7 @@ export default function App(): React.JSX.Element {
     if (lastMsg.role !== 'assistant' || prevUserMsg.role !== 'user') return;
 
     const historyBefore = currentMessages.slice(0, -2);
-    await runCompletion(activeSession.id, historyBefore, prevUserMsg.content);
+    await runCompletion(activeSession.id, historyBefore, prevUserMsg.content, null);
   };
 
   const handleCopyText = (id: string, text: string) => {
@@ -1893,6 +2483,13 @@ export default function App(): React.JSX.Element {
       return (
         <AnimatedMessageRow>
           <View style={styles.userRow}>
+            {item.attachedDocName ? (
+              <View style={styles.userDocBadge}>
+                <Text style={styles.userDocBadgeText}>
+                  📄 {item.attachedDocName}
+                </Text>
+              </View>
+            ) : null}
             <View style={styles.userBubble}>
               <Text style={styles.userText}>{item.content}</Text>
             </View>
@@ -2049,7 +2646,7 @@ export default function App(): React.JSX.Element {
         </TouchableOpacity>
       </View>
 
-      {/* 인터넷·웹검색·플러그인 빠른 제어 상태 바 */}
+      {/* 인터넷·웹검색·플러그인·메모리 빠른 제어 상태 바 */}
       <View style={styles.quickFeatureBar}>
         <TouchableOpacity
           onPress={toggleWebSearch}
@@ -2065,9 +2662,9 @@ export default function App(): React.JSX.Element {
               isConnected && webSearchEnabled && styles.featurePillTextOnline,
             ]}>
             {!isConnected
-              ? '📴 오프라인 모드'
+              ? '📴 오프라인'
               : webSearchEnabled
-                ? `🌐 웹 검색 ON (${networkType === 'cellular' ? '셀룰러' : 'Wi-Fi'})`
+                ? `🌐 웹 검색 ON`
                 : '🌐 웹 검색 OFF'}
           </Text>
         </TouchableOpacity>
@@ -2077,6 +2674,14 @@ export default function App(): React.JSX.Element {
           style={styles.featurePill}>
           <Text style={styles.featurePillText}>
             🧩 플러그인 ({activePluginCount}/{PLUGINS.length})
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => setMemoryModalVisible(true)}
+          style={styles.featurePill}>
+          <Text style={styles.featurePillText}>
+            🧠 메모리 ({memories.length})
           </Text>
         </TouchableOpacity>
 
@@ -2092,7 +2697,7 @@ export default function App(): React.JSX.Element {
                 styles.featurePillText,
                 qwenThinkingMode && styles.featurePillTextOnline,
               ]}>
-              {qwenThinkingMode ? '🧠 깊은 사고' : '⚡ 빠른 응답'}
+              {qwenThinkingMode ? '깊은 사고 ON' : '빠른 응답'}
             </Text>
           </TouchableOpacity>
         )}
@@ -2131,14 +2736,14 @@ export default function App(): React.JSX.Element {
                   { color: activeAccentColor },
                 ]}>
                 {isConnected && webSearchEnabled
-                  ? 'HYBRID AI · ONLINE WEB SEARCH + 8B ON-DEVICE'
-                  : 'AUTONOMOUS MULTI-AI ORCHESTRATOR'}
+                  ? 'CHATGPT-GRADE PLUGINS + 8B HYBRID ORCHESTRATOR'
+                  : 'ON-DEVICE PLUGINS + 8B MULTI-AI ORCHESTRATOR'}
               </Text>
             </View>
             <Text style={styles.centerTitle}>무엇을 도와드릴까요?</Text>
             <Text style={styles.centerSubtitle}>
               {installedCount > 0
-                ? `질문 의도를 분석해 8B급 전문 AI ${installedCount}종과 웹 검색·플러그인이 협업합니다`
+                ? `10종 플러그인·장기 메모리와 8B 전문 AI ${installedCount}종이 능동 협업합니다`
                 : '상단 버튼을 눌러 아이폰 16 Pro용 7B~8B AI 모델을 다운로드하세요'}
             </Text>
           </View>
@@ -2174,6 +2779,18 @@ export default function App(): React.JSX.Element {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={6}>
         <View style={styles.bottomDock}>
+          {/* 첨부된 로컬 문서 칩 (ChatGPT 파일 첨부 스타일) */}
+          {attachedDoc ? (
+            <View style={styles.attachedDocBar}>
+              <Text numberOfLines={1} style={styles.attachedDocText}>
+                📄 첨부됨: {attachedDoc.name} ({attachedDoc.content.length}자)
+              </Text>
+              <TouchableOpacity onPress={() => setAttachedDoc(null)}>
+                <Text style={styles.attachedDocRemove}>✕</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
           <View style={styles.inputCapsule}>
             <TouchableOpacity
               onPress={() => setPluginModalVisible(true)}
@@ -2188,8 +2805,8 @@ export default function App(): React.JSX.Element {
               onChangeText={setInputText}
               placeholder={
                 isConnected && webSearchEnabled
-                  ? '최신 웹 검색, 수학, 코딩, 한국어 작문 무엇이든 물어보세요'
-                  : '오프라인 모드 · 수학, 코딩, 한국어 작문 입력'
+                  ? '웹 검색, 날씨, 환율, 코드 실행, 수학, 작문 입력'
+                  : '오프라인 모드 · 코드 실행, 문서 요약, 수학, 작문 입력'
               }
               placeholderTextColor="#8E8EA0"
               style={styles.textInput}
@@ -2215,8 +2832,8 @@ export default function App(): React.JSX.Element {
           </View>
           <Text style={styles.footerDisclaimer}>
             {isConnected
-              ? '온라인 연결됨 · 웹 검색 및 URL 플러그인 사용 가능 · AI 연산은 기기 내부 실행'
-              : '오프라인 상태 · 모든 AI 모델과 로컬 플러그인이 기기 내부에서 안전하게 작동'}
+              ? `온라인(${networkType === 'cellular' ? '셀룰러' : 'Wi-Fi'}) · 실시간 플러그인 활성 · AI 연산은 기기 내부 실행`
+              : '오프라인 상태 · 메모리·코드인터프리터·문서 등 로컬 플러그인 활성'}
           </Text>
         </View>
       </KeyboardAvoidingView>
@@ -2288,10 +2905,32 @@ export default function App(): React.JSX.Element {
                 <TouchableOpacity
                   onPress={() => {
                     toggleDrawer(false);
+                    setMemoryModalVisible(true);
+                  }}
+                  style={styles.drawerFooterBtn}>
+                  <Text style={styles.drawerFooterText}>
+                    🧠 AI 장기 메모리 관리 ({memories.length}개)
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    toggleDrawer(false);
+                    setDocModalVisible(true);
+                  }}
+                  style={styles.drawerFooterBtn}>
+                  <Text style={styles.drawerFooterText}>
+                    📄 로컬 문서 보관함 ({localDocs.length}개)
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    toggleDrawer(false);
                     setPluginModalVisible(true);
                   }}
                   style={styles.drawerFooterBtn}>
-                  <Text style={styles.drawerFooterText}>🧩 플러그인 및 웹 검색 설정</Text>
+                  <Text style={styles.drawerFooterText}>
+                    🧩 10종 플러그인 · 웹 검색 스토어
+                  </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => {
@@ -2299,7 +2938,9 @@ export default function App(): React.JSX.Element {
                     setModelModalVisible(true);
                   }}
                   style={styles.drawerFooterBtn}>
-                  <Text style={styles.drawerFooterText}>⚙ 8B 모델 다운로드 · 데이터 설정</Text>
+                  <Text style={styles.drawerFooterText}>
+                    ⚙ 8B 모델 다운로드 · 셀룰러 설정
+                  </Text>
                 </TouchableOpacity>
               </View>
             </SafeAreaView>
@@ -2307,7 +2948,7 @@ export default function App(): React.JSX.Element {
         </View>
       )}
 
-      {/* 플러그인 & 웹 검색 허브 모달 */}
+      {/* ChatGPT 스타일 플러그인 스토어 & 빠른 도구 모달 */}
       <Modal
         animationType="slide"
         onRequestClose={() => setPluginModalVisible(false)}
@@ -2316,14 +2957,51 @@ export default function App(): React.JSX.Element {
         <View style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>플러그인 & 실시간 웹 검색</Text>
+              <Text style={styles.modalTitle}>ChatGPT 스타일 플러그인 허브</Text>
               <TouchableOpacity onPress={() => setPluginModalVisible(false)}>
                 <Text style={styles.modalClose}>닫기</Text>
               </TouchableOpacity>
             </View>
             <Text style={styles.modalDesc}>
-              인터넷 연결 시 웹 검색과 URL 요약기가 자동 활성화되며, 로컬 플러그인은 오프라인에서도 작동합니다.
+              켜둔 플러그인은 대화 내용을 분석해 자동으로 작동합니다. 각 카드의 '예시 실행'을 누르면 바로 테스트할 수 있습니다.
             </Text>
+
+            {/* ChatGPT '+' 빠른 액션 그리드 */}
+            <View style={styles.quickActionGrid}>
+              <TouchableOpacity
+                onPress={() => {
+                  setPluginModalVisible(false);
+                  handlePasteFromClipboard();
+                }}
+                style={styles.quickActionTile}>
+                <Text style={styles.quickActionTileIcon}>📋</Text>
+                <Text style={styles.quickActionTileLabel}>클립보드 분석</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => {
+                  setPluginModalVisible(false);
+                  setDocModalVisible(true);
+                }}
+                style={styles.quickActionTile}>
+                <Text style={styles.quickActionTileIcon}>📄</Text>
+                <Text style={styles.quickActionTileLabel}>
+                  문서 첨부 ({localDocs.length})
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => {
+                  setPluginModalVisible(false);
+                  setMemoryModalVisible(true);
+                }}
+                style={styles.quickActionTile}>
+                <Text style={styles.quickActionTileIcon}>🧠</Text>
+                <Text style={styles.quickActionTileLabel}>
+                  메모리 ({memories.length})
+                </Text>
+              </TouchableOpacity>
+            </View>
 
             {/* 실시간 웹 검색 마스터 토글 */}
             <View style={styles.toggleSettingCard}>
@@ -2332,7 +3010,7 @@ export default function App(): React.JSX.Element {
                   🌐 실시간 웹 검색 ({isConnected ? '온라인 연결됨' : '오프라인'})
                 </Text>
                 <Text style={styles.toggleSub}>
-                  최신 뉴스·날씨·정보 질문 시 인터넷 검색 결과를 AI에 자동 주입
+                  최신 뉴스·정보 질문 시 인터넷 검색 결과를 AI에 자동 주입
                 </Text>
               </View>
               <Switch
@@ -2342,18 +3020,6 @@ export default function App(): React.JSX.Element {
                 thumbColor="#FFFFFF"
               />
             </View>
-
-            {/* 클립보드 원탭 불러오기 액션 */}
-            <TouchableOpacity
-              onPress={() => {
-                setPluginModalVisible(false);
-                handlePasteFromClipboard();
-              }}
-              style={styles.clipboardQuickAction}>
-              <Text style={styles.clipboardQuickActionText}>
-                📋 지금 클립보드 내용 불러와 분석하기
-              </Text>
-            </TouchableOpacity>
 
             <ScrollView
               style={styles.modalScroll}
@@ -2367,13 +3033,40 @@ export default function App(): React.JSX.Element {
                         <Text style={styles.pluginTitleText}>
                           {plugin.icon} {plugin.title}
                         </Text>
-                        {plugin.requiresInternet && (
-                          <View style={styles.onlineOnlyTag}>
-                            <Text style={styles.onlineOnlyTagText}>온라인</Text>
-                          </View>
-                        )}
+                        <View
+                          style={[
+                            styles.onlineOnlyTag,
+                            !plugin.requiresInternet && styles.localTag,
+                          ]}>
+                          <Text
+                            style={[
+                              styles.onlineOnlyTagText,
+                              !plugin.requiresInternet && styles.localTagText,
+                            ]}>
+                            {plugin.requiresInternet ? '온라인' : '로컬'}
+                          </Text>
+                        </View>
                       </View>
                       <Text style={styles.pluginDescText}>{plugin.desc}</Text>
+                      <TouchableOpacity
+                        onPress={() => {
+                          if (!active) {
+                            togglePlugin(plugin.key);
+                          }
+                          setPluginModalVisible(false);
+                          if (plugin.key === 'doc_reader') {
+                            setDocModalVisible(true);
+                          } else if (plugin.key === 'clipboard_reader') {
+                            handlePasteFromClipboard();
+                          } else {
+                            setInputText(plugin.samplePrompt);
+                          }
+                        }}
+                        style={styles.tryPluginBtn}>
+                        <Text style={styles.tryPluginBtnText}>
+                          ▶ 예시 프롬프트 채우기
+                        </Text>
+                      </TouchableOpacity>
                     </View>
                     <Switch
                       value={active}
@@ -2384,6 +3077,144 @@ export default function App(): React.JSX.Element {
                   </View>
                 );
               })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ChatGPT 장기 메모리 관리 모달 */}
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setMemoryModalVisible(false)}
+        transparent
+        visible={memoryModalVisible}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>🧠 AI 장기 메모리 (Memory)</Text>
+              <TouchableOpacity onPress={() => setMemoryModalVisible(false)}>
+                <Text style={styles.modalClose}>닫기</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalDesc}>
+              저장된 정보는 새 채팅을 시작해도 모든 AI 모델이 항상 기억하고 답변에 반영합니다.
+            </Text>
+
+            <View style={styles.memoryInputRow}>
+              <TextInput
+                value={newMemoryInput}
+                onChangeText={setNewMemoryInput}
+                placeholder="예: 나는 청주에 살고 파이썬 개발자야"
+                placeholderTextColor="#7A7A7A"
+                style={styles.memoryInputBox}
+              />
+              <TouchableOpacity
+                onPress={handleAddManualMemory}
+                style={styles.memoryAddBtn}>
+                <Text style={styles.memoryAddBtnText}>저장</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}>
+              {memories.length === 0 ? (
+                <Text style={styles.emptyListHint}>
+                  저장된 메모리가 없습니다. 대화창에서 "~라고 기억해 줘"라고 말하거나 위 입력칸에서 직접 추가하세요.
+                </Text>
+              ) : (
+                memories.map((mem) => (
+                  <View key={mem.id} style={styles.memoryCard}>
+                    <Text style={styles.memoryFactText}>• {mem.fact}</Text>
+                    <TouchableOpacity onPress={() => handleDeleteMemory(mem.id)}>
+                      <Text style={styles.memoryDelText}>삭제</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 로컬 문서 보관함 & 파일 첨부 모달 */}
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setDocModalVisible(false)}
+        transparent
+        visible={docModalVisible}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>📄 로컬 문서 보관함 · 첨부</Text>
+              <TouchableOpacity onPress={() => setDocModalVisible(false)}>
+                <Text style={styles.modalClose}>닫기</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalDesc}>
+              문서를 저장하거나 클립보드에서 가져온 뒤 선택하면 현재 대화에 첨부되어 AI가 문서 기반으로 답변합니다.
+            </Text>
+
+            <TouchableOpacity
+              onPress={handleSaveClipboardAsDoc}
+              style={styles.clipboardQuickAction}>
+              <Text style={styles.clipboardQuickActionText}>
+                📋 클립보드 텍스트를 새 문서로 저장 후 즉시 첨부
+              </Text>
+            </TouchableOpacity>
+
+            <View style={styles.docCreateBox}>
+              <TextInput
+                value={newDocTitle}
+                onChangeText={setNewDocTitle}
+                placeholder="문서 제목 (예: 회의록.txt, 매출데이터.csv)"
+                placeholderTextColor="#7A7A7A"
+                style={styles.docTitleInput}
+              />
+              <TextInput
+                value={newDocBody}
+                onChangeText={setNewDocBody}
+                placeholder="여기에 분석할 긴 글, 기사, CSV 데이터, 코드를 붙여넣으세요..."
+                placeholderTextColor="#7A7A7A"
+                multiline
+                style={styles.docBodyInput}
+              />
+              <TouchableOpacity
+                onPress={handleCreateDoc}
+                style={styles.docSaveAttachBtn}>
+                <Text style={styles.docSaveAttachBtnText}>저장하고 대화에 첨부하기</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}>
+              {localDocs.map((doc) => (
+                <View key={doc.id} style={styles.docCard}>
+                  <View style={styles.docCardInfo}>
+                    <Text style={styles.docCardTitle}>📄 {doc.name}</Text>
+                    <Text numberOfLines={2} style={styles.docCardPreview}>
+                      {doc.content}
+                    </Text>
+                  </View>
+                  <View style={styles.docCardBtns}>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setAttachedDoc(doc);
+                        setDocModalVisible(false);
+                        showToast(`📄 '${doc.name}' 첨부됨`);
+                      }}
+                      style={styles.docAttachChip}>
+                      <Text style={styles.docAttachChipText}>첨부</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handleDeleteDoc(doc.id)}
+                      style={styles.docDelChip}>
+                      <Text style={styles.docDelChipText}>삭제</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
             </ScrollView>
           </View>
         </View>
@@ -2618,15 +3449,15 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingBottom: 6,
-    gap: 6,
+    gap: 5,
   },
   featurePill: {
     backgroundColor: '#2A2A2A',
     borderWidth: 1,
     borderColor: '#3A3A3A',
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
     paddingVertical: 4,
     borderRadius: 12,
   },
@@ -2769,6 +3600,20 @@ const styles = StyleSheet.create({
   },
   userRow: {
     alignItems: 'flex-end',
+    gap: 5,
+  },
+  userDocBadge: {
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  userDocBadgeText: {
+    color: '#93C5FD',
+    fontSize: 11,
+    fontWeight: '600',
   },
   userBubble: {
     maxWidth: '82%',
@@ -2950,6 +3795,29 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     backgroundColor: '#212121',
   },
+  attachedDocBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginBottom: 6,
+  },
+  attachedDocText: {
+    color: '#93C5FD',
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
+  },
+  attachedDocRemove: {
+    color: '#94A3B8',
+    fontSize: 14,
+    paddingLeft: 8,
+  },
   inputCapsule: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -3095,15 +3963,15 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#2A2A2A',
     paddingTop: 10,
-    gap: 12,
+    gap: 10,
   },
   drawerFooterBtn: {
-    paddingVertical: 4,
+    paddingVertical: 3,
     paddingHorizontal: 6,
   },
   drawerFooterText: {
     color: '#ECECEC',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '500',
   },
   modalOverlay: {
@@ -3140,6 +4008,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     marginBottom: 12,
+  },
+  quickActionGrid: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  quickActionTile: {
+    flex: 1,
+    backgroundColor: '#2A2A2A',
+    borderWidth: 1,
+    borderColor: '#3D3D3D',
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+    gap: 4,
+  },
+  quickActionTileIcon: {
+    fontSize: 18,
+  },
+  quickActionTileLabel: {
+    color: '#ECECEC',
+    fontSize: 11,
+    fontWeight: '600',
   },
   toggleSettingCard: {
     flexDirection: 'row',
@@ -3201,6 +4092,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
+    flexWrap: 'wrap',
   },
   pluginTitleText: {
     color: '#FFFFFF',
@@ -3218,10 +4110,168 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
+  localTag: {
+    backgroundColor: '#1E293B',
+  },
+  localTagText: {
+    color: '#93C5FD',
+  },
   pluginDescText: {
     color: '#B4B4B4',
     fontSize: 12,
     lineHeight: 17,
+  },
+  tryPluginBtn: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    backgroundColor: '#343434',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 7,
+  },
+  tryPluginBtnText: {
+    color: '#E5E7EB',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  memoryInputRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  memoryInputBox: {
+    flex: 1,
+    backgroundColor: '#2A2A2A',
+    borderWidth: 1,
+    borderColor: '#3E3E3E',
+    borderRadius: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    color: '#FFFFFF',
+    fontSize: 13,
+  },
+  memoryAddBtn: {
+    backgroundColor: '#10A37F',
+    paddingHorizontal: 16,
+    borderRadius: 11,
+    justifyContent: 'center',
+  },
+  memoryAddBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  emptyListHint: {
+    color: '#8E8EA0',
+    fontSize: 13,
+    textAlign: 'center',
+    paddingVertical: 24,
+    lineHeight: 19,
+  },
+  memoryCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#2A2A2A',
+    borderRadius: 11,
+    padding: 12,
+    gap: 10,
+  },
+  memoryFactText: {
+    color: '#ECECEC',
+    fontSize: 13,
+    flex: 1,
+    lineHeight: 19,
+  },
+  memoryDelText: {
+    color: '#F87171',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  docCreateBox: {
+    backgroundColor: '#262626',
+    borderRadius: 13,
+    padding: 12,
+    gap: 8,
+    marginBottom: 12,
+  },
+  docTitleInput: {
+    backgroundColor: '#1B1B1B',
+    borderRadius: 9,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    color: '#FFFFFF',
+    fontSize: 13,
+  },
+  docBodyInput: {
+    backgroundColor: '#1B1B1B',
+    borderRadius: 9,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    color: '#FFFFFF',
+    fontSize: 13,
+    minHeight: 74,
+    maxHeight: 120,
+    textAlignVertical: 'top',
+  },
+  docSaveAttachBtn: {
+    backgroundColor: '#3B82F6',
+    borderRadius: 9,
+    paddingVertical: 9,
+    alignItems: 'center',
+  },
+  docSaveAttachBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  docCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#2A2A2A',
+    borderRadius: 11,
+    padding: 12,
+    gap: 10,
+  },
+  docCardInfo: {
+    flex: 1,
+    gap: 3,
+  },
+  docCardTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  docCardPreview: {
+    color: '#9B9B9B',
+    fontSize: 11,
+  },
+  docCardBtns: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  docAttachChip: {
+    backgroundColor: '#10A37F',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  docAttachChipText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  docDelChip: {
+    backgroundColor: '#3A2323',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  docDelChipText: {
+    color: '#F87171',
+    fontSize: 12,
+    fontWeight: '600',
   },
   autoModeCard: {
     backgroundColor: '#172A24',
