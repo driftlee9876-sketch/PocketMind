@@ -108,7 +108,8 @@ interface ContentBlock {
 
 function parseMessageBlocks(raw: string): ContentBlock[] {
   const blocks: ContentBlock[] = [];
-  const regex = /```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g;
+  const fence = '\x60\x60\x60';
+  const regex = new RegExp(fence + '([a-zA-Z0-9_-]*)\\n?([\\s\\S]*?)' + fence, 'g');
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -441,7 +442,7 @@ export default function App(): React.JSX.Element {
 
   const buildPrompt = (history: ChatMessage[], userPrompt: string): string => {
     let prompt =
-      '<|im_start|>system\n당신은 아이폰 온디바이스 환경에서 오프라인으로 동작하는 스마트 AI 어시스턴트 PocketMind입니다. 한국어로 명확하고 체계적으로 답변하며, 코드는 마크다운 코드 블록(```)으로 감싸서 제공하세요.<|im_end|>\n';
+      '<|im_start|>system\n당신은 아이폰 온디바이스 환경에서 오프라인으로 동작하는 스마트 AI 어시스턴트 PocketMind입니다. 한국어로 명확하고 체계적으로 답변하며, 코드는 마크다운 코드 블록으로 감싸서 제공하세요.<|im_end|>\n';
     const contextSlice = history.slice(-6);
     for (const msg of contextSlice) {
       prompt += `<|im_start|>${msg.role}\n${msg.content}<|im_end|>\n`;
@@ -628,9 +629,9 @@ export default function App(): React.JSX.Element {
 
     if (isUser) {
       return (
-        <View style="{styles.userRow}">
-          <View style="{styles.userBubble}">
-            <Text style="{styles.userText}">{item.content}</Text>
+        <View style={styles.userRow}>
+          <View style={styles.userBubble}>
+            <Text style={styles.userText}>{item.content}</Text>
           </View>
         </View>
       );
@@ -639,51 +640,55 @@ export default function App(): React.JSX.Element {
     const blocks = parseMessageBlocks(item.content);
 
     return (
-      <View style="{styles.assistantRow}">
-        <View style="{styles.avatarBadge}">
-          <Text style="{styles.avatarGlyph}">✦</Text>
+      <View style={styles.assistantRow}>
+        <View style={styles.avatarBadge}>
+          <Text style={styles.avatarGlyph}>✦</Text>
         </View>
-        <View style="{styles.assistantContentCol}">
+        <View style={styles.assistantContentCol}>
           {item.content.length === 0 ? (
-            <View style="{styles.typingRow}">
-              <ActivityIndicator color="#10A37F" size="small"/>
-              <Text style="{styles.typingHint}">생각하는 중...</Text>
+            <View style={styles.typingRow}>
+              <ActivityIndicator color="#10A37F" size="small" />
+              <Text style={styles.typingHint}>생각하는 중...</Text>
             </View>
           ) : (
             blocks.map((block, bIdx) => {
               if (block.type === 'code') {
                 const codeCopyKey = `${item.id}-code-${bIdx}`;
                 return (
-                  <View key="{bIdx}" style="{styles.codeCard}">
-                    <View style="{styles.codeHeader}">
-                      <Text style="{styles.codeLang}">{block.language}</Text>
-                      <TouchableOpacity onPress="{()"> handleCopyText(codeCopyKey, block.content)}>
-                        <Text style="{styles.codeCopyBtn}">
+                  <View key={bIdx} style={styles.codeCard}>
+                    <View style={styles.codeHeader}>
+                      <Text style={styles.codeLang}>{block.language}</Text>
+                      <TouchableOpacity
+                        onPress={() => handleCopyText(codeCopyKey, block.content)}>
+                        <Text style={styles.codeCopyBtn}>
                           {copiedId === codeCopyKey ? '복사됨 ✓' : '코드 복사'}
                         </Text>
                       </TouchableOpacity>
                     </View>
-                    <ScrollView horizontal showsHorizontalScrollIndicator="{false}">
-                      <Text style="{styles.codeBody}">{block.content}</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      <Text style={styles.codeBody}>{block.content}</Text>
                     </ScrollView>
                   </View>
                 );
               }
-              return <RichTextRenderer key="{bIdx}" text="{block.content}"/>;
+              return <RichTextRenderer key={bIdx} text={block.content} />;
             })
           )}
 
           {item.content.length > 0 && !isGenerating && (
-            <View style="{styles.actionBar}">
-              <TouchableOpacity onPress="{()"> handleCopyText(item.id, item.content)}
+            <View style={styles.actionBar}>
+              <TouchableOpacity
+                onPress={() => handleCopyText(item.id, item.content)}
                 style={styles.actionChip}>
-                <Text style="{styles.actionChipText}">
+                <Text style={styles.actionChipText}>
                   {copiedId === item.id ? '복사 완료 ✓' : '복사'}
                 </Text>
               </TouchableOpacity>
               {isLastAssistant && (
-                <TouchableOpacity onPress="{handleRegenerateLast}" style="{styles.actionChip}">
-                  <Text style="{styles.actionChipText}">↻ 다시 생성</Text>
+                <TouchableOpacity
+                  onPress={handleRegenerateLast}
+                  style={styles.actionChip}>
+                  <Text style={styles.actionChipText}>↻ 다시 생성</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -694,38 +699,41 @@ export default function App(): React.JSX.Element {
   };
 
   return (
-    <SafeAreaView style="{styles.root}">
-      <StatusBar backgroundColor="#212121" barStyle="light-content"/>
+    <SafeAreaView style={styles.root}>
+      <StatusBar backgroundColor="#212121" barStyle="light-content" />
 
       {/* 상단 ChatGPT 스타일 헤더 */}
-      <View style="{styles.topBar}">
-        <TouchableOpacity onPress="{()"> toggleDrawer(true)}
+      <View style={styles.topBar}>
+        <TouchableOpacity
+          onPress={() => toggleDrawer(true)}
           style={styles.iconBtn}
           disabled={isGenerating}>
-          <Text style="{styles.iconBtnText}">☰</Text>
+          <Text style={styles.iconBtnText}>☰</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity onPress="{()"> setModelModalVisible(true)}
+        <TouchableOpacity
+          onPress={() => setModelModalVisible(true)}
           style={styles.modelSelectorPill}
           disabled={isGenerating}>
-          <Text style="{styles.modelPillTitle}">
+          <Text style={styles.modelPillTitle}>
             {loadedModelKey ? MODELS[loadedModelKey].title : '모델 선택 필요'}
           </Text>
-          <Text style="{styles.modelPillChevron}">▾</Text>
+          <Text style={styles.modelPillChevron}>▾</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity onPress="{()"> createNewSession()}
+        <TouchableOpacity
+          onPress={() => createNewSession()}
           style={styles.iconBtn}
           disabled={isGenerating}>
-          <Text style="{styles.iconBtnText}">✎</Text>
+          <Text style={styles.iconBtnText}>✎</Text>
         </TouchableOpacity>
       </View>
 
       {/* 모델 로딩 배너 */}
       {isInitializingEngine && (
-        <View style="{styles.loadingBanner}">
-          <ActivityIndicator color="#10A37F" size="small"/>
-          <Text style="{styles.loadingBannerText}">
+        <View style={styles.loadingBanner}>
+          <ActivityIndicator color="#10A37F" size="small" />
+          <Text style={styles.loadingBannerText}>
             아이폰 Metal GPU에 AI 모델을 올리는 중...
           </Text>
         </View>
@@ -733,31 +741,38 @@ export default function App(): React.JSX.Element {
 
       {/* 메인 대화 영역 또는 빈 화면 웰컴 뷰 */}
       {currentMessages.length === 0 ? (
-        <ScrollView contentContainerStyle="{styles.emptyStateContainer}" keyboardShouldPersistTaps="handled">
-          <View style="{styles.centerLogoWrap}">
-            <View style="{styles.centerLogoCircle}">
-              <Text style="{styles.centerLogoIcon}">✦</Text>
+        <ScrollView
+          contentContainerStyle={styles.emptyStateContainer}
+          keyboardShouldPersistTaps="handled">
+          <View style={styles.centerLogoWrap}>
+            <View style={styles.centerLogoCircle}>
+              <Text style={styles.centerLogoIcon}>✦</Text>
             </View>
-            <Text style="{styles.centerTitle}">무엇을 도와드릴까요?</Text>
-            <Text style="{styles.centerSubtitle}">
+            <Text style={styles.centerTitle}>무엇을 도와드릴까요?</Text>
+            <Text style={styles.centerSubtitle}>
               {loadedModelKey
                 ? `${MODELS[loadedModelKey].title} · 오프라인 기기 내 추론 활성`
                 : '상단 메뉴에서 AI 모델을 다운로드하면 오프라인으로 작동합니다'}
             </Text>
           </View>
 
-          <View style="{styles.suggestionsGrid}">
+          <View style={styles.suggestionsGrid}>
             {SUGGESTION_CARDS.map((card, idx) => (
-              <TouchableOpacity key="{idx}" onPress="{()"> handleSendMessage(card.prompt)}
+              <TouchableOpacity
+                key={idx}
+                onPress={() => handleSendMessage(card.prompt)}
                 style={styles.suggestionCard}>
-                <Text style="{styles.suggestionTitle}">{card.title}</Text>
-                <Text style="{styles.suggestionDesc}">{card.desc}</Text>
+                <Text style={styles.suggestionTitle}>{card.title}</Text>
+                <Text style={styles.suggestionDesc}>{card.desc}</Text>
               </TouchableOpacity>
             ))}
           </View>
         </ScrollView>
       ) : (
-        <FlatList data="{currentMessages}" keyExtractor="{(item)" ref="{flatListRef}"> item.id}
+        <FlatList
+          ref={flatListRef}
+          data={currentMessages}
+          keyExtractor={(item) => item.id}
           renderItem={renderMessageItem}
           contentContainerStyle={styles.messageListContent}
           onContentSizeChange={() =>
@@ -767,26 +782,39 @@ export default function App(): React.JSX.Element {
       )}
 
       {/* 하단 플로팅 캡슐 입력창 */}
-      <KeyboardAvoidingView 'ios' 'padding' : ? behavior="{Platform.OS" keyboardVerticalOffset="{6}" undefined}>
-        <View style="{styles.bottomDock}">
-          <View style="{styles.inputCapsule}">
-            <TextInput maxLength="{2000}" multiline onChangeText="{setInputText}" placeholder="PocketMind에게 메시지 보내기" placeholderTextColor="#8E8EA0" style="{styles.textInput}" value="{inputText}"/>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={6}>
+        <View style={styles.bottomDock}>
+          <View style={styles.inputCapsule}>
+            <TextInput
+              maxLength={2000}
+              multiline
+              onChangeText={setInputText}
+              placeholder="PocketMind에게 메시지 보내기"
+              placeholderTextColor="#8E8EA0"
+              style={styles.textInput}
+              value={inputText}
+            />
             {isGenerating ? (
-              <TouchableOpacity onPress="{handleStopGeneration}" style="{styles.stopCircleBtn}">
-                <View style="{styles.stopSquare}"/>
+              <TouchableOpacity
+                onPress={handleStopGeneration}
+                style={styles.stopCircleBtn}>
+                <View style={styles.stopSquare} />
               </TouchableOpacity>
             ) : (
-              <TouchableOpacity onPress="{()"> handleSendMessage()}
+              <TouchableOpacity
+                onPress={() => handleSendMessage()}
                 style={[
                   styles.sendCircleBtn,
                   !inputText.trim() && styles.sendCircleBtnDisabled,
                 ]}
                 disabled={!inputText.trim()}>
-                <Text style="{styles.sendArrow}">↑</Text>
+                <Text style={styles.sendArrow}>↑</Text>
               </TouchableOpacity>
             )}
           </View>
-          <Text style="{styles.footerDisclaimer}">
+          <Text style={styles.footerDisclaimer}>
             모든 연산은 인터넷 연결 없이 아이폰 기기 내부에서 처리됩니다.
           </Text>
         </View>
@@ -794,51 +822,71 @@ export default function App(): React.JSX.Element {
 
       {/* 좌측 사이드바 (대화 목록) */}
       {drawerOpen && (
-        <View style="{StyleSheet.absoluteFill}">
-          <Pressable onPress="{()"> toggleDrawer(false)}
+        <View style={StyleSheet.absoluteFill}>
+          <Pressable
+            onPress={() => toggleDrawer(false)}
             style={styles.drawerBackdrop}
           />
-          <Animated.View [{ ]} drawerAnim style="{[" styles.drawerPanel, transform: translateX: { }, }]>
-            <SafeAreaView style="{styles.drawerSafe}">
-              <TouchableOpacity onPress="{async"> {
+          <Animated.View
+            style={[
+              styles.drawerPanel,
+              { transform: [{ translateX: drawerAnim }] },
+            ]}>
+            <SafeAreaView style={styles.drawerSafe}>
+              <TouchableOpacity
+                onPress={async () => {
                   await createNewSession();
                   toggleDrawer(false);
                 }}
                 style={styles.newChatDrawerBtn}>
-                <Text style="{styles.newChatDrawerIcon}">✦</Text>
-                <Text style="{styles.newChatDrawerText}">새 채팅 시작</Text>
+                <Text style={styles.newChatDrawerIcon}>✦</Text>
+                <Text style={styles.newChatDrawerText}>새 채팅 시작</Text>
               </TouchableOpacity>
 
-              <Text style="{styles.drawerSectionLabel}">이전 대화</Text>
-              <FlatList data="{sessions}" keyExtractor="{(item)"> item.id}
+              <Text style={styles.drawerSectionLabel}>이전 대화</Text>
+              <FlatList
+                data={sessions}
+                keyExtractor={(item) => item.id}
                 renderItem={({ item }) => {
                   const selected = item.id === activeSession?.id;
                   return (
-                    <View && ]} selected style="{[" styles.sessionRow, styles.sessionRowActive,>
-                      <TouchableOpacity onPress="{()"> {
+                    <View
+                      style={[
+                        styles.sessionRow,
+                        selected && styles.sessionRowActive,
+                      ]}>
+                      <TouchableOpacity
+                        onPress={() => {
                           setActiveSessionId(item.id);
                           toggleDrawer(false);
                         }}
                         style={styles.sessionTitleBtn}>
-                        <Text && ]} numberOfLines="{1}" selected style="{[" styles.sessionTitleText, styles.sessionTitleTextActive,>
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.sessionTitleText,
+                            selected && styles.sessionTitleTextActive,
+                          ]}>
                           {item.title}
                         </Text>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress="{()"> handleDeleteSession(item.id)}
+                      <TouchableOpacity
+                        onPress={() => handleDeleteSession(item.id)}
                         style={styles.sessionDeleteBtn}>
-                        <Text style="{styles.sessionDeleteText}">✕</Text>
+                        <Text style={styles.sessionDeleteText}>✕</Text>
                       </TouchableOpacity>
                     </View>
                   );
                 }}
               />
 
-              <TouchableOpacity onPress="{()"> {
+              <TouchableOpacity
+                onPress={() => {
                   toggleDrawer(false);
                   setModelModalVisible(true);
                 }}
                 style={styles.drawerFooterBtn}>
-                <Text style="{styles.drawerFooterText}">⚙ 오프라인 AI 모델 관리</Text>
+                <Text style={styles.drawerFooterText}>⚙ 오프라인 AI 모델 관리</Text>
               </TouchableOpacity>
             </SafeAreaView>
           </Animated.View>
@@ -846,18 +894,20 @@ export default function App(): React.JSX.Element {
       )}
 
       {/* 모델 선택 및 다운로드 모달 */}
-      <Modal animationType="slide" onRequestClose="{()"> setModelModalVisible(false)}
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setModelModalVisible(false)}
         transparent
         visible={modelModalVisible}>
-        <View style="{styles.modalOverlay}">
-          <View style="{styles.modalSheet}">
-            <View style="{styles.modalHeader}">
-              <Text style="{styles.modalTitle}">오프라인 AI 모델 선택</Text>
-              <TouchableOpacity onPress="{()"> setModelModalVisible(false)}>
-                <Text style="{styles.modalClose}">닫기</Text>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>오프라인 AI 모델 선택</Text>
+              <TouchableOpacity onPress={() => setModelModalVisible(false)}>
+                <Text style={styles.modalClose}>닫기</Text>
               </TouchableOpacity>
             </View>
-            <Text style="{styles.modalDesc}">
+            <Text style={styles.modalDesc}>
               Wi-Fi에서 한 번 다운로드하면 이후 비행기 모드에서도 즉시 작동합니다.
             </Text>
 
@@ -868,28 +918,37 @@ export default function App(): React.JSX.Element {
               const isThisDownloading = downloadingKey === key;
 
               return (
-                <View && ]} isLoaded key="{key}" style="{[" styles.modelCard, styles.modelCardActive,>
-                  <View style="{styles.modelCardInfo}">
-                    <View style="{styles.modelCardTitleRow}">
-                      <Text style="{styles.modelCardName}">{spec.title}</Text>
-                      <Text style="{styles.modelCardSize}">{spec.sizeLabel}</Text>
+                <View
+                  key={key}
+                  style={[
+                    styles.modelCard,
+                    isLoaded && styles.modelCardActive,
+                  ]}>
+                  <View style={styles.modelCardInfo}>
+                    <View style={styles.modelCardTitleRow}>
+                      <Text style={styles.modelCardName}>{spec.title}</Text>
+                      <Text style={styles.modelCardSize}>{spec.sizeLabel}</Text>
                     </View>
-                    <Text style="{styles.modelCardSub}">{spec.subtitle}</Text>
+                    <Text style={styles.modelCardSub}>{spec.subtitle}</Text>
                   </View>
 
                   {isThisDownloading ? (
-                    <View style="{styles.downloadingRow}">
-                      <ActivityIndicator color="#10A37F" size="small"/>
-                      <Text style="{styles.downloadingPct}">
+                    <View style={styles.downloadingRow}>
+                      <ActivityIndicator color="#10A37F" size="small" />
+                      <Text style={styles.downloadingPct}>
                         {downloadProgress}%
                       </Text>
-                      <TouchableOpacity onPress="{handleCancelDownload}" style="{styles.cancelDlBtn}">
-                        <Text style="{styles.cancelDlText}">취소</Text>
+                      <TouchableOpacity
+                        onPress={handleCancelDownload}
+                        style={styles.cancelDlBtn}>
+                        <Text style={styles.cancelDlText}>취소</Text>
                       </TouchableOpacity>
                     </View>
                   ) : isInstalled ? (
-                    <View style="{styles.installedActions}">
-                      <TouchableOpacity disabled="{isLoaded" isInitializingEngine} onPress="{async" ||> {
+                    <View style={styles.installedActions}>
+                      <TouchableOpacity
+                        disabled={isLoaded || isInitializingEngine}
+                        onPress={async () => {
                           await loadModelIntoMemory(key);
                           setModelModalVisible(false);
                         }}
@@ -897,22 +956,25 @@ export default function App(): React.JSX.Element {
                           styles.useModelBtn,
                           isLoaded && styles.useModelBtnCurrent,
                         ]}>
-                        <Text style="{styles.useModelBtnText}">
+                        <Text style={styles.useModelBtnText}>
                           {isLoaded ? '사용 중 ✓' : '불러오기'}
                         </Text>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress="{()"> handleDeleteModel(key)}
+                      <TouchableOpacity
+                        onPress={() => handleDeleteModel(key)}
                         style={styles.deleteModelBtn}>
-                        <Text style="{styles.deleteModelBtnText}">삭제</Text>
+                        <Text style={styles.deleteModelBtnText}>삭제</Text>
                       </TouchableOpacity>
                     </View>
                   ) : (
-                    <TouchableOpacity !="=" disabled="{downloadingKey" null} onPress="{()"> handleDownloadModel(key)}
+                    <TouchableOpacity
+                      disabled={downloadingKey !== null}
+                      onPress={() => handleDownloadModel(key)}
                       style={[
                         styles.downloadModelBtn,
                         downloadingKey !== null && styles.disabledBtn,
                       ]}>
-                      <Text style="{styles.downloadModelBtnText}">다운로드</Text>
+                      <Text style={styles.downloadModelBtnText}>다운로드</Text>
                     </TouchableOpacity>
                   )}
                 </View>
