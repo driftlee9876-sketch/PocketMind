@@ -4,6 +4,7 @@ import {
   Alert,
   Animated,
   Dimensions,
+  Easing,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
@@ -31,6 +32,7 @@ interface ModelSpec {
   title: string;
   subtitle: string;
   sizeLabel: string;
+  expectedBytes: number;
   minBytes: number;
   filename: string;
   url: string;
@@ -56,6 +58,7 @@ const MODELS: Record<ModelKey, ModelSpec> = {
     title: 'PocketMind 1.5B',
     subtitle: '빠른 응답 · 모든 아이폰 권장',
     sizeLabel: '1.12 GB',
+    expectedBytes: 1117320736,
     minBytes: 500 * 1024 * 1024,
     filename: 'qwen2.5-1.5b-instruct-q4_k_m.gguf',
     url: 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
@@ -65,6 +68,7 @@ const MODELS: Record<ModelKey, ModelSpec> = {
     title: 'PocketMind 3B',
     subtitle: '깊은 추론 · RAM 6GB 이상 권장',
     sizeLabel: '2.10 GB',
+    expectedBytes: 2104932768,
     minBytes: 1000 * 1024 * 1024,
     filename: 'qwen2.5-3b-instruct-q4_k_m.gguf',
     url: 'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf',
@@ -106,6 +110,10 @@ interface ContentBlock {
   content: string;
 }
 
+function formatMB(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
 function parseMessageBlocks(raw: string): ContentBlock[] {
   const blocks: ContentBlock[] = [];
   const fence = '\x60\x60\x60';
@@ -141,7 +149,13 @@ function parseMessageBlocks(raw: string): ContentBlock[] {
   return blocks;
 }
 
-function RichTextRenderer({ text }: { text: string }): React.JSX.Element {
+function RichTextRenderer({
+  text,
+  showCursor,
+}: {
+  text: string;
+  showCursor?: boolean;
+}): React.JSX.Element {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
   return (
     <Text style={styles.assistantText}>
@@ -155,7 +169,226 @@ function RichTextRenderer({ text }: { text: string }): React.JSX.Element {
         }
         return <Text key={idx}>{part}</Text>;
       })}
+      {showCursor ? <Text style={styles.cursorDot}> ●</Text> : null}
     </Text>
+  );
+}
+
+function BreathingLogo(): React.JSX.Element {
+  const pulse = useRef(new Animated.Value(1)).current;
+  const glow = useRef(new Animated.Value(0.25)).current;
+
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.parallel([
+        Animated.sequence([
+          Animated.timing(pulse, {
+            toValue: 1.07,
+            duration: 1800,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulse, {
+            toValue: 1,
+            duration: 1800,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ]),
+        Animated.sequence([
+          Animated.timing(glow, {
+            toValue: 0.65,
+            duration: 1800,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(glow, {
+            toValue: 0.25,
+            duration: 1800,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ]),
+      ]),
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [glow, pulse]);
+
+  return (
+    <View style={styles.logoOuterWrap}>
+      <Animated.View
+        style={[
+          styles.logoGlowRing,
+          { opacity: glow, transform: [{ scale: pulse }] },
+        ]}
+      />
+      <Animated.View
+        style={[styles.centerLogoCircle, { transform: [{ scale: pulse }] }]}>
+        <Text style={styles.centerLogoIcon}>✦</Text>
+      </Animated.View>
+    </View>
+  );
+}
+
+function ThinkingWave(): React.JSX.Element {
+  const dot1 = useRef(new Animated.Value(0.3)).current;
+  const dot2 = useRef(new Animated.Value(0.3)).current;
+  const dot3 = useRef(new Animated.Value(0.3)).current;
+
+  useEffect(() => {
+    const createDotAnim = (val: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(val, {
+            toValue: 1,
+            duration: 380,
+            useNativeDriver: true,
+          }),
+          Animated.timing(val, {
+            toValue: 0.3,
+            duration: 380,
+            useNativeDriver: true,
+          }),
+          Animated.delay(400 - delay),
+        ]),
+      );
+
+    const a1 = createDotAnim(dot1, 0);
+    const a2 = createDotAnim(dot2, 160);
+    const a3 = createDotAnim(dot3, 320);
+    a1.start();
+    a2.start();
+    a3.start();
+    return () => {
+      a1.stop();
+      a2.stop();
+      a3.stop();
+    };
+  }, [dot1, dot2, dot3]);
+
+  return (
+    <View style={styles.typingRow}>
+      {[dot1, dot2, dot3].map((animVal, idx) => (
+        <Animated.View
+          key={idx}
+          style={[
+            styles.waveDot,
+            {
+              opacity: animVal,
+              transform: [
+                {
+                  scale: animVal.interpolate({
+                    inputRange: [0.3, 1],
+                    outputRange: [0.85, 1.2],
+                  }),
+                },
+              ],
+            },
+          ]}
+        />
+      ))}
+    </View>
+  );
+}
+
+function AnimatedSuggestionCard({
+  title,
+  desc,
+  index,
+  onPress,
+}: {
+  title: string;
+  desc: string;
+  index: number;
+  onPress: () => void;
+}): React.JSX.Element {
+  const enterAnim = useRef(new Animated.Value(0)).current;
+  const pressScale = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.timing(enterAnim, {
+      toValue: 1,
+      duration: 380,
+      delay: index * 75,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [enterAnim, index]);
+
+  const handlePressIn = () => {
+    Animated.spring(pressScale, {
+      toValue: 0.97,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(pressScale, {
+      toValue: 1,
+      friction: 5,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  return (
+    <Animated.View
+      style={{
+        opacity: enterAnim,
+        transform: [
+          {
+            translateY: enterAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [18, 0],
+            }),
+          },
+          { scale: pressScale },
+        ],
+      }}>
+      <Pressable
+        onPress={onPress}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        style={styles.suggestionCard}>
+        <Text style={styles.suggestionTitle}>{title}</Text>
+        <Text style={styles.suggestionDesc}>{desc}</Text>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+function AnimatedMessageRow({
+  children,
+}: {
+  children: React.ReactNode;
+}): React.JSX.Element {
+  const appear = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.spring(appear, {
+      toValue: 1,
+      damping: 20,
+      stiffness: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [appear]);
+
+  return (
+    <Animated.View
+      style={{
+        opacity: appear,
+        transform: [
+          {
+            translateY: appear.interpolate({
+              inputRange: [0, 1],
+              outputRange: [14, 0],
+            }),
+          },
+        ],
+      }}>
+      {children}
+    </Animated.View>
   );
 }
 
@@ -169,6 +402,8 @@ export default function App(): React.JSX.Element {
 
   const [downloadingKey, setDownloadingKey] = useState<ModelKey | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
+  const [downloadStatusText, setDownloadStatusText] = useState<string>('');
+  const progressBarAnim = useRef(new Animated.Value(0)).current;
   const downloadJobIdRef = useRef<number | null>(null);
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -180,6 +415,7 @@ export default function App(): React.JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
   const [modelModalVisible, setModelModalVisible] = useState<boolean>(false);
   const drawerAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
+  const backdropAnim = useRef(new Animated.Value(0)).current;
 
   const llamaContextRef = useRef<LlamaContext | null>(null);
   const flatListRef = useRef<FlatList<ChatMessage> | null>(null);
@@ -322,17 +558,33 @@ export default function App(): React.JSX.Element {
     Keyboard.dismiss();
     if (open) {
       setDrawerOpen(true);
-      Animated.timing(drawerAnim, {
-        toValue: 0,
-        duration: 220,
-        useNativeDriver: true,
-      }).start();
+      Animated.parallel([
+        Animated.spring(drawerAnim, {
+          toValue: 0,
+          damping: 24,
+          stiffness: 220,
+          useNativeDriver: true,
+        }),
+        Animated.timing(backdropAnim, {
+          toValue: 1,
+          duration: 220,
+          useNativeDriver: true,
+        }),
+      ]).start();
     } else {
-      Animated.timing(drawerAnim, {
-        toValue: -DRAWER_WIDTH,
-        duration: 200,
-        useNativeDriver: true,
-      }).start(() => setDrawerOpen(false));
+      Animated.parallel([
+        Animated.timing(drawerAnim, {
+          toValue: -DRAWER_WIDTH,
+          duration: 200,
+          easing: Easing.in(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(backdropAnim, {
+          toValue: 0,
+          duration: 200,
+          useNativeDriver: true,
+        }),
+      ]).start(() => setDrawerOpen(false));
     }
   };
 
@@ -343,6 +595,10 @@ export default function App(): React.JSX.Element {
 
     setDownloadingKey(key);
     setDownloadProgress(0);
+    setDownloadStatusText('서버 연결 중...');
+    progressBarAnim.setValue(0);
+
+    let totalBytes = spec.expectedBytes;
 
     try {
       if (await RNFS.exists(targetPath)) {
@@ -352,38 +608,56 @@ export default function App(): React.JSX.Element {
       const task = RNFS.downloadFile({
         fromUrl: spec.url,
         toFile: targetPath,
-        background: true,
-        progressDivider: 2,
-        progress: (res) => {
+        background: false,
+        discretionary: false,
+        cacheable: false,
+        headers: {
+          'User-Agent': 'PocketMind-iOS/1.0',
+        },
+        progressInterval: 250,
+        begin: (res) => {
           if (res.contentLength > 0) {
-            const pct = Math.min(
-              100,
-              Math.round((res.bytesWritten / res.contentLength) * 100),
-            );
-            setDownloadProgress(pct);
+            totalBytes = res.contentLength;
           }
+          setDownloadStatusText(`0 MB / ${formatMB(totalBytes)}`);
+        },
+        progress: (res) => {
+          const denom = res.contentLength > 0 ? res.contentLength : totalBytes;
+          const pct = Math.min(100, Math.round((res.bytesWritten / denom) * 100));
+          setDownloadProgress(pct);
+          setDownloadStatusText(`${formatMB(res.bytesWritten)} / ${formatMB(denom)}`);
+          Animated.timing(progressBarAnim, {
+            toValue: pct,
+            duration: 200,
+            useNativeDriver: false,
+          }).start();
         },
       });
 
       downloadJobIdRef.current = task.jobId;
       const response = await task.promise;
 
-      if (response.statusCode === 200) {
+      if (response.statusCode >= 200 && response.statusCode < 300) {
         setDownloadingKey(null);
         downloadJobIdRef.current = null;
+        setDownloadStatusText('');
         await scanDownloadedModels();
         await loadModelIntoMemory(key);
         setModelModalVisible(false);
       } else {
-        throw new Error(`HTTP ${response.statusCode}`);
+        throw new Error(`서버 응답 오류 (HTTP ${response.statusCode})`);
       }
     } catch (error) {
       setDownloadingKey(null);
       downloadJobIdRef.current = null;
+      setDownloadStatusText('');
       if (await RNFS.exists(targetPath)) {
         await RNFS.unlink(targetPath);
       }
-      Alert.alert('다운로드 중단', `모델 다운로드를 완료하지 못했습니다.\n${String(error)}`);
+      Alert.alert(
+        '다운로드 실패',
+        `모델을 내려받지 못했습니다. Wi-Fi 연결 상태를 확인한 뒤 다시 시도해 주세요.\n(${String(error)})`,
+      );
     }
   };
 
@@ -394,6 +668,7 @@ export default function App(): React.JSX.Element {
       setDownloadingKey(null);
       downloadJobIdRef.current = null;
       setDownloadProgress(0);
+      setDownloadStatusText('');
       if (await RNFS.exists(path)) {
         await RNFS.unlink(path);
       }
@@ -510,7 +785,7 @@ export default function App(): React.JSX.Element {
         (tokenData) => {
           fullAnswer += tokenData.token;
           const now = Date.now();
-          if (now - lastUiUpdate >= 60) {
+          if (now - lastUiUpdate >= 50) {
             lastUiUpdate = now;
             const snapshot = fullAnswer;
             setSessions((prev) =>
@@ -624,77 +899,86 @@ export default function App(): React.JSX.Element {
     index: number;
   }) => {
     const isUser = item.role === 'user';
-    const isLastAssistant =
-      !isUser && index === currentMessages.length - 1 && !isGenerating;
+    const isLastItem = index === currentMessages.length - 1;
+    const isStreamingThis = !isUser && isLastItem && isGenerating;
+    const isLastAssistant = !isUser && isLastItem && !isGenerating;
 
     if (isUser) {
       return (
-        <View style={styles.userRow}>
-          <View style={styles.userBubble}>
-            <Text style={styles.userText}>{item.content}</Text>
+        <AnimatedMessageRow>
+          <View style={styles.userRow}>
+            <View style={styles.userBubble}>
+              <Text style={styles.userText}>{item.content}</Text>
+            </View>
           </View>
-        </View>
+        </AnimatedMessageRow>
       );
     }
 
     const blocks = parseMessageBlocks(item.content);
 
     return (
-      <View style={styles.assistantRow}>
-        <View style={styles.avatarBadge}>
-          <Text style={styles.avatarGlyph}>✦</Text>
-        </View>
-        <View style={styles.assistantContentCol}>
-          {item.content.length === 0 ? (
-            <View style={styles.typingRow}>
-              <ActivityIndicator color="#10A37F" size="small" />
-              <Text style={styles.typingHint}>생각하는 중...</Text>
-            </View>
-          ) : (
-            blocks.map((block, bIdx) => {
-              if (block.type === 'code') {
-                const codeCopyKey = `${item.id}-code-${bIdx}`;
-                return (
-                  <View key={bIdx} style={styles.codeCard}>
-                    <View style={styles.codeHeader}>
-                      <Text style={styles.codeLang}>{block.language}</Text>
-                      <TouchableOpacity
-                        onPress={() => handleCopyText(codeCopyKey, block.content)}>
-                        <Text style={styles.codeCopyBtn}>
-                          {copiedId === codeCopyKey ? '복사됨 ✓' : '코드 복사'}
-                        </Text>
-                      </TouchableOpacity>
+      <AnimatedMessageRow>
+        <View style={styles.assistantRow}>
+          <View style={styles.avatarBadge}>
+            <Text style={styles.avatarGlyph}>✦</Text>
+          </View>
+          <View style={styles.assistantContentCol}>
+            {item.content.length === 0 ? (
+              <ThinkingWave />
+            ) : (
+              blocks.map((block, bIdx) => {
+                const isLastBlock = bIdx === blocks.length - 1;
+                if (block.type === 'code') {
+                  const codeCopyKey = `${item.id}-code-${bIdx}`;
+                  return (
+                    <View key={bIdx} style={styles.codeCard}>
+                      <View style={styles.codeHeader}>
+                        <Text style={styles.codeLang}>{block.language}</Text>
+                        <TouchableOpacity
+                          onPress={() => handleCopyText(codeCopyKey, block.content)}>
+                          <Text style={styles.codeCopyBtn}>
+                            {copiedId === codeCopyKey ? '복사됨 ✓' : '코드 복사'}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                        <Text style={styles.codeBody}>{block.content}</Text>
+                      </ScrollView>
                     </View>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                      <Text style={styles.codeBody}>{block.content}</Text>
-                    </ScrollView>
-                  </View>
+                  );
+                }
+                return (
+                  <RichTextRenderer
+                    key={bIdx}
+                    text={block.content}
+                    showCursor={isStreamingThis && isLastBlock}
+                  />
                 );
-              }
-              return <RichTextRenderer key={bIdx} text={block.content} />;
-            })
-          )}
+              })
+            )}
 
-          {item.content.length > 0 && !isGenerating && (
-            <View style={styles.actionBar}>
-              <TouchableOpacity
-                onPress={() => handleCopyText(item.id, item.content)}
-                style={styles.actionChip}>
-                <Text style={styles.actionChipText}>
-                  {copiedId === item.id ? '복사 완료 ✓' : '복사'}
-                </Text>
-              </TouchableOpacity>
-              {isLastAssistant && (
+            {item.content.length > 0 && !isGenerating && (
+              <View style={styles.actionBar}>
                 <TouchableOpacity
-                  onPress={handleRegenerateLast}
+                  onPress={() => handleCopyText(item.id, item.content)}
                   style={styles.actionChip}>
-                  <Text style={styles.actionChipText}>↻ 다시 생성</Text>
+                  <Text style={styles.actionChipText}>
+                    {copiedId === item.id ? '복사 완료 ✓' : '복사'}
+                  </Text>
                 </TouchableOpacity>
-              )}
-            </View>
-          )}
+                {isLastAssistant && (
+                  <TouchableOpacity
+                    onPress={handleRegenerateLast}
+                    style={styles.actionChip}>
+                    <Text style={styles.actionChipText}>↻ 다시 생성</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+          </View>
         </View>
-      </View>
+      </AnimatedMessageRow>
     );
   };
 
@@ -715,6 +999,12 @@ export default function App(): React.JSX.Element {
           onPress={() => setModelModalVisible(true)}
           style={styles.modelSelectorPill}
           disabled={isGenerating}>
+          <View
+            style={[
+              styles.statusDot,
+              loadedModelKey ? styles.statusDotOnline : styles.statusDotOffline,
+            ]}
+          />
           <Text style={styles.modelPillTitle}>
             {loadedModelKey ? MODELS[loadedModelKey].title : '모델 선택 필요'}
           </Text>
@@ -745,9 +1035,7 @@ export default function App(): React.JSX.Element {
           contentContainerStyle={styles.emptyStateContainer}
           keyboardShouldPersistTaps="handled">
           <View style={styles.centerLogoWrap}>
-            <View style={styles.centerLogoCircle}>
-              <Text style={styles.centerLogoIcon}>✦</Text>
-            </View>
+            <BreathingLogo />
             <Text style={styles.centerTitle}>무엇을 도와드릴까요?</Text>
             <Text style={styles.centerSubtitle}>
               {loadedModelKey
@@ -758,13 +1046,13 @@ export default function App(): React.JSX.Element {
 
           <View style={styles.suggestionsGrid}>
             {SUGGESTION_CARDS.map((card, idx) => (
-              <TouchableOpacity
+              <AnimatedSuggestionCard
                 key={idx}
+                index={idx}
+                title={card.title}
+                desc={card.desc}
                 onPress={() => handleSendMessage(card.prompt)}
-                style={styles.suggestionCard}>
-                <Text style={styles.suggestionTitle}>{card.title}</Text>
-                <Text style={styles.suggestionDesc}>{card.desc}</Text>
-              </TouchableOpacity>
+              />
             ))}
           </View>
         </ScrollView>
@@ -823,10 +1111,13 @@ export default function App(): React.JSX.Element {
       {/* 좌측 사이드바 (대화 목록) */}
       {drawerOpen && (
         <View style={StyleSheet.absoluteFill}>
-          <Pressable
-            onPress={() => toggleDrawer(false)}
-            style={styles.drawerBackdrop}
-          />
+          <Animated.View
+            style={[styles.drawerBackdrop, { opacity: backdropAnim }]}>
+            <Pressable
+              onPress={() => toggleDrawer(false)}
+              style={StyleSheet.absoluteFill}
+            />
+          </Animated.View>
           <Animated.View
             style={[
               styles.drawerPanel,
@@ -933,16 +1224,31 @@ export default function App(): React.JSX.Element {
                   </View>
 
                   {isThisDownloading ? (
-                    <View style={styles.downloadingRow}>
-                      <ActivityIndicator color="#10A37F" size="small" />
-                      <Text style={styles.downloadingPct}>
-                        {downloadProgress}%
-                      </Text>
-                      <TouchableOpacity
-                        onPress={handleCancelDownload}
-                        style={styles.cancelDlBtn}>
-                        <Text style={styles.cancelDlText}>취소</Text>
-                      </TouchableOpacity>
+                    <View style={styles.downloadingCol}>
+                      <View style={styles.progressTrack}>
+                        <Animated.View
+                          style={[
+                            styles.progressFill,
+                            {
+                              width: progressBarAnim.interpolate({
+                                inputRange: [0, 100],
+                                outputRange: ['0%', '100%'],
+                              }),
+                            },
+                          ]}
+                        />
+                      </View>
+                      <View style={styles.downloadingRow}>
+                        <ActivityIndicator color="#10A37F" size="small" />
+                        <Text style={styles.downloadingPct}>
+                          {downloadProgress}% · {downloadStatusText}
+                        </Text>
+                        <TouchableOpacity
+                          onPress={handleCancelDownload}
+                          style={styles.cancelDlBtn}>
+                          <Text style={styles.cancelDlText}>취소</Text>
+                        </TouchableOpacity>
+                      </View>
                     </View>
                   ) : isInstalled ? (
                     <View style={styles.installedActions}>
@@ -1019,7 +1325,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 7,
     borderRadius: 18,
-    gap: 6,
+    gap: 7,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  statusDotOnline: {
+    backgroundColor: '#10A37F',
+  },
+  statusDotOffline: {
+    backgroundColor: '#F59E0B',
   },
   modelPillTitle: {
     color: '#ECECEC',
@@ -1047,12 +1364,26 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: 48,
+    paddingTop: 44,
     paddingBottom: 20,
   },
   centerLogoWrap: {
     alignItems: 'center',
-    marginTop: 24,
+    marginTop: 20,
+  },
+  logoOuterWrap: {
+    width: 72,
+    height: 72,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  logoGlowRing: {
+    position: 'absolute',
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#10A37F',
   },
   centerLogoCircle: {
     width: 54,
@@ -1061,7 +1392,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#ECECEC',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
   },
   centerLogoIcon: {
     color: '#212121',
@@ -1148,12 +1478,14 @@ const styles = StyleSheet.create({
   typingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingVertical: 4,
+    gap: 6,
+    paddingVertical: 10,
   },
-  typingHint: {
-    color: '#9B9B9B',
-    fontSize: 14,
+  waveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10A37F',
   },
   assistantText: {
     color: '#ECECEC',
@@ -1163,6 +1495,10 @@ const styles = StyleSheet.create({
   boldText: {
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  cursorDot: {
+    color: '#10A37F',
+    fontSize: 14,
   },
   codeCard: {
     backgroundColor: '#141414',
@@ -1275,7 +1611,7 @@ const styles = StyleSheet.create({
   },
   drawerBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.55)',
+    backgroundColor: 'rgba(0,0,0,0.6)',
   },
   drawerPanel: {
     width: DRAWER_WIDTH,
@@ -1423,6 +1759,19 @@ const styles = StyleSheet.create({
     color: '#B4B4B4',
     fontSize: 13,
   },
+  downloadingCol: {
+    gap: 8,
+  },
+  progressTrack: {
+    height: 6,
+    backgroundColor: '#171717',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#10A37F',
+  },
   downloadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1430,7 +1779,7 @@ const styles = StyleSheet.create({
   },
   downloadingPct: {
     color: '#10A37F',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     flex: 1,
   },
