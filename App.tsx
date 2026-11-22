@@ -166,6 +166,7 @@ function PocketMindChatGPTScreen() {
   const [activeSessionId, setActiveSessionId] = useState<string>('session-1');
   const [historyReady, setHistoryReady] = useState(false);
   const [deviceMetrics, setDeviceMetrics] = useState<DeviceMetrics | null>(null);
+  const [connectionSettingsReady, setConnectionSettingsReady] = useState(false);
 
   const [inputText, setInputText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -295,6 +296,45 @@ function PocketMindChatGPTScreen() {
       console.warn('[PocketMind] 대화 기록을 저장하지 못했습니다.', error);
     });
   }, [sessions, activeSessionId, historyReady]);
+
+  useEffect(() => {
+    let mounted = true;
+    const restoreConnectionSettings = async () => {
+      try {
+        const savedUrl = await AsyncStorage.getItem('pocketmind.coordinator-url.v1');
+        const native = NativeModules.PocketMindWorker;
+        const savedToken = Platform.OS === 'android' && typeof native?.getSecret === 'function'
+          ? await native.getSecret('pocketmind.coordinator-api-token.v1')
+          : '';
+        if (mounted) {
+          setRemotePC((previous) => ({
+            ...previous,
+            serverUrl: savedUrl || '',
+            apiKey: typeof savedToken === 'string' ? savedToken : '',
+          }));
+        }
+      } catch (error) {
+        console.warn('[PocketMind] 연결 설정을 복원하지 못했습니다.', error);
+      } finally {
+        if (mounted) setConnectionSettingsReady(true);
+      }
+    };
+    restoreConnectionSettings();
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!connectionSettingsReady) return;
+    AsyncStorage.setItem('pocketmind.coordinator-url.v1', remotePC.serverUrl).catch(() => {});
+    if (Platform.OS === 'android') {
+      const native = NativeModules.PocketMindWorker;
+      if (remotePC.apiKey && typeof native?.setSecret === 'function') {
+        native.setSecret('pocketmind.coordinator-api-token.v1', remotePC.apiKey).catch(() => {});
+      } else if (typeof native?.removeSecret === 'function') {
+        native.removeSecret('pocketmind.coordinator-api-token.v1').catch(() => {});
+      }
+    }
+  }, [connectionSettingsReady, remotePC.serverUrl, remotePC.apiKey]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
