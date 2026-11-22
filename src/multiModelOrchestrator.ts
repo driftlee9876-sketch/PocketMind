@@ -339,10 +339,9 @@ class MultiModelOrchestratorEngine {
     callbacks?: InferenceCallbacks,
   ): Promise<{ output: string; location: 'on-device' | 'pc-worker'; durationMs: number }> {
     const startTime = Date.now();
-    const preferPC =
-      remoteConfig.enabled &&
-      remoteConfig.serverUrl.trim().length > 0 &&
-      (model.tier === 'high' || model.tier === 'mid');
+    // Explicit remote enablement opts any model tier into the shared Worker queue.
+    // Higher tiers additionally require a GPU-capable Worker below.
+    const preferPC = remoteConfig.enabled && remoteConfig.serverUrl.trim().length > 0;
 
     if (preferPC) {
       let coordinatorAvailable = false;
