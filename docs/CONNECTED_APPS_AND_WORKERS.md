@@ -93,6 +93,8 @@ The coordinator lists only configured IDs. Server-side action policy determines 
 
 The webhook adapter must validate the request, apply the provider's OAuth scopes, and return a useful response. Configure provider secrets at the adapter, not in the mobile app or the Git repository. High-impact provider actions (payments, orders, public publishing, deleting accounts, etc.) should also require provider-side confirmation.
 
+For Pickle-style one-tap account connection, configure `POCKETMIND_INTEGRATION_CONNECTORS_JSON` with HTTPS `actionUrl`, `connectUrl`, `statusUrl`, and `disconnectUrl` values for each provider. PocketMind requests a secure provider authorization URL, opens the official login page, returns through `pocketmind://integrations/callback`, and checks `statusUrl` before enabling actions. The adapter owns OAuth state validation, token exchange, encrypted refresh-token storage, token revocation, and HMAC request verification. Provider credentials are never stored in the APK or Coordinator JSON state.
+
 ## API overview
 
 - `GET /v1/health`: public health check.
@@ -104,6 +106,7 @@ The webhook adapter must validate the request, apply the provider's OAuth scopes
 - `POST /v1/tasks/:id/result` and `/fail`: lease-owner protected result/failure.
 - `GET /v1/tasks/:id`, `POST /v1/tasks/:id/cancel`: API-token protected task status/cancellation.
 - `GET /v1/integrations`, `POST /v1/integrations/actions`, and action `approve`/`reject` routes: connected-app automation.
+- `POST /v1/integrations/:id/connect`, `/status`, and `/disconnect`: one-tap account connection through a trusted OAuth adapter.
 
 ## Important boundaries
 

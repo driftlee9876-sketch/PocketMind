@@ -42,6 +42,13 @@ test('coordinator authenticates, enrolls workers, leases tasks and validates res
       POCKETMIND_ENROLLMENT_TOKEN: enrollmentToken,
       POCKETMIND_DATA_FILE: dataFile,
       POCKETMIND_INTEGRATION_WEBHOOKS_JSON: '{}',
+      POCKETMIND_INTEGRATION_CONNECTORS_JSON: JSON.stringify({
+        'google-gmail': {
+          actionUrl: 'https://connector.example/actions',
+          connectUrl: 'https://connector.example/connect',
+        },
+      }),
+      POCKETMIND_WEBHOOK_SIGNING_SECRET: 'test-signing-secret-' + 'c'.repeat(40),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -69,6 +76,21 @@ test('coordinator authenticates, enrolls workers, leases tasks and validates res
 
   const unauthenticated = await request('GET', '/v1/workers');
   assert.equal(unauthenticated.status, 401);
+
+  const integrationsResponse = await request('GET', '/v1/integrations', undefined, apiToken);
+  assert.equal(integrationsResponse.status, 200);
+  const integrations = (await integrationsResponse.json()).integrations;
+  assert.deepEqual(integrations, [{
+    id: 'google-gmail',
+    configured: true,
+    connectable: true,
+    connected: false,
+    mode: 'oauth',
+    statusError: 'Status endpoint is missing.',
+  }]);
+
+  const incompleteConnect = await request('POST', '/v1/integrations/google-gmail/connect', {}, apiToken);
+  assert.equal(incompleteConnect.status, 409, 'one-tap OAuth requires both connect and status endpoints');
 
   const enrollment = await request('POST', '/v1/workers/enroll', {
     workerId: 'windows-test-01',

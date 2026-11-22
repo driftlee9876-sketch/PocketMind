@@ -39,7 +39,8 @@ This roadmap follows the product direction: all planned capabilities, a simple G
 
 ### 4. Connected apps and automation
 - [x] Provide a catalog and approval UI for write actions.
-- [ ] Add per-provider setup validation and connection test.
+- [x] Add a standard one-tap OAuth broker flow, Android callback deep link, live status check, and disconnect control.
+- [ ] Add and verify production OAuth adapters/credentials for each provider.
 - [x] Add searchable connection status, setup filters, refresh feedback, and official setup links.
 - [ ] Add action history and clear retry/error states.
 - [ ] Enable only integrations with a verified trusted adapter and official credentials.

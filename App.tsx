@@ -17,6 +17,7 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import {
   Alert,
   Animated,
+  AppState,
   Easing,
   FlatList,
   LayoutAnimation,
@@ -44,11 +45,14 @@ import {
 } from './src/aiModelsAndPlugins';
 import { CONNECTED_APP_CATALOG } from './src/connectedAppsCatalog';
 import {
-  getConfiguredIntegrations,
+  beginIntegrationConnection,
+  disconnectIntegration,
+  getIntegrationConnections,
   submitIntegrationAction,
   approveIntegrationAction,
   rejectIntegrationAction,
 } from './src/integrationActions';
+import type { IntegrationConnection } from './src/integrationActions';
 import { discoverCoordinatorWorkers } from './src/distributedCoordinatorClient';
 import { stopAndroidWorkerService } from './src/androidWorkerRuntime';
 import {
@@ -360,6 +364,8 @@ function PocketMindChatGPTScreen() {
   const [workerModelIds, setWorkerModelIds] = useState<string[]>([]);
   const [workerUseGpu, setWorkerUseGpu] = useState(false);
   const [configuredIntegrationIds, setConfiguredIntegrationIds] = useState<string[]>([]);
+  const [integrationConnections, setIntegrationConnections] = useState<IntegrationConnection[]>([]);
+  const [connectingIntegrationId, setConnectingIntegrationId] = useState<string | null>(null);
   const [integrationSearch, setIntegrationSearch] = useState('');
   const [integrationFilter, setIntegrationFilter] = useState<'all' | 'connected' | 'setup'>('all');
   const [integrationStatus, setIntegrationStatus] = useState<'idle' | 'checking' | 'ready' | 'error'>('idle');
@@ -585,6 +591,10 @@ function PocketMindChatGPTScreen() {
   const configuredIntegrationSet = useMemo(
     () => new Set(configuredIntegrationIds),
     [configuredIntegrationIds],
+  );
+  const integrationConnectionMap = useMemo(
+    () => new Map(integrationConnections.map((connection) => [connection.id, connection])),
+    [integrationConnections],
   );
   const lastAssistantMessageId = useMemo(
     () => [...messages].reverse().find((message) => message.role === 'assistant')?.id || null,
@@ -891,9 +901,10 @@ function PocketMindChatGPTScreen() {
     refreshCoordinatorWorkers();
   }, [androidWorkerOpen, remotePC.serverUrl, remotePC.apiKey]);
 
-  const refreshConnectedApps = async () => {
+  const refreshConnectedApps = useCallback(async () => {
     if (!remotePC.serverUrl.trim() || (remotePC.apiKey || '').trim().length < 24) {
       setConfiguredIntegrationIds([]);
+      setIntegrationConnections([]);
       setIntegrationStatus('error');
       setIntegrationStatusMessage('Coordinator 주소와 24자 이상의 API 토큰을 먼저 설정하세요.');
       return;
@@ -901,21 +912,27 @@ function PocketMindChatGPTScreen() {
     setIntegrationStatus('checking');
     setIntegrationStatusMessage('Coordinator에서 연결 상태를 확인하고 있습니다...');
     try {
-      const ids = await getConfiguredIntegrations(remotePC.serverUrl, (remotePC.apiKey || ''));
+      const connections = await getIntegrationConnections(remotePC.serverUrl, (remotePC.apiKey || ''));
+      const ids = connections
+        .filter((connection) => connection.connectable ? connection.connected : connection.configured)
+        .map((connection) => connection.id);
+      const available = connections.filter((connection) => connection.connectable && !connection.connected).length;
+      setIntegrationConnections(connections);
       setConfiguredIntegrationIds(ids);
       setIntegrationStatus('ready');
       setIntegrationStatusMessage(
-        ids.length > 0
-          ? `${ids.length}개 앱의 서버 어댑터가 설정되어 있습니다.`
-          : 'Coordinator는 연결됐지만 설정된 앱 어댑터가 없습니다.',
+        connections.length > 0
+          ? `${ids.length}개 연결됨${available ? ` · ${available}개 원클릭 연결 가능` : ''}`
+          : 'Coordinator는 연결됐지만 설치된 연결 어댑터가 없습니다.',
       );
       setIntegrationCheckedAt(formatNowTime());
     } catch (error: any) {
       setConfiguredIntegrationIds([]);
+      setIntegrationConnections([]);
       setIntegrationStatus('error');
       setIntegrationStatusMessage(error?.message || 'Coordinator 주소와 API 토큰을 확인하세요.');
     }
-  };
+  }, [remotePC.apiKey, remotePC.serverUrl]);
 
   const openConnectedApps = async () => {
     setConnectedAppsOpen(true);
@@ -930,6 +947,72 @@ function PocketMindChatGPTScreen() {
       Alert.alert('설정 페이지를 열 수 없음', error?.message || '주소를 확인하세요.');
     }
   };
+
+  const handleConnectIntegration = async (
+    app: (typeof CONNECTED_APP_CATALOG)[number],
+  ) => {
+    if (!remotePC.serverUrl.trim() || (remotePC.apiKey || '').trim().length < 24) {
+      Alert.alert('Coordinator 설정 필요', 'Coordinator 주소와 API 토큰을 먼저 입력하세요.');
+      return;
+    }
+    setConnectingIntegrationId(app.id);
+    try {
+      const authorizationUrl = await beginIntegrationConnection(
+        remotePC.serverUrl,
+        remotePC.apiKey || '',
+        app.id,
+      );
+      setIntegrationStatusMessage(`${app.name} 공식 로그인 화면을 열었습니다. 인증 후 PocketMind로 돌아오세요.`);
+      await Linking.openURL(authorizationUrl);
+    } catch (error: any) {
+      setConnectingIntegrationId(null);
+      Alert.alert('연결을 시작할 수 없음', error?.message || '연결 어댑터 설정을 확인하세요.');
+    }
+  };
+
+  const handleDisconnectIntegration = (
+    app: (typeof CONNECTED_APP_CATALOG)[number],
+  ) => {
+    Alert.alert(
+      `${app.name} 연결 해제`,
+      'PocketMind에서 이 계정의 연결을 해제할까요?',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '연결 해제',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await disconnectIntegration(remotePC.serverUrl, remotePC.apiKey || '', app.id);
+              await refreshConnectedApps();
+              showToast(`${app.name} 연결을 해제했습니다.`);
+            } catch (error: any) {
+              Alert.alert('연결 해제 실패', error?.message || '연결 어댑터를 확인하세요.');
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  useEffect(() => {
+    const handleUrl = ({ url }: { url: string }) => {
+      if (!url.startsWith('pocketmind://integrations/callback')) return;
+      setConnectedAppsOpen(true);
+      setConnectingIntegrationId(null);
+      refreshConnectedApps().then(() => showToast('계정 연결 상태를 확인했습니다.'));
+    };
+    const linkSubscription = Linking.addEventListener('url', handleUrl);
+    const appStateSubscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && connectingIntegrationId) {
+        refreshConnectedApps().then(() => setConnectingIntegrationId(null));
+      }
+    });
+    return () => {
+      linkSubscription.remove();
+      appStateSubscription.remove();
+    };
+  }, [connectingIntegrationId, refreshConnectedApps, showToast]);
 
   const handleConnectedAppAction = async (
     app: (typeof CONNECTED_APP_CATALOG)[number],
@@ -1748,14 +1831,14 @@ function PocketMindChatGPTScreen() {
         <SafeAreaView style={styles.fullModal}>
           <View style={styles.fullModalHeader}>
             <Text style={styles.fullModalTitle}>
-              🔌 연결 앱 허브 ({configuredIntegrationIds.length}/{CONNECTED_APP_CATALOG.length} 웹훅 설정)
+              🔌 연결 앱 ({configuredIntegrationIds.length}/{CONNECTED_APP_CATALOG.length} 연결됨)
             </Text>
             <TouchableOpacity onPress={() => setConnectedAppsOpen(false)}>
               <Text style={styles.sheetClose}>닫기</Text>
             </TouchableOpacity>
           </View>
           <Text style={[styles.pluginCardDesc, { paddingHorizontal: 16, paddingTop: 10 }]}>
-            앱을 선택해 자동화 작업을 요청할 수 있습니다. 목록에 있다고 연결된 것은 아닙니다. Coordinator에 HTTPS 웹훅과 각 서비스의 공식 인증을 설정해야 실제로 동작합니다.
+            원클릭 연결이 준비된 앱은 연결 버튼을 누른 뒤 공식 로그인만 완료하면 됩니다. 계정 비밀번호는 PocketMind에 저장되지 않습니다.
           </Text>
           <View style={styles.integrationStatusPanel}>
             <View style={styles.integrationStatusHeader}>
@@ -1824,6 +1907,16 @@ function PocketMindChatGPTScreen() {
           <ScrollView style={styles.modalScrollBody}>
             {filteredConnectedApps.map((app) => {
               const configured = configuredIntegrationSet.has(app.id);
+              const connection = integrationConnectionMap.get(app.id);
+              const connectable = connection?.connectable === true;
+              const connecting = connectingIntegrationId === app.id;
+              const statusLabel = configured
+                ? '연결됨'
+                : connectable
+                  ? '연결 가능'
+                  : connection?.configured
+                    ? '웹훅 준비됨'
+                    : '어댑터 필요';
               return (
                 <View key={app.id} style={styles.pluginCard}>
                   <View style={styles.pluginCardTop}>
@@ -1832,13 +1925,38 @@ function PocketMindChatGPTScreen() {
                       <Text style={styles.pluginCardCat}>{app.category} · {app.auth.toUpperCase()}</Text>
                     </View>
                     <Text style={{ color: configured ? '#10A37F' : '#F59E0B', fontSize: 11, fontWeight: '700' }}>
-                      {configured ? '연결됨' : '서버 설정 필요'}
+                      {statusLabel}
                     </Text>
                   </View>
                   <Text style={styles.pluginCardDesc}>{app.description}</Text>
                   <Text style={styles.integrationAuthText}>
                     인증 방식: {app.auth.toUpperCase()} · 서버 키: {app.webhookKey}
                   </Text>
+                  {connection?.accountLabel ? (
+                    <Text style={styles.integrationAccountLabel}>계정: {connection.accountLabel}</Text>
+                  ) : null}
+                  {connection?.statusError ? (
+                    <Text style={styles.integrationConnectionError}>{connection.statusError}</Text>
+                  ) : null}
+                  {connectable && !configured ? (
+                    <TouchableOpacity
+                      style={[styles.integrationConnectButton, connecting && styles.integrationActionDisabled]}
+                      onPress={() => handleConnectIntegration(app)}
+                      disabled={connecting}
+                    >
+                      <Text style={styles.integrationConnectButtonText}>
+                        {connecting ? '로그인 확인 중…' : `${app.name} 원클릭 연결`}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  {connectable && configured ? (
+                    <TouchableOpacity
+                      style={styles.integrationDisconnectButton}
+                      onPress={() => handleDisconnectIntegration(app)}
+                    >
+                      <Text style={styles.integrationDisconnectButtonText}>연결 해제</Text>
+                    </TouchableOpacity>
+                  ) : null}
                   {app.actions.map((action) => (
                     <TouchableOpacity
                       key={action.id}
@@ -1855,12 +1973,12 @@ function PocketMindChatGPTScreen() {
                       </Text>
                     </TouchableOpacity>
                   ))}
-                  <TouchableOpacity
+                  {!connectable ? <TouchableOpacity
                     style={styles.integrationSetupLink}
                     onPress={() => openIntegrationSetup(app.officialSetupUrl)}
                   >
-                    <Text style={styles.integrationSetupLinkText}>공식 연결 설정 문서 열기 ↗</Text>
-                  </TouchableOpacity>
+                    <Text style={styles.integrationSetupLinkText}>연결 어댑터 설정 안내 ↗</Text>
+                  </TouchableOpacity> : null}
                 </View>
               );
             })}
@@ -2978,6 +3096,43 @@ const styles = StyleSheet.create({
     color: '#8E8EA0',
     fontSize: 11,
     marginBottom: 2,
+  },
+  integrationAccountLabel: {
+    color: '#86EFAC',
+    fontSize: 12,
+    marginTop: 5,
+  },
+  integrationConnectionError: {
+    color: '#FBBF24',
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 5,
+  },
+  integrationConnectButton: {
+    backgroundColor: '#10A37F',
+    borderRadius: 10,
+    paddingVertical: 11,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  integrationConnectButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  integrationDisconnectButton: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: '#4A4A4F',
+    borderRadius: 9,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    marginTop: 9,
+  },
+  integrationDisconnectButtonText: {
+    color: '#D1D5DB',
+    fontSize: 11,
+    fontWeight: '600',
   },
   integrationActionDisabled: {
     opacity: 0.42,

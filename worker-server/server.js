@@ -29,6 +29,18 @@ const MAX_STORED_RECORDS = 10_000;
 const HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const ALLOWED_ORIGINS = new Set((process.env.POCKETMIND_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean));
 let CONNECTOR_WEBHOOKS = {};
+let CONNECTOR_DEFINITIONS = {};
+
+function isSecureConnectorUrl(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+
 try {
   const configured = JSON.parse(process.env.POCKETMIND_INTEGRATION_WEBHOOKS_JSON || '{}');
   if (configured && typeof configured === 'object' && !Array.isArray(configured)) {
@@ -42,12 +54,35 @@ try {
   console.error('POCKETMIND_INTEGRATION_WEBHOOKS_JSON is invalid JSON; no integrations will be configured.');
 }
 
+try {
+  const configured = JSON.parse(process.env.POCKETMIND_INTEGRATION_CONNECTORS_JSON || '{}');
+  if (configured && typeof configured === 'object' && !Array.isArray(configured)) {
+    CONNECTOR_DEFINITIONS = Object.fromEntries(Object.entries(configured).flatMap(([id, value]) => {
+      if (!/^[a-z0-9-]{2,80}$/.test(id) || !value || typeof value !== 'object' || Array.isArray(value)) return [];
+      const definition = {
+        actionUrl: isSecureConnectorUrl(value.actionUrl) ? value.actionUrl : null,
+        connectUrl: isSecureConnectorUrl(value.connectUrl) ? value.connectUrl : null,
+        statusUrl: isSecureConnectorUrl(value.statusUrl) ? value.statusUrl : null,
+        disconnectUrl: isSecureConnectorUrl(value.disconnectUrl) ? value.disconnectUrl : null,
+      };
+      if (!definition.actionUrl && !definition.connectUrl) return [];
+      return [[id, definition]];
+    }));
+  }
+} catch {
+  console.error('POCKETMIND_INTEGRATION_CONNECTORS_JSON is invalid JSON; one-tap connectors are disabled.');
+}
+
+for (const [id, definition] of Object.entries(CONNECTOR_DEFINITIONS)) {
+  if (definition.actionUrl) CONNECTOR_WEBHOOKS[id] = definition.actionUrl;
+}
+
 if (API_TOKEN.length < 24 || ENROLLMENT_TOKEN.length < 24) {
   console.error('Set POCKETMIND_API_TOKEN and POCKETMIND_ENROLLMENT_TOKEN (each at least 24 characters).');
   process.exit(1);
 }
 
-if (Object.keys(CONNECTOR_WEBHOOKS).length > 0 && WEBHOOK_SIGNING_SECRET.length < 32) {
+if ((Object.keys(CONNECTOR_WEBHOOKS).length > 0 || Object.keys(CONNECTOR_DEFINITIONS).length > 0) && WEBHOOK_SIGNING_SECRET.length < 32) {
   console.error('Configured integration webhooks require POCKETMIND_WEBHOOK_SIGNING_SECRET (at least 32 characters).');
   process.exit(1);
 }
@@ -191,6 +226,75 @@ async function load() {
     }
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
+  }
+}
+
+function connectorHeaders(payload) {
+  return {
+    'Content-Type': 'application/json',
+    'X-PocketMind-Event': payload.event,
+    'X-PocketMind-Signature':
+      'sha256=' + crypto.createHmac('sha256', WEBHOOK_SIGNING_SECRET).update(JSON.stringify(payload)).digest('hex'),
+  };
+}
+
+async function callConnector(url, payload, timeoutMs = 15_000) {
+  if (!isSecureConnectorUrl(url)) throw Object.assign(new Error('Connector endpoint is not configured.'), { status: 409 });
+  const body = JSON.stringify(payload);
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: connectorHeaders(payload),
+    body,
+    redirect: 'error',
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const raw = await response.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; }
+  catch { throw Object.assign(new Error('Connector returned invalid JSON.'), { status: 502 }); }
+  if (!response.ok) {
+    throw Object.assign(new Error(typeof data.error === 'string' ? data.error : `Connector returned HTTP ${response.status}.`), { status: 502 });
+  }
+  return data;
+}
+
+async function connectorStatus(id) {
+  const definition = CONNECTOR_DEFINITIONS[id];
+  if (!definition?.connectUrl) {
+    return {
+      id,
+      configured: Boolean(CONNECTOR_WEBHOOKS[id]),
+      connectable: false,
+      connected: Boolean(CONNECTOR_WEBHOOKS[id]),
+      mode: 'webhook',
+    };
+  }
+  if (!definition.statusUrl) {
+    return { id, configured: true, connectable: true, connected: false, mode: 'oauth', statusError: 'Status endpoint is missing.' };
+  }
+  try {
+    const result = await callConnector(definition.statusUrl, {
+      event: 'pocketmind.integration.status',
+      integrationId: id,
+      requestedAt: Date.now(),
+    }, 8_000);
+    return {
+      id,
+      configured: true,
+      connectable: true,
+      connected: result.connected === true,
+      mode: 'oauth',
+      accountLabel: typeof result.accountLabel === 'string' ? result.accountLabel.slice(0, 120) : null,
+    };
+  } catch (error) {
+    return {
+      id,
+      configured: true,
+      connectable: true,
+      connected: false,
+      mode: 'oauth',
+      statusError: String(error.message || 'Could not check connector status.').slice(0, 300),
+    };
   }
 }
 
@@ -514,9 +618,47 @@ async function handle(req, res) {
 
   if (req.method === 'GET' && url.pathname === '/v1/integrations') {
     if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
+    const ids = [...new Set([...Object.keys(CONNECTOR_WEBHOOKS), ...Object.keys(CONNECTOR_DEFINITIONS)])];
+    const integrations = await Promise.all(ids.map(connectorStatus));
     return json(res, 200, {
-      integrations: Object.keys(CONNECTOR_WEBHOOKS).map(id => ({ id, configured: true })),
+      integrations,
     });
+  }
+
+  if (req.method === 'POST' && parts.length === 4 && parts[0] === 'v1' &&
+      parts[1] === 'integrations' && ['connect', 'status', 'disconnect'].includes(parts[3])) {
+    if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
+    const integrationId = parts[2];
+    const definition = CONNECTOR_DEFINITIONS[integrationId];
+    if (!definition) return json(res, 404, { error: 'One-tap connector is not configured' });
+    await readBody(req);
+
+    if (parts[3] === 'status') return json(res, 200, await connectorStatus(integrationId));
+
+    if (parts[3] === 'connect') {
+      if (!definition.connectUrl || !definition.statusUrl) {
+        return json(res, 409, { error: 'Connector connect/status endpoints are incomplete' });
+      }
+      const result = await callConnector(definition.connectUrl, {
+        event: 'pocketmind.integration.connect',
+        integrationId,
+        returnUrl: `pocketmind://integrations/callback?integrationId=${encodeURIComponent(integrationId)}`,
+        stateNonce: crypto.randomBytes(24).toString('hex'),
+        requestedAt: Date.now(),
+      });
+      if (!isSecureConnectorUrl(result.authorizationUrl)) {
+        return json(res, 502, { error: 'Connector did not return a secure authorization URL' });
+      }
+      return json(res, 200, { integrationId, authorizationUrl: result.authorizationUrl });
+    }
+
+    if (!definition.disconnectUrl) return json(res, 409, { error: 'Connector disconnect endpoint is not configured' });
+    await callConnector(definition.disconnectUrl, {
+      event: 'pocketmind.integration.disconnect',
+      integrationId,
+      requestedAt: Date.now(),
+    });
+    return json(res, 200, await connectorStatus(integrationId));
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/integrations/actions') {
@@ -535,6 +677,10 @@ async function handle(req, res) {
     }
     if (!CONNECTOR_WEBHOOKS[body.integrationId]) {
       return json(res, 409, { error: 'Integration is not configured on the coordinator' });
+    }
+    if (CONNECTOR_DEFINITIONS[body.integrationId]?.connectUrl) {
+      const connection = await connectorStatus(body.integrationId);
+      if (!connection.connected) return json(res, 409, { error: 'Integration account is not connected' });
     }
     const action = {
       actionId: crypto.randomUUID(),

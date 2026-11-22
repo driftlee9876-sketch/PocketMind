@@ -10,6 +10,16 @@ export interface IntegrationActionResult {
   lastError?: string | null;
 }
 
+export interface IntegrationConnection {
+  id: string;
+  configured: boolean;
+  connectable: boolean;
+  connected: boolean;
+  mode: 'oauth' | 'webhook';
+  accountLabel?: string | null;
+  statusError?: string | null;
+}
+
 function baseUrl(value: string): string {
   return value.trim().replace(/\/+$/, '');
 }
@@ -42,10 +52,55 @@ export async function getConfiguredIntegrations(
   endpoint: string,
   apiToken: string,
 ): Promise<string[]> {
-  const response = await call<{ integrations: Array<{ id: string; configured: boolean }> }>(
+  const response = await call<{ integrations: Array<{
+    id: string;
+    configured: boolean;
+    connectable?: boolean;
+    connected?: boolean;
+  }> }>(
     baseUrl(endpoint), apiToken, '/v1/integrations',
   );
-  return (response.integrations || []).filter((item) => item.configured).map((item) => item.id);
+  return (response.integrations || [])
+    .filter((item) => item.connectable ? item.connected === true : item.configured)
+    .map((item) => item.id);
+}
+
+export async function getIntegrationConnections(
+  endpoint: string,
+  apiToken: string,
+): Promise<IntegrationConnection[]> {
+  const response = await call<{ integrations: IntegrationConnection[] }>(
+    baseUrl(endpoint), apiToken, '/v1/integrations',
+  );
+  return Array.isArray(response.integrations) ? response.integrations : [];
+}
+
+export async function beginIntegrationConnection(
+  endpoint: string,
+  apiToken: string,
+  integrationId: string,
+): Promise<string> {
+  const response = await call<{ authorizationUrl: string }>(
+    baseUrl(endpoint), apiToken,
+    `/v1/integrations/${encodeURIComponent(integrationId)}/connect`,
+    'POST', {},
+  );
+  if (!response.authorizationUrl?.startsWith('https://')) {
+    throw new Error('Connector returned an invalid authorization URL.');
+  }
+  return response.authorizationUrl;
+}
+
+export async function disconnectIntegration(
+  endpoint: string,
+  apiToken: string,
+  integrationId: string,
+): Promise<IntegrationConnection> {
+  return call<IntegrationConnection>(
+    baseUrl(endpoint), apiToken,
+    `/v1/integrations/${encodeURIComponent(integrationId)}/disconnect`,
+    'POST', {},
+  );
 }
 
 export async function submitIntegrationAction(

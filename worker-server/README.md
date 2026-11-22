@@ -52,3 +52,27 @@ The coordinator can dispatch approved app actions to **server-configured HTTPS w
 - `GET /v1/integrations/actions/:id` returns status and adapter result.
 
 The webhook URL and provider credentials stay on the coordinator, not in the mobile app. Configure OAuth/bot credentials in your automation platform or adapter. A catalog entry alone is not an authenticated provider integration: it becomes operational only after its trusted webhook is configured and its adapter is implemented. Payment, purchases, bookings, account deletion, and other irreversible actions should require an additional provider-side confirmation as well.
+
+### One-tap OAuth connection contract
+
+PocketMind can open a provider's official login flow from the app and verify the connection when the user returns. Configure a trusted OAuth broker/adapter with `POCKETMIND_INTEGRATION_CONNECTORS_JSON`:
+
+```json
+{
+  "google-gmail": {
+    "actionUrl": "https://connector.example/pocketmind/actions",
+    "connectUrl": "https://connector.example/pocketmind/connect",
+    "statusUrl": "https://connector.example/pocketmind/status",
+    "disconnectUrl": "https://connector.example/pocketmind/disconnect"
+  }
+}
+```
+
+All URLs must be HTTPS. The Coordinator sends signed JSON `POST` requests using `X-PocketMind-Signature` and the same `POCKETMIND_WEBHOOK_SIGNING_SECRET` used by action webhooks.
+
+- `connectUrl` receives `pocketmind.integration.connect`, an integration ID, a random state nonce, and the app return URL. It returns `{ "authorizationUrl": "https://provider.example/oauth/..." }` after binding the nonce server-side.
+- `statusUrl` receives `pocketmind.integration.status` and returns `{ "connected": true, "accountLabel": "user@example.com" }` only after the provider token is valid.
+- `disconnectUrl` receives `pocketmind.integration.disconnect`, revokes/deletes the provider token, and returns successful JSON.
+- `actionUrl` receives the existing signed action events. It must reject actions when its provider token is missing or expired.
+
+Provider client secrets and refresh tokens belong in the trusted adapter's encrypted server-side storage. They must never be returned to the app, placed in these environment variables, or committed to Git. The legacy `POCKETMIND_INTEGRATION_WEBHOOKS_JSON` format remains supported for webhook-only integrations.
