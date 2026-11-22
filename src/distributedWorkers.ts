@@ -44,6 +44,7 @@ export interface WorkerRequirements {
   requireUnmeteredNetwork?: boolean;
   minimumBatteryPercent?: number;
   minimumRamMb?: number;
+  minimumGpuMemoryMb?: number;
 }
 
 export interface WorkerTask<TPayload = unknown> {
@@ -128,6 +129,9 @@ function meetsRequirements(worker: WorkerAdvertisement, requirements: WorkerRequ
       conditions.batteryPercent < requirements.minimumBatteryPercent) return false;
   if (requirements.minimumRamMb !== undefined &&
       (capabilities.ramMb === undefined || capabilities.ramMb < requirements.minimumRamMb)) return false;
+  if (requirements.minimumGpuMemoryMb !== undefined &&
+      (!capabilities.gpu || capabilities.gpuMemoryMb === undefined ||
+        capabilities.gpuMemoryMb < requirements.minimumGpuMemoryMb)) return false;
   return true;
 }
 
