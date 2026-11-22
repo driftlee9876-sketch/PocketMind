@@ -95,6 +95,20 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun setGpuEnabled(enabled: Boolean, promise: Promise) {
+    try {
+      val preferences = context.getSharedPreferences("pocketmind_worker", Context.MODE_PRIVATE)
+      val encrypted = preferences.getString("config", null)
+      val json = encrypted?.let { JSONObject(decryptSecret(it)) } ?: JSONObject()
+      json.put("useGpu", enabled)
+      preferences.edit().putString("config", encryptSecret(json.toString())).apply()
+      promise.resolve(true)
+    } catch (error: Exception) {
+      promise.reject("WORKER_GPU_CONFIG_FAILED", error)
+    }
+  }
+
+  @ReactMethod
   fun getConfig(promise: Promise) {
     try {
       val encrypted = context.getSharedPreferences("pocketmind_worker", Context.MODE_PRIVATE)
