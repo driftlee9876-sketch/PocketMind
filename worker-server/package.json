@@ -4,6 +4,11 @@
   "private": true,
   "description": "Authenticated task coordinator for PocketMind distributed workers",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=22.11.0" }
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.11.0"
+  }
 }
