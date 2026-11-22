@@ -24,6 +24,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import java.util.UUID
 
 class PocketMindWorkerModule(private val context: ReactApplicationContext) :
   ReactContextBaseJavaModule(context) {
@@ -166,6 +167,21 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
     context.getSharedPreferences("pocketmind_worker_secrets", Context.MODE_PRIVATE)
       .edit().remove(name).apply()
     promise.resolve(true)
+  }
+
+  @ReactMethod
+  fun getWorkerId(promise: Promise) {
+    try {
+      val preferences = context.getSharedPreferences("pocketmind_worker", Context.MODE_PRIVATE)
+      var workerId = preferences.getString("worker_id", null)
+      if (workerId.isNullOrBlank()) {
+        workerId = "android-" + UUID.randomUUID().toString()
+        preferences.edit().putString("worker_id", workerId).apply()
+      }
+      promise.resolve(workerId)
+    } catch (error: Exception) {
+      promise.reject("WORKER_ID_FAILED", error)
+    }
   }
 
   @ReactMethod
