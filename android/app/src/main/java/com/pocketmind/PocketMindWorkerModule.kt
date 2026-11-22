@@ -3,6 +3,8 @@ package com.pocketmind
 import android.content.Context
 import android.content.Intent
 import android.app.ActivityManager
+import android.hardware.usb.UsbManager
+import java.io.File
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
@@ -30,6 +32,57 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
   ReactContextBaseJavaModule(context) {
 
   private val keyAlias = "PocketMindWorkerAesKey"
+  @Volatile private var previousCpuSample: Pair<Long, Long>? = null
+
+  private fun readCpuUsagePercent(): Double? {
+    return try {
+      val line = File("/proc/stat").bufferedReader().use { it.readLine() } ?: return null
+      val parts = line.trim().split(Regex("\\s+"))
+      if (parts.firstOrNull() != "cpu") return null
+      val values = parts.drop(1).mapNotNull { it.toLongOrNull() }
+      if (values.size < 4) return null
+      val idle = values[3] + (values.getOrNull(4) ?: 0L)
+      val total = values.sum()
+      val previous = previousCpuSample
+      previousCpuSample = Pair(total, idle)
+      if (previous == null) return null
+      val totalDelta = total - previous.first
+      val idleDelta = idle - previous.second
+      if (totalDelta <= 0L) return null
+      ((totalDelta - idleDelta).toDouble() * 100.0 / totalDelta).coerceIn(0.0, 100.0)
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  private fun readThermalTemperatures(): Pair<Double?, Double?> {
+    var cpuTemp: Double? = null
+    var gpuTemp: Double? = null
+    return try {
+      val root = File("/sys/class/thermal")
+      val zones = root.listFiles()?.filter { it.isDirectory && it.name.startsWith("thermal_zone") } ?: emptyList()
+      for (zone in zones) {
+        val label = try { File(zone, "type").readText().trim().lowercase() } catch (_: Exception) { "" }
+        if (label.isBlank()) continue
+        val raw = try { File(zone, "temp").readText().trim().toDoubleOrNull() } catch (_: Exception) { null }
+        if (raw == null) continue
+        val celsius = when {
+          raw > 1000.0 -> raw / 1000.0
+          raw > 200.0 -> raw / 10.0
+          else -> raw
+        }
+        if (celsius !in 0.0..125.0) continue
+        if (Regex("gpu|adreno|mali|graphics").containsMatchIn(label)) {
+          gpuTemp = maxOf(gpuTemp ?: celsius, celsius)
+        } else if (Regex("cpu|soc|ap|cluster|tsens").containsMatchIn(label)) {
+          cpuTemp = maxOf(cpuTemp ?: celsius, celsius)
+        }
+      }
+      Pair(cpuTemp, gpuTemp)
+    } catch (_: Exception) {
+      Pair(null, null)
+    }
+  }
 
   override fun getName(): String = "PocketMindWorker"
 
@@ -193,6 +246,58 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
       promise.resolve((memoryInfo.totalMem / (1024L * 1024L)).toInt())
     } catch (error: Exception) {
       promise.reject("WORKER_RAM_FAILED", error)
+    }
+  }
+
+  @ReactMethod
+  fun getDeviceMetrics(promise: Promise) {
+    try {
+      val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+      val memoryInfo = ActivityManager.MemoryInfo()
+      manager.getMemoryInfo(memoryInfo)
+      val totalRam = memoryInfo.totalMem.coerceAtLeast(0L)
+      val usedRam = (totalRam - memoryInfo.availMem).coerceIn(0L, totalRam)
+      val (cpuTemperature, gpuTemperature) = readThermalTemperatures()
+
+      val battery = context.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+      val plugType = battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+      val usbPowerConnected = (plugType and BatteryManager.BATTERY_PLUGGED_USB) != 0
+      val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+      val usbDeviceCount = try { usbManager.deviceList.size } catch (_: Exception) { 0 }
+
+      val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+      val thermalState = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        when (power.currentThermalStatus) {
+          PowerManager.THERMAL_STATUS_NONE, PowerManager.THERMAL_STATUS_LIGHT -> "nominal"
+          PowerManager.THERMAL_STATUS_MODERATE -> "fair"
+          PowerManager.THERMAL_STATUS_SEVERE -> "serious"
+          PowerManager.THERMAL_STATUS_CRITICAL, PowerManager.THERMAL_STATUS_EMERGENCY,
+          PowerManager.THERMAL_STATUS_SHUTDOWN -> "critical"
+          else -> "unknown"
+        }
+      } else "unknown"
+
+      val map = Arguments.createMap()
+      readCpuUsagePercent()?.let { map.putDouble("cpuUsagePercent", it) } ?: map.putNull("cpuUsagePercent")
+      cpuTemperature?.let { map.putDouble("cpuTemperatureC", it) } ?: map.putNull("cpuTemperatureC")
+      gpuTemperature?.let { map.putDouble("gpuTemperatureC", it) } ?: map.putNull("gpuTemperatureC")
+      map.putDouble("totalRamMb", totalRam.toDouble() / (1024.0 * 1024.0))
+      map.putDouble("usedRamMb", usedRam.toDouble() / (1024.0 * 1024.0))
+      map.putDouble("ramUsagePercent", if (totalRam > 0L) usedRam.toDouble() * 100.0 / totalRam else 0.0)
+      map.putInt("usbDeviceCount", usbDeviceCount)
+      map.putBoolean("usbConnected", usbDeviceCount > 0 || usbPowerConnected)
+      map.putString(
+        "usbStatus",
+        when {
+          usbDeviceCount > 0 -> "USB 장치 ${usbDeviceCount}개"
+          usbPowerConnected -> "USB 전원 연결 · 데이터 미확인"
+          else -> "USB 미연결"
+        }
+      )
+      map.putString("thermalState", thermalState)
+      promise.resolve(map)
+    } catch (error: Exception) {
+      promise.reject("DEVICE_METRICS_FAILED", error)
     }
   }
 
