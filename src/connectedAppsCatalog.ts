@@ -11,7 +11,7 @@ export interface IntegrationActionDefinition {
 export interface ConnectedAppDefinition {
   id: string;
   name: string;
-  category: '메일' | '일정' | '파일' | '협업' | '개발' | '검색·생활' | '자동화';
+  category: '메일' | '일정' | '파일' | '협업' | '개발' | '검색·생활' | '문서·언어' | '자동화';
   description: string;
   auth: IntegrationAuth;
   actions: IntegrationActionDefinition[];
@@ -338,4 +338,4 @@ export const CONNECTED_APP_CATALOG: ConnectedAppDefinition[] = [
   },
 ];
 
-export const CONNECTED_APP_CATEGORIES = ['전체', '메일', '일정', '파일', '협업', '개발', '검색·생활', '자동화'] as const;
+export const CONNECTED_APP_CATEGORIES = ['전체', '메일', '일정', '파일', '협업', '개발', '검색·생활', '문서·언어', '자동화'] as const;
