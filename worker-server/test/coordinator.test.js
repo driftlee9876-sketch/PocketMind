@@ -43,8 +43,13 @@ test('coordinator authenticates, enrolls workers, leases tasks and validates res
       POCKETMIND_DATA_FILE: dataFile,
       POCKETMIND_INTEGRATION_WEBHOOKS_JSON: '{}',
     },
-    stdio: 'ignore',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  let childOutput = '';
+  child.stdout.on('data', (chunk) => { childOutput += chunk.toString(); });
+  child.stderr.on('data', (chunk) => { childOutput += chunk.toString(); });
+  const getOutput = () => childOutput.slice(-4000);
+
   t.after(() => {
     child.kill('SIGTERM');
     fs.rmSync(directory, { recursive: true, force: true });
