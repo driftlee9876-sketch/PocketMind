@@ -132,10 +132,21 @@ export async function runAndroidWorkerTask(): Promise<void> {
     token = await getWorkerToken(config);
     const conditions = await native.getDeviceConditions();
     const batteryFloor = config.minimumBatteryPercent ?? 50;
-    if (conditions.batteryPercent < batteryFloor && !conditions.charging) return;
-    if (config.requireCharging && !conditions.charging) return;
-    if (config.requireUnmeteredNetwork && !conditions.unmeteredNetwork) return;
-    if (['serious', 'critical'].includes(conditions.thermalState)) return;
+    const shouldPause =
+      (conditions.batteryPercent < batteryFloor && !conditions.charging) ||
+      (config.requireCharging === true && !conditions.charging) ||
+      (config.requireUnmeteredNetwork === true && !conditions.unmeteredNetwork) ||
+      ['serious', 'critical'].includes(conditions.thermalState);
+
+    if (shouldPause) {
+      // Do not leave an earlier idle advertisement visible to the scheduler
+      // after local battery/network/thermal policy has blocked this device.
+      await requestJson(baseUrl, '/v1/workers/heartbeat', token, {
+        state: 'paused',
+        conditions: { ...conditions, userOptedIn: true },
+      });
+      return;
+    }
 
     await requestJson(baseUrl, '/v1/workers/heartbeat', token, {
       state: 'idle',
