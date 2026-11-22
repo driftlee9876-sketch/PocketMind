@@ -34,6 +34,11 @@ import {
 } from './src/integrationActions';
 import { discoverCoordinatorWorkers } from './src/distributedCoordinatorClient';
 import { stopAndroidWorkerService } from './src/androidWorkerRuntime';
+import {
+  normalizeSessionTitle,
+  removeSessionById,
+  renameSessionById,
+} from './src/chatHistory';
 import type { CoordinatorWorker } from './src/distributedCoordinatorClient';
 import {
   multiModelOrchestrator,
@@ -167,6 +172,9 @@ function PocketMindChatGPTScreen() {
   const [activeSessionId, setActiveSessionId] = useState<string>('session-1');
   const [historyReady, setHistoryReady] = useState(false);
   const [historySearch, setHistorySearch] = useState('');
+  const [sessionActionTargetId, setSessionActionTargetId] = useState<string | null>(null);
+  const [sessionRenameTargetId, setSessionRenameTargetId] = useState<string | null>(null);
+  const [sessionRenameText, setSessionRenameText] = useState('');
   const [deviceMetrics, setDeviceMetrics] = useState<DeviceMetrics | null>(null);
   const [connectionSettingsReady, setConnectionSettingsReady] = useState(false);
 
@@ -220,6 +228,8 @@ function PocketMindChatGPTScreen() {
   const activeSession =
     sessions.find((s) => s.id === activeSessionId) || sessions[0];
   const messages = activeSession?.messages || [];
+  const sessionActionTarget = sessions.find((session) => session.id === sessionActionTargetId);
+  const sessionRenameTarget = sessions.find((session) => session.id === sessionRenameTargetId);
 
   const scanInstalledModels = async () => {
     try {
@@ -386,6 +396,61 @@ function PocketMindChatGPTScreen() {
     setSessions((previous) => previous.map((session) =>
       session.id === sessionId ? { ...session, pinned: !session.pinned } : session,
     ));
+  };
+
+  const openSessionActions = (sessionId: string) => {
+    setSidebarOpen(false);
+    setSessionActionTargetId(sessionId);
+  };
+
+  const startSessionRename = () => {
+    if (!sessionActionTarget) return;
+    setSessionRenameTargetId(sessionActionTarget.id);
+    setSessionRenameText(sessionActionTarget.title);
+    setSessionActionTargetId(null);
+  };
+
+  const saveSessionRename = () => {
+    if (!sessionRenameTarget) return;
+    const nextTitle = normalizeSessionTitle(sessionRenameText);
+    if (!nextTitle) {
+      Alert.alert('이름을 입력하세요', '대화 이름은 공백으로만 저장할 수 없습니다.');
+      return;
+    }
+    setSessions((previous) => renameSessionById(previous, sessionRenameTarget.id, nextTitle));
+    setSessionRenameTargetId(null);
+    setSessionRenameText('');
+  };
+
+  const deleteSession = (sessionId: string) => {
+    const remaining = removeSessionById(sessions, sessionId);
+    if (remaining.length === 0) {
+      const replacement: ChatSession = {
+        id: `session-${Date.now()}`,
+        title: '새 채팅',
+        messages: [],
+      };
+      setSessions([replacement]);
+      setActiveSessionId(replacement.id);
+    } else {
+      setSessions(remaining);
+      if (activeSessionId === sessionId) setActiveSessionId(remaining[0].id);
+    }
+    setHistorySearch('');
+  };
+
+  const confirmSessionDelete = () => {
+    if (!sessionActionTarget) return;
+    const target = sessionActionTarget;
+    setSessionActionTargetId(null);
+    Alert.alert(
+      '대화 삭제',
+      `“${target.title}” 대화와 저장된 메시지를 이 기기에서 삭제할까요? 이 작업은 되돌릴 수 없습니다.`,
+      [
+        { text: '취소', style: 'cancel' },
+        { text: '삭제', style: 'destructive', onPress: () => deleteSession(target.id) },
+      ],
+    );
   };
 
   const handleNewChat = () => {
@@ -992,14 +1057,8 @@ function PocketMindChatGPTScreen() {
                     setActiveSessionId(sess.id);
                     setSidebarOpen(false);
                   }}
-                  onLongPress={() => Alert.alert(
-                    sess.pinned ? '고정 해제' : '대화 고정',
-                    `“${sess.title}” 대화를 ${sess.pinned ? '고정 해제' : '상단에 고정'}할까요?`,
-                    [
-                      { text: '취소', style: 'cancel' },
-                      { text: sess.pinned ? '고정 해제' : '고정', onPress: () => toggleSessionPinned(sess.id) },
-                    ],
-                  )}
+                  onLongPress={() => openSessionActions(sess.id)}
+                  delayLongPress={350}
                 >
                   <View style={styles.drawerHistoryTextWrap}>
                     <Text style={styles.drawerHistoryText} numberOfLines={1}>{sess.pinned ? '📌 ' : ''}{sess.title}</Text>
@@ -1020,6 +1079,84 @@ function PocketMindChatGPTScreen() {
             style={styles.drawerBackdrop}
             onPress={() => setSidebarOpen(false)}
           />
+        </View>
+      </Modal>
+
+      {/* ================= 대화 기록 관리 ================= */}
+      <Modal
+        visible={Boolean(sessionActionTarget)}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSessionActionTargetId(null)}
+      >
+        <View style={styles.bottomSheetOverlay}>
+          <View style={styles.bottomSheetCard}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle} numberOfLines={1}>
+                {sessionActionTarget?.title || '대화 관리'}
+              </Text>
+              <TouchableOpacity onPress={() => setSessionActionTargetId(null)}>
+                <Text style={styles.sheetClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={styles.sessionActionButton}
+              onPress={() => {
+                if (sessionActionTarget) toggleSessionPinned(sessionActionTarget.id);
+                setSessionActionTargetId(null);
+              }}
+            >
+              <Text style={styles.sessionActionText}>
+                {sessionActionTarget?.pinned ? '📌 고정 해제' : '📌 상단에 고정'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.sessionActionButton} onPress={startSessionRename}>
+              <Text style={styles.sessionActionText}>✎ 이름 변경</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.sessionActionButton} onPress={confirmSessionDelete}>
+              <Text style={styles.sessionDeleteActionText}>삭제</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={Boolean(sessionRenameTarget)}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSessionRenameTargetId(null)}
+      >
+        <View style={styles.bottomSheetOverlay}>
+          <View style={styles.bottomSheetCard}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>대화 이름 변경</Text>
+              <TouchableOpacity onPress={() => setSessionRenameTargetId(null)}>
+                <Text style={styles.sheetClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              style={styles.sessionRenameInput}
+              value={sessionRenameText}
+              onChangeText={setSessionRenameText}
+              placeholder="대화 이름"
+              placeholderTextColor="#8E8EA0"
+              maxLength={80}
+              autoFocus
+              selectTextOnFocus
+              returnKeyType="done"
+              onSubmitEditing={saveSessionRename}
+            />
+            <TouchableOpacity
+              style={[
+                styles.sheetPrimaryBtn,
+                !normalizeSessionTitle(sessionRenameText) && styles.sendCircleDisabled,
+              ]}
+              onPress={saveSessionRename}
+              disabled={!normalizeSessionTitle(sessionRenameText)}
+            >
+              <Text style={styles.sheetPrimaryBtnText}>저장</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
 
@@ -1987,6 +2124,34 @@ const styles = StyleSheet.create({
   drawerCloseText: {
     color: '#ECECEC',
     fontWeight: '600',
+  },
+  sessionActionButton: {
+    backgroundColor: '#282828',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    marginBottom: 8,
+  },
+  sessionActionText: {
+    color: '#ECECEC',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  sessionDeleteActionText: {
+    color: '#F87171',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  sessionRenameInput: {
+    backgroundColor: '#282828',
+    borderWidth: 1,
+    borderColor: '#4A4A4F',
+    borderRadius: 12,
+    color: '#ECECEC',
+    fontSize: 15,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 14,
   },
 
   // Bottom Sheets & Modals

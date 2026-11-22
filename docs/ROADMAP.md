@@ -18,7 +18,7 @@ This roadmap follows the product direction: all planned capabilities, a simple G
 - [x] Show a preview for each conversation.
 - [x] Search conversation titles and previews.
 - [x] Pin important conversations in the sidebar.
-- [ ] Add safe conversation rename and delete actions.
+- [x] Add safe conversation rename and delete actions.
 - [ ] Add message copy, retry, and edit/resend actions.
 - [ ] Add robust export/import and backup/restore.
 
