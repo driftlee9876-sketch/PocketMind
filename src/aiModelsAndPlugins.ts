@@ -1698,11 +1698,11 @@ export async function runAutonomousPlugins(
   enabledPluginIds?: string[],
 ): Promise<PluginExecutionOutput[]> {
   const enabled = new Set(enabledPluginIds ?? AI_PLUGIN_CATALOG.map((plugin) => plugin.id));
-  const commandMatches = [...prompt.matchAll(/(?:^|\\s)\\/([a-z0-9-]+)(?=\\s|$)/gi)];
+  const commandMatches = [...prompt.matchAll(/(?:^|\s)\/([a-z0-9-]+)(?=\s|$)/gi)];
   const explicitIds = new Set(commandMatches.map((match) => match[1].toLowerCase()));
   const cleanPrompt = prompt
-    .replace(/(?:^|\\s)\\/[a-z0-9-]+(?=\\s|$)/gi, ' ')
-    .replace(/\\s+/g, ' ')
+    .replace(/(?:^|\s)\/[a-z0-9-]+(?=\s|$)/gi, ' ')
+    .replace(/\s+/g, ' ')
     .trim() || prompt.trim();
 
   const explicitPlugins = AI_PLUGIN_CATALOG.filter(
