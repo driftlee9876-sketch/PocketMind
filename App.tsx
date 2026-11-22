@@ -32,6 +32,7 @@ import {
   rejectIntegrationAction,
 } from './src/integrationActions';
 import { discoverCoordinatorWorkers } from './src/distributedCoordinatorClient';
+import { stopAndroidWorkerService } from './src/androidWorkerRuntime';
 import type { CoordinatorWorker } from './src/distributedCoordinatorClient';
 import {
   multiModelOrchestrator,
@@ -517,7 +518,7 @@ function PocketMindChatGPTScreen() {
 
   const stopAndroidWorker = async () => {
     try {
-      await NativeModules.PocketMindWorker.stopWorker();
+      await stopAndroidWorkerService();
       setAndroidWorkerRunning(false);
     } catch (error: any) {
       Alert.alert('Worker 중지 실패', error?.message || '서비스를 중지할 수 없습니다.');
