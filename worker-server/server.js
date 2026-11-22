@@ -90,6 +90,27 @@ function findWorkerByToken(token) {
   return null;
 }
 
+const INTEGRATION_ACTION_RISKS: Record<string, Record<string, 'read' | 'write' | 'sensitive'>> = {
+  'google-gmail': { search_messages: 'read', get_message: 'read', create_draft: 'write', send_message: 'sensitive' },
+  'google-calendar': { list_events: 'read', create_event: 'write', update_event: 'sensitive' },
+  'google-drive': { search_files: 'read', get_file: 'read', upload_file: 'write', delete_file: 'sensitive' },
+  'microsoft-outlook': { search_messages: 'read', create_draft: 'write', send_message: 'sensitive' },
+  'microsoft-calendar': { list_events: 'read', create_event: 'write', cancel_event: 'sensitive' },
+  dropbox: { list_files: 'read', download_file: 'read', upload_file: 'write', delete_file: 'sensitive' },
+  notion: { search_pages: 'read', get_page: 'read', create_page: 'write', archive_page: 'sensitive' },
+  slack: { search_messages: 'read', list_channels: 'read', send_message: 'sensitive' },
+  github: { list_repositories: 'read', search_issues: 'read', create_issue: 'write', merge_pull_request: 'sensitive' },
+  discord: { list_channels: 'read', send_message: 'sensitive' },
+  telegram: { get_updates: 'read', send_message: 'sensitive' },
+  naver: { search_web: 'read', search_local: 'read' },
+  kakao: { search_places: 'read', send_message: 'sensitive' },
+  todoist: { list_tasks: 'read', create_task: 'write', complete_task: 'sensitive' },
+  trello: { list_boards: 'read', list_cards: 'read', create_card: 'write' },
+  linear: { search_issues: 'read', create_issue: 'write' },
+  jira: { search_issues: 'read', create_issue: 'write' },
+  'custom-webhook': { run_readonly: 'read', run_action: 'write', run_sensitive_action: 'sensitive' },
+};
+
 function validateConditions(c) {
   return !!c && typeof c.charging === 'boolean' &&
     typeof c.unmeteredNetwork === 'boolean' &&
@@ -403,6 +424,10 @@ async function handle(req, res) {
       !body.input || typeof body.input !== 'object' || Array.isArray(body.input) ||
       JSON.stringify(body.input).length > 32_000) {
       return json(res, 400, { error: 'Invalid integration action payload' });
+    }
+    const allowedRisk = INTEGRATION_ACTION_RISKS[body.integrationId]?.[body.action];
+    if (!allowedRisk || allowedRisk !== body.risk) {
+      return json(res, 400, { error: 'Unknown integration action or incorrect risk level' });
     }
     if (!CONNECTOR_WEBHOOKS[body.integrationId]) {
       return json(res, 409, { error: 'Integration is not configured on the coordinator' });
