@@ -24,6 +24,15 @@ import {
   PluginCategory,
   PluginExecutionOutput,
 } from './src/aiModelsAndPlugins';
+import { CONNECTED_APP_CATALOG } from './src/connectedAppsCatalog';
+import {
+  getConfiguredIntegrations,
+  submitIntegrationAction,
+  approveIntegrationAction,
+  rejectIntegrationAction,
+} from './src/integrationActions';
+import { discoverCoordinatorWorkers } from './src/distributedCoordinatorClient';
+import type { CoordinatorWorker } from './src/distributedCoordinatorClient';
 import {
   multiModelOrchestrator,
   PipelineStepResult,
