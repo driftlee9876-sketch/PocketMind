@@ -19,8 +19,8 @@ class PocketMindWorkerService : Service() {
     const val ACTION_ITERATION_FINISHED = "com.pocketmind.WORKER_ITERATION_FINISHED"
     private const val CHANNEL_ID = "pocketmind-worker"
     private const val NOTIFICATION_ID = 8801
-    private const val POLL_DELAY_MS = 15_000L
-    private const val TASK_WATCHDOG_MS = 75_000L
+    private const val POLL_DELAY_MS = 30_000L
+    private const val TASK_WATCHDOG_MS = 315_000L
   }
 
   private val handler = Handler(Looper.getMainLooper())
