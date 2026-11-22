@@ -488,6 +488,12 @@ function PocketMindChatGPTScreen() {
     }
   };
 
+  useEffect(() => {
+    if (!androidWorkerOpen) return;
+    if (!remotePC.serverUrl.trim() || (remotePC.apiKey || '').trim().length < 24) return;
+    refreshCoordinatorWorkers();
+  }, [androidWorkerOpen, remotePC.serverUrl, remotePC.apiKey]);
+
   const openConnectedApps = async () => {
     setConnectedAppsOpen(true);
     setConfiguredIntegrationIds([]);
@@ -684,7 +690,7 @@ function PocketMindChatGPTScreen() {
         </View>
         <TouchableOpacity style={styles.deviceMetricCell} onPress={() => { setWorkerModelIds(installedModelIds); setAndroidWorkerOpen(true); }}>
           <Text style={styles.deviceMetricLabel}>USB 기기</Text>
-          <Text style={styles.deviceMetricValue}>{deviceMetrics?.usbDeviceCount ? `${deviceMetrics.usbDeviceCount}개 감지` : deviceMetrics?.usbStatus || '확인 중'}</Text>
+          <Text style={styles.deviceMetricValue}>{typeof deviceMetrics?.usbDeviceCount === 'number' && deviceMetrics.usbDeviceCount > 0 ? `${deviceMetrics.usbDeviceCount}개` : deviceMetrics?.usbConnected ? '연결됨' : '없음'}</Text>
         </TouchableOpacity>
       </View>
 
