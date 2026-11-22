@@ -73,6 +73,7 @@ async function getWorkerToken(config: WorkerConfig): Promise<string> {
         backend: 'llama.cpp',
         modelIds: config.modelIds,
         gpu: config.useGpu === true,
+        ramMb: Number(ramMb) || undefined,
         maxConcurrentTasks: 1,
       },
       conditions: { ...conditions, userOptedIn: true },
