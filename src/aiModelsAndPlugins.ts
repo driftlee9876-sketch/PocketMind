@@ -1056,12 +1056,23 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
       const m = prompt.match(/(eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)/);
       if (!m) return 'JWT 토큰 미감지';
       const parts = m[1].split('.');
-      const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      let bitBuffer = 0;
+      let bitCount = 0;
+      const bytes: number[] = [];
+      for (const character of b64) {
+        const value = alphabet.indexOf(character);
+        if (value < 0) throw new Error('JWT payload contains invalid Base64 characters.');
+        bitBuffer = (bitBuffer << 6) | value;
+        bitCount += 6;
+        if (bitCount >= 8) {
+          bitCount -= 8;
+          bytes.push((bitBuffer >> bitCount) & 0xff);
+        }
+      }
       const decoded = decodeURIComponent(
-        atob(b64)
-          .split('')
-          .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-          .join(''),
+        bytes.map((byte) => '%' + byte.toString(16).padStart(2, '0')).join(''),
       );
       return `JWT Payload: ${decoded}`;
     },
