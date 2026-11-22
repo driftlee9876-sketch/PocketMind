@@ -186,7 +186,7 @@ export async function runDistributedInference(
       if (task.status === 'failed' || task.status === 'cancelled') {
         throw new Error(task.lastError || `Distributed task ${task.status}`);
       }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise<void>((resolve) => setTimeout(() => resolve(), 2000));
     }
     throw new Error('Distributed task timed out after 10 minutes.');
   } catch (error) {
