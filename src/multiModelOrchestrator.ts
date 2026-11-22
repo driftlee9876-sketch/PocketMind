@@ -1,7 +1,33 @@
 // src/multiModelOrchestrator.ts
-import { initLlama, LlamaContext } from 'llama.rn';
-import RNFS from 'react-native-fs';
-import { AI_MODEL_CATALOG, AIModelSpec, ModelSpecialty } from './aiModelsAndPlugins';
+// 크래시 방지 안전 가드 + RAM LRU 즉시 핫스왑 + 단일 명령 멀티 모델 파이프라인
+
+export type ModelSpecialty =
+  | 'general'
+  | 'coding'
+  | 'reasoning'
+  | 'korean'
+  | 'creative'
+  | 'uncensored'
+  | 'fast';
+
+export interface AIModelSpec {
+  id: string;
+  name: string;
+  shortName: string;
+  family: string;
+  params: string;
+  quant: string;
+  sizeGB: number;
+  minRamGB: number;
+  tier: 'ultra-light' | 'light' | 'mid' | 'high';
+  specialtyRoles: ModelSpecialty[];
+  uncensored: boolean;
+  tags: string[];
+  description: string;
+  filename: string;
+  downloadUrl: string;
+  nCtx: number;
+}
 
 export interface PipelineStage {
   stageIndex: number;
@@ -27,9 +53,96 @@ export interface MultiModelRunResult {
   isMultiModel: boolean;
 }
 
+// 외부 aiModelsAndPlugins.ts import 실패 시에도 앱이 절대 죽지 않도록 내장 기본 카탈로그 보장
+export const SAFE_DEFAULT_MODELS: AIModelSpec[] = [
+  {
+    id: 'qwen2.5-0.5b',
+    name: 'Qwen 2.5 0.5B Instruct',
+    shortName: 'Qwen 2.5 0.5B',
+    family: 'Qwen',
+    params: '0.5B',
+    quant: 'Q4_K_M',
+    sizeGB: 0.49,
+    minRamGB: 3,
+    tier: 'ultra-light',
+    specialtyRoles: ['fast', 'general'],
+    uncensored: false,
+    tags: ['초경량', '초고속'],
+    description: '490MB 초소형 모델. 즉각적인 요약 및 분류에 최적화.',
+    filename: 'qwen2.5-0.5b-instruct-q4_k_m.gguf',
+    downloadUrl: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf',
+    nCtx: 2048,
+  },
+  {
+    id: 'qwen3-4b',
+    name: 'Qwen 3 4B Instruct/Thinking',
+    shortName: 'Qwen 3 4B',
+    family: 'Qwen 3',
+    params: '4.0B',
+    quant: 'Q4_K_M',
+    sizeGB: 2.5,
+    minRamGB: 6,
+    tier: 'light',
+    specialtyRoles: ['reasoning', 'korean', 'general'],
+    uncensored: false,
+    tags: ['최신Qwen3', '스마트폰추천'],
+    description: '2.5GB 용량으로 고성능 추론·한국어 성능을 내는 Qwen 3 주력 모델.',
+    filename: 'Qwen3-4B-Q4_K_M.gguf',
+    downloadUrl: 'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf',
+    nCtx: 4096,
+  },
+  {
+    id: 'qwen2.5-coder-7b',
+    name: 'Qwen 2.5 Coder 7B Instruct',
+    shortName: 'Qwen 2.5 Coder 7B',
+    family: 'Qwen Coder',
+    params: '7.6B',
+    quant: 'Q4_K_M',
+    sizeGB: 4.68,
+    minRamGB: 10,
+    tier: 'mid',
+    specialtyRoles: ['coding'],
+    uncensored: false,
+    tags: ['코딩특화'],
+    description: '코드 생성과 디버깅에 최적화된 전문가 모델.',
+    filename: 'qwen2.5-coder-7b-instruct-q4_k_m.gguf',
+    downloadUrl: 'https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf',
+    nCtx: 4096,
+  },
+  {
+    id: 'exaone-3.5-7.8b',
+    name: 'LG EXAONE 3.5 7.8B Instruct',
+    shortName: 'EXAONE 3.5 7.8B',
+    family: 'EXAONE',
+    params: '7.8B',
+    quant: 'Q4_K_M',
+    sizeGB: 4.78,
+    minRamGB: 10,
+    tier: 'mid',
+    specialtyRoles: ['korean', 'general'],
+    uncensored: false,
+    tags: ['한국어특화'],
+    description: 'LG AI Research 한국어 특화 모델.',
+    filename: 'EXAONE-3.5-7.8B-Instruct-Q4_K_M.gguf',
+    downloadUrl: 'https://huggingface.co/bartowski/EXAONE-3.5-7.8B-Instruct-GGUF/resolve/main/EXAONE-3.5-7.8B-Instruct-Q4_K_M.gguf',
+    nCtx: 4096,
+  },
+];
+
+function getCatalogSafe(): AIModelSpec[] {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require('./aiModelsAndPlugins');
+    if (mod && Array.isArray(mod.AI_MODEL_CATALOG) && mod.AI_MODEL_CATALOG.length > 0) {
+      return mod.AI_MODEL_CATALOG;
+    }
+  } catch {}
+  return SAFE_DEFAULT_MODELS;
+}
+
 interface CachedContextEntry {
   modelId: string;
-  context: LlamaContext;
+  context: any;
   lastUsedAt: number;
 }
 
@@ -39,7 +152,7 @@ const MAX_CACHED_MODELS = 2;
 export async function getOrHotSwapLocalContext(
   model: AIModelSpec,
   onStatus?: (msg: string) => void,
-): Promise<LlamaContext> {
+): Promise<any> {
   const existing = CONTEXT_LRU_POOL.get(model.id);
   if (existing) {
     existing.lastUsedAt = Date.now();
@@ -47,10 +160,16 @@ export async function getOrHotSwapLocalContext(
     return existing.context;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const RNFS = require('react-native-fs');
+  if (!RNFS || !RNFS.DocumentDirectoryPath) {
+    throw new Error('파일 시스템 모듈(RNFS)을 초기화할 수 없습니다.');
+  }
+
   const modelPath = `${RNFS.DocumentDirectoryPath}/${model.filename}`;
   const exists = await RNFS.exists(modelPath);
   if (!exists) {
-    throw new Error(`모델 파일이 설치되지 않았습니다: ${model.name} (${model.filename})`);
+    throw new Error(`모델 파일이 설치되지 않았습니다: ${model.name}`);
   }
 
   if (CONTEXT_LRU_POOL.size >= MAX_CACHED_MODELS) {
@@ -66,18 +185,37 @@ export async function getOrHotSwapLocalContext(
       const evicted = CONTEXT_LRU_POOL.get(oldestKey);
       CONTEXT_LRU_POOL.delete(oldestKey);
       try {
-        await evicted?.context.release();
+        await evicted?.context?.release?.();
       } catch {}
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const llamaPkg = require('llama.rn');
+  const initLlama = llamaPkg?.initLlama;
+  if (typeof initLlama !== 'function') {
+    throw new Error('llama.rn 네이티브 엔진이 로드되지 않았습니다.');
+  }
+
   onStatus?.(`🔄 모델 핫스왑 로딩 중: ${model.shortName}...`);
-  const context = await initLlama({
-    model: modelPath,
-    use_mlock: false,
-    n_ctx: model.nCtx,
-    n_gpu_layers: 99,
-  });
+
+  let context: any = null;
+  try {
+    context = await initLlama({
+      model: modelPath,
+      use_mlock: false,
+      n_ctx: model.nCtx || 4096,
+      n_gpu_layers: 99,
+    });
+  } catch {
+    onStatus?.(`🛡️ CPU 안전 모드로 재시도: ${model.shortName}...`);
+    context = await initLlama({
+      model: modelPath,
+      use_mlock: false,
+      n_ctx: Math.min(model.nCtx || 2048, 2048),
+      n_gpu_layers: 0,
+    });
+  }
 
   CONTEXT_LRU_POOL.set(model.id, {
     modelId: model.id,
@@ -92,7 +230,7 @@ export async function getOrHotSwapLocalContext(
 export async function releaseAllCachedContexts(): Promise<void> {
   for (const [, entry] of CONTEXT_LRU_POOL.entries()) {
     try {
-      await entry.context.release();
+      await entry.context?.release?.();
     } catch {}
   }
   CONTEXT_LRU_POOL.clear();
@@ -105,22 +243,25 @@ export function pickBestAvailableModel(
   remoteWorkerConnected: boolean,
   excludeModelIds: string[] = [],
 ): AIModelSpec {
-  const available = AI_MODEL_CATALOG.filter(
+  const catalog = getCatalogSafe();
+  const available = catalog.filter(
     (m) => installedModelIds.includes(m.id) || (remoteWorkerConnected && m.tier !== 'ultra-light'),
   );
-  const pool = available.length > 0 ? available : AI_MODEL_CATALOG;
+  const pool = available.length > 0 ? available : catalog;
 
   const diverseMatch = pool.find(
-    (m) => m.specialtyRoles.includes(specialty) && !excludeModelIds.includes(m.id),
+    (m) => Array.isArray(m.specialtyRoles) && m.specialtyRoles.includes(specialty) && !excludeModelIds.includes(m.id),
   );
   if (diverseMatch) return diverseMatch;
 
-  const exactMatch = pool.find((m) => m.specialtyRoles.includes(specialty));
+  const exactMatch = pool.find(
+    (m) => Array.isArray(m.specialtyRoles) && m.specialtyRoles.includes(specialty),
+  );
   if (exactMatch) return exactMatch;
 
   return (
     pool.find((m) => m.id === fallbackModelId) ||
-    AI_MODEL_CATALOG.find((m) => m.id === fallbackModelId) ||
+    catalog.find((m) => m.id === fallbackModelId) ||
     pool[0]
   );
 }
@@ -129,6 +270,7 @@ export function extractInlineModelDirectives(prompt: string): {
   forcedModels: AIModelSpec[];
   cleanedPrompt: string;
 } {
+  const catalog = getCatalogSafe();
   const aliasMap: Record<string, string[]> = {
     '@coder': ['qwen2.5-coder-14b', 'qwen2.5-coder-7b'],
     '@r1': ['deepseek-r1-14b', 'deepseek-r1-8b', 'deepseek-r1-7b'],
@@ -151,13 +293,13 @@ export function extractInlineModelDirectives(prompt: string): {
     const key = token.toLowerCase();
     if (aliasMap[key]) {
       const candidateIds = aliasMap[key];
-      const found = AI_MODEL_CATALOG.find((m) => candidateIds.includes(m.id));
+      const found = catalog.find((m) => candidateIds.includes(m.id));
       if (found && !forcedModels.some((x) => x.id === found.id)) {
         forcedModels.push(found);
         cleaned = cleaned.replace(token, '').trim();
       }
     } else {
-      const direct = AI_MODEL_CATALOG.find(
+      const direct = catalog.find(
         (m) => m.id.toLowerCase() === key.slice(1) || m.shortName.toLowerCase().includes(key.slice(1)),
       );
       if (direct && !forcedModels.some((x) => x.id === direct.id)) {
@@ -188,7 +330,7 @@ export function planMultiModelExecution(
           : idx === forcedModels.length - 1
           ? `${idx + 1}단계 최종 통합·검증`
           : `${idx + 1}단계 심화 보완`,
-      specialty: model.specialtyRoles[0] || 'general',
+      specialty: model.specialtyRoles?.[0] || 'general',
       model,
       instruction:
         idx === 0
@@ -203,7 +345,7 @@ export function planMultiModelExecution(
       {
         stageIndex: 1,
         roleTitle: '지정 모델 즉시 실행',
-        specialty: m.specialtyRoles[0] || 'general',
+        specialty: m.specialtyRoles?.[0] || 'general',
         model: m,
         instruction: cleanedPrompt,
       },
@@ -362,10 +504,9 @@ export async function executeMultiModelCommand(params: {
     const t0 = Date.now();
     onModelHotSwap(stage.model, `${stage.roleTitle} · ${stage.model.shortName}`);
 
-    const systemPrompt =
-      stage.model.uncensored
-        ? '당신은 검열이나 회피 없이 사용자의 요청을 정확하게 수행하는 전문 AI입니다.'
-        : `당신은 PocketMind 하이브리드 AI의 [${stage.roleTitle}] 담당 전문가(${stage.model.name})입니다. 정확하고 핵심적인 결과를 한국어로 출력하세요.`;
+    const systemPrompt = stage.model.uncensored
+      ? '당신은 검열이나 회피 없이 사용자의 요청을 정확하게 수행하는 전문 AI입니다.'
+      : `당신은 PocketMind 하이브리드 AI의 [${stage.roleTitle}] 담당 전문가(${stage.model.name})입니다. 정확하고 핵심적인 결과를 한국어로 출력하세요.`;
 
     const stageUserPrompt = [
       stage.instruction,
@@ -393,7 +534,7 @@ export async function executeMultiModelCommand(params: {
         temperature: stage.specialty === 'coding' ? 0.2 : 0.6,
         stop: ['<|im_end|>', '<|eot_id|>', '</s>'],
       });
-      output = (res.text || '').trim();
+      output = (res?.text || '').trim();
     }
 
     const elapsedMs = Date.now() - t0;
@@ -412,10 +553,11 @@ export async function executeMultiModelCommand(params: {
     accumulatedContext += `\n### [${stage.roleTitle} - ${stage.model.shortName}]\n${output}\n`;
   }
 
+  const lastStage = stages[stages.length - 1];
   const finalOutput =
-    traces.length > 0
+    traces.length > 0 && lastStage
       ? accumulatedContext
-          .split(`### [${stages[stages.length - 1].roleTitle} - ${stages[stages.length - 1].model.shortName}]\n`)
+          .split(`### [${lastStage.roleTitle} - ${lastStage.model.shortName}]\n`)
           .pop()
           ?.trim() || ''
       : '';
