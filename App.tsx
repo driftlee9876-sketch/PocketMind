@@ -162,7 +162,7 @@ function PocketMindChatGPTScreen() {
   // PC GPU 워커 설정
   const [remotePC, setRemotePC] = useState<RemotePCConfig>({
     enabled: false,
-    serverUrl: 'http://192.168.0.10:8787',
+    serverUrl: '',
     apiKey: '',
   });
 
