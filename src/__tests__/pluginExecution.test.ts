@@ -17,9 +17,24 @@ describe('plugin execution policy', () => {
   });
 
   it('runs more than four matching automatic plugins in a bounded, ordered way', async () => {
-    const prompt = '3줄요약 핵심만 swot 사업전략 단계별로 심층분석 논리적으로 반론 리스크검증 api설계';
+    const keywords = new Set<string>();
+    const targetPlugins = AI_PLUGIN_CATALOG.filter((plugin) => {
+      if (!plugin.autoRun) return false;
+      const keyword = plugin.triggerKeywords.find((item) => !keywords.has(item.toLocaleLowerCase()));
+      if (!keyword) return false;
+      keywords.add(keyword.toLocaleLowerCase());
+      return true;
+    }).slice(0, 5);
+
+    expect(targetPlugins.length).toBe(5);
+    const prompt = targetPlugins
+      .map((plugin) => plugin.triggerKeywords.find((item) => keywords.has(item.toLocaleLowerCase()))!)
+      .join(' ');
     const output = await runAutonomousPlugins(prompt, AI_PLUGIN_CATALOG.map((plugin) => plugin.id));
+
     expect(output.length).toBeGreaterThan(4);
     expect(output.length).toBeLessThanOrEqual(8);
+    const catalogIndexes = output.map((item) => AI_PLUGIN_CATALOG.findIndex((plugin) => plugin.id === item.id));
+    expect(catalogIndexes).toEqual([...catalogIndexes].sort((a, b) => a - b));
   });
 });
