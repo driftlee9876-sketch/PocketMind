@@ -187,7 +187,7 @@ function PocketMindChatGPTScreen() {
   const [pluginSearch, setPluginSearch] = useState('');
   const [modelTab, setModelTab] = useState<string>('전체');
 
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<React.ElementRef<typeof ScrollView>>(null);
 
   const activeSession =
     sessions.find((s) => s.id === activeSessionId) || sessions[0];
@@ -382,13 +382,13 @@ function PocketMindChatGPTScreen() {
   };
 
   const refreshCoordinatorWorkers = async () => {
-    if (!remotePC.serverUrl.trim() || remotePC.apiKey.trim().length < 24) {
+    if (!remotePC.serverUrl.trim() || (remotePC.apiKey || '').trim().length < 24) {
       setWorkerDiscoveryMessage('Coordinator 주소와 API 토큰을 먼저 설정하세요.');
       return;
     }
     setWorkerDiscoveryMessage('Worker 네트워크를 검색하고 있습니다...');
     try {
-      const workers = await discoverCoordinatorWorkers(remotePC.serverUrl, remotePC.apiKey);
+      const workers = await discoverCoordinatorWorkers(remotePC.serverUrl, (remotePC.apiKey || ''));
       setCoordinatorWorkers(workers);
       setWorkerDiscoveryMessage(workers.length ? `${workers.length}개 기기를 찾았습니다.` : '연결된 Worker가 없습니다. Windows 또는 Android Worker를 등록하세요.');
     } catch (error: any) {
@@ -399,9 +399,9 @@ function PocketMindChatGPTScreen() {
   const openConnectedApps = async () => {
     setConnectedAppsOpen(true);
     setConfiguredIntegrationIds([]);
-    if (!remotePC.serverUrl.trim() || !remotePC.apiKey.trim()) return;
+    if (!remotePC.serverUrl.trim() || !(remotePC.apiKey || '').trim()) return;
     try {
-      const ids = await getConfiguredIntegrations(remotePC.serverUrl, remotePC.apiKey);
+      const ids = await getConfiguredIntegrations(remotePC.serverUrl, (remotePC.apiKey || ''));
       setConfiguredIntegrationIds(ids);
     } catch (error: any) {
       Alert.alert('앱 연결 상태 확인 실패', error?.message || 'Coordinator 주소와 API 토큰을 확인하세요.');
@@ -412,7 +412,7 @@ function PocketMindChatGPTScreen() {
     app: (typeof CONNECTED_APP_CATALOG)[number],
     action: (typeof CONNECTED_APP_CATALOG)[number]['actions'][number],
   ) => {
-    if (!remotePC.serverUrl.trim() || remotePC.apiKey.trim().length < 24) {
+    if (!remotePC.serverUrl.trim() || (remotePC.apiKey || '').trim().length < 24) {
       Alert.alert('Coordinator 설정 필요', '분산 Worker 설정에서 Coordinator 주소와 API 토큰을 먼저 입력하세요.');
       return;
     }
@@ -429,7 +429,7 @@ function PocketMindChatGPTScreen() {
       return;
     }
     try {
-      const submitted = await submitIntegrationAction(remotePC.serverUrl, remotePC.apiKey, app.id, action.id, {
+      const submitted = await submitIntegrationAction(remotePC.serverUrl, (remotePC.apiKey || ''), app.id, action.id, {
         prompt,
         conversation: messages.slice(-6).map((message) => ({ role: message.role, content: message.text })),
         requestedAt: new Date().toISOString(),
@@ -443,7 +443,7 @@ function PocketMindChatGPTScreen() {
               text: '거절',
               style: 'cancel',
               onPress: () => {
-                rejectIntegrationAction(remotePC.serverUrl, remotePC.apiKey, submitted.actionId)
+                rejectIntegrationAction(remotePC.serverUrl, (remotePC.apiKey || ''), submitted.actionId)
                   .catch((error: any) => Alert.alert('거절 처리 실패', error?.message || '오류'));
               },
             },
@@ -451,7 +451,7 @@ function PocketMindChatGPTScreen() {
               text: '승인하고 실행',
               onPress: async () => {
                 try {
-                  const result = await approveIntegrationAction(remotePC.serverUrl, remotePC.apiKey, submitted.actionId);
+                  const result = await approveIntegrationAction(remotePC.serverUrl, (remotePC.apiKey || ''), submitted.actionId);
                   Alert.alert(
                     result.status === 'completed' ? '작업 완료' : '작업 결과',
                     result.result || result.lastError || result.status,
@@ -549,7 +549,7 @@ function PocketMindChatGPTScreen() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="light-content" backgroundColor="#212121" />
+      <StatusBar barStyle="light-content" />
 
       {/* ================= ChatGPT 상단 헤더 ================= */}
       <View style={styles.topHeader}>
