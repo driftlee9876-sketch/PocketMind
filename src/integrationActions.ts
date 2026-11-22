@@ -11,7 +11,7 @@ export interface IntegrationActionResult {
 }
 
 function baseUrl(value: string): string {
-  return value.trim().replace(/\\/+$/, '');
+  return value.trim().replace(/\/+$/, '');
 }
 
 async function call<T>(
