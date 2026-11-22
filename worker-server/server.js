@@ -90,7 +90,7 @@ function findWorkerByToken(token) {
   return null;
 }
 
-const INTEGRATION_ACTION_RISKS: Record<string, Record<string, 'read' | 'write' | 'sensitive'>> = {
+const INTEGRATION_ACTION_RISKS = {
   'google-gmail': { search_messages: 'read', get_message: 'read', create_draft: 'write', send_message: 'sensitive' },
   'google-calendar': { list_events: 'read', create_event: 'write', update_event: 'sensitive' },
   'google-drive': { search_files: 'read', get_file: 'read', upload_file: 'write', delete_file: 'sensitive' },
@@ -168,7 +168,8 @@ async function load() {
     const raw = JSON.parse(await fs.readFile(DATA_FILE, 'utf8'));
     if (raw && typeof raw === 'object') {
       state.workers = raw.workers || {};
-      state.tasks = raw.tasks || {};\n      state.actions = raw.actions || {};
+      state.tasks = raw.tasks || {};
+      state.actions = raw.actions || {};
     }
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
