@@ -47,6 +47,11 @@ if (API_TOKEN.length < 24 || ENROLLMENT_TOKEN.length < 24) {
   process.exit(1);
 }
 
+if (Object.keys(CONNECTOR_WEBHOOKS).length > 0 && WEBHOOK_SIGNING_SECRET.length < 32) {
+  console.error('Configured integration webhooks require POCKETMIND_WEBHOOK_SIGNING_SECRET (at least 32 characters).');
+  process.exit(1);
+}
+
 const state = { workers: {}, tasks: {}, actions: {} };
 let saveChain = Promise.resolve();
 const requestCounts = new Map();
