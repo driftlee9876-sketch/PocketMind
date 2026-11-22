@@ -35,27 +35,28 @@ class PocketMindWorkerService : Service() {
     }
   }
 
-  private val startIteration = Runnable {
-    if (!taskRunning) {
-      taskRunning = true
-      try {
-        com.facebook.react.HeadlessJsTaskService.acquireWakeLockNow(this)
-        startService(Intent(this, PocketMindWorkerHeadlessService::class.java))
-        handler.postDelayed(watchdog, TASK_WATCHDOG_MS)
-      } catch (_: Exception) {
-        taskRunning = false
-        handler.postDelayed(startIteration, POLL_DELAY_MS)
-      }
-    }
-  }
-
-  private val watchdog = Runnable {
-    taskRunning = false
-    handler.postDelayed(startIteration, POLL_DELAY_MS)
-  }
+  private lateinit var startIteration: Runnable
+  private lateinit var watchdog: Runnable
 
   override fun onCreate() {
     super.onCreate()
+    watchdog = Runnable {
+      taskRunning = false
+      handler.postDelayed(startIteration, POLL_DELAY_MS)
+    }
+    startIteration = Runnable {
+      if (!taskRunning) {
+        taskRunning = true
+        try {
+          com.facebook.react.HeadlessJsTaskService.acquireWakeLockNow(this)
+          startService(Intent(this, PocketMindWorkerHeadlessService::class.java))
+          handler.postDelayed(watchdog, TASK_WATCHDOG_MS)
+        } catch (_: Exception) {
+          taskRunning = false
+          handler.postDelayed(startIteration, POLL_DELAY_MS)
+        }
+      }
+    }
     createNotificationChannel()
     val filter = IntentFilter(ACTION_ITERATION_FINISHED)
     if (Build.VERSION.SDK_INT >= 33) {
