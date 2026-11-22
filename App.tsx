@@ -750,6 +750,17 @@ function PocketMindChatGPTScreen() {
               </Text>
             </TouchableOpacity>
 
+            <TouchableOpacity style={styles.drawerNavItem} onPress={() => { setSidebarOpen(false); openConnectedApps(); }}>
+              <Text style={styles.drawerNavText}>🔌 연결 앱 허브 ({configuredIntegrationIds.length}개 웹훅 설정)</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.drawerNavItem} onPress={() => {
+              setSidebarOpen(false);
+              setWorkerModelIds(installedModelIds);
+              setAndroidWorkerOpen(true);
+            }}>
+              <Text style={styles.drawerNavText}>📡 Android Worker ({androidWorkerRunning ? '실행 중' : '설정'})</Text>
+            </TouchableOpacity>
+
             <View style={styles.drawerToggleRow}>
               <Text style={styles.drawerToggleLabel}>🔗 자율 멀티모델 체인</Text>
               <Switch
@@ -906,6 +917,19 @@ function PocketMindChatGPTScreen() {
               </TouchableOpacity>
             </View>
 
+            <TouchableOpacity style={styles.drawerNavItem} onPress={() => {
+              setQuickPlusOpen(false);
+              openConnectedApps();
+            }}>
+              <Text style={styles.drawerNavText}>🔌 Gmail·Calendar·Notion 등 연결 앱 열기</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.drawerNavItem} onPress={() => {
+              setQuickPlusOpen(false);
+              setWorkerModelIds(installedModelIds);
+              setAndroidWorkerOpen(true);
+            }}>
+              <Text style={styles.drawerNavText}>📡 Android Worker 설정</Text>
+            </TouchableOpacity>
             <Text style={styles.quickSubHeader}>인기 플러그인 원터치 삽입</Text>
             <ScrollView style={{ maxHeight: 220 }}>
               {safePlugins.slice(0, 12).map((pl) => (
@@ -1011,6 +1035,56 @@ function PocketMindChatGPTScreen() {
                       <Text style={styles.pluginRunBtnText}>즉시 입력</Text>
                     </TouchableOpacity>
                   </View>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* ================= Pickle-style connected app hub ================= */}
+      <Modal visible={connectedAppsOpen} animationType="slide">
+        <SafeAreaView style={styles.fullModal}>
+          <View style={styles.fullModalHeader}>
+            <Text style={styles.fullModalTitle}>
+              🔌 연결 앱 허브 ({configuredIntegrationIds.length}/{CONNECTED_APP_CATALOG.length} 웹훅 설정)
+            </Text>
+            <TouchableOpacity onPress={() => setConnectedAppsOpen(false)}>
+              <Text style={styles.sheetClose}>닫기</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={[styles.pluginCardDesc, { paddingHorizontal: 16, paddingTop: 10 }]}>
+            앱을 선택해 자동화 작업을 요청할 수 있습니다. 목록에 있다고 연결된 것은 아닙니다. Coordinator에 HTTPS 웹훅과 각 서비스의 공식 인증을 설정해야 실제로 동작합니다.
+          </Text>
+          <ScrollView style={styles.modalScrollBody}>
+            {CONNECTED_APP_CATALOG.map((app) => {
+              const configured = configuredIntegrationIds.includes(app.id);
+              return (
+                <View key={app.id} style={styles.pluginCard}>
+                  <View style={styles.pluginCardTop}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.pluginCardTitle}>{app.name}</Text>
+                      <Text style={styles.pluginCardCat}>{app.category} · {app.auth.toUpperCase()}</Text>
+                    </View>
+                    <Text style={{ color: configured ? '#10A37F' : '#F59E0B', fontSize: 11, fontWeight: '700' }}>
+                      {configured ? '웹훅 설정됨' : '연결 설정 필요'}
+                    </Text>
+                  </View>
+                  <Text style={styles.pluginCardDesc}>{app.description}</Text>
+                  {app.actions.map((action) => (
+                    <TouchableOpacity
+                      key={action.id}
+                      style={[styles.pluginRunBtn, { alignSelf: 'stretch', marginTop: 8 }]}
+                      onPress={() => handleConnectedAppAction(app, action)}
+                    >
+                      <Text style={styles.pluginRunBtnText}>
+                        {action.label} · {action.risk === 'read' ? '읽기' : action.risk === 'write' ? '승인 필요' : '중요 승인 필요'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                  <Text style={[styles.pluginKeywordsText, { marginTop: 8 }]} numberOfLines={2}>
+                    공식 API 설정: {app.officialSetupUrl}
+                  </Text>
                 </View>
               );
             })}
@@ -1150,6 +1224,74 @@ function PocketMindChatGPTScreen() {
             >
               <Text style={styles.sheetPrimaryBtnText}>저장 후 닫기</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+      {/* ================= Android foreground worker settings ================= */}
+      <Modal visible={androidWorkerOpen} transparent animationType="slide">
+        <View style={styles.bottomSheetOverlay}>
+          <View style={[styles.bottomSheetCard, { maxHeight: '90%' }]}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>📡 기기 분산 Worker</Text>
+              <TouchableOpacity onPress={() => setAndroidWorkerOpen(false)}>
+                <Text style={styles.sheetClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView>
+              <Text style={styles.inputFieldLabel}>Coordinator 주소</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={remotePC.serverUrl}
+                onChangeText={(t) => setRemotePC((p) => ({ ...p, serverUrl: t }))}
+                placeholder="https://your-coordinator.example"
+                placeholderTextColor="#8E8EA0"
+                autoCapitalize="none"
+              />
+              <Text style={styles.inputFieldLabel}>Worker 등록 토큰</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={workerEnrollmentToken}
+                onChangeText={setWorkerEnrollmentToken}
+                placeholder="POCKETMIND_ENROLLMENT_TOKEN"
+                placeholderTextColor="#8E8EA0"
+                secureTextEntry
+                autoCapitalize="none"
+              />
+              <View style={styles.drawerToggleRow}>
+                <Text style={styles.drawerToggleLabel}>GPU 가속 사용 (기기 지원 확인 필요)</Text>
+                <Switch value={workerUseGpu} onValueChange={setWorkerUseGpu} />
+              </View>
+              <Text style={styles.inputFieldLabel}>제공할 설치 모델</Text>
+              {installedModelIds.length === 0 ? (
+                <Text style={styles.pluginCardDesc}>설치된 모델이 없습니다. 모델 허브에서 GGUF 모델을 설치하세요.</Text>
+              ) : installedModelIds.map((modelId) => {
+                const model = safeCatalog.find((item) => item.id === modelId);
+                const selected = workerModelIds.includes(modelId);
+                return (
+                  <View key={modelId} style={styles.drawerToggleRow}>
+                    <Text style={[styles.drawerToggleLabel, { flex: 1 }]}>{model?.shortName || modelId}</Text>
+                    <Switch
+                      value={selected}
+                      onValueChange={(value) => setWorkerModelIds((previous) =>
+                        value ? [...previous, modelId] : previous.filter((id) => id !== modelId)
+                      )}
+                    />
+                  </View>
+                );
+              })}
+              <Text style={[styles.pluginCardDesc, { marginVertical: 10 }]}>
+                Android 포그라운드 서비스는 명시적으로 켠 동안에만 동작합니다. 충전 중·비과금 네트워크·안전한 발열 상태에서 작업을 받습니다. 배터리 50% 미만일 때는 충전 중이 아니면 쉬며, 강제 종료·제조사 절전 정책으로 중단될 수 있습니다.
+              </Text>
+              {Platform.OS === 'ios' ? (
+                <Text style={styles.pluginCardDesc}>iOS는 이 상시 Worker 서비스를 지원하지 않습니다. iOS에서는 앱이 활성 상태일 때만 작업 참여를 지원합니다.</Text>
+              ) : null}
+              <TouchableOpacity
+                style={styles.sheetPrimaryBtn}
+                onPress={androidWorkerRunning ? stopAndroidWorker : startAndroidWorker}
+              >
+                <Text style={styles.sheetPrimaryBtnText}>{androidWorkerRunning ? 'Worker 중지' : 'Worker 시작'}</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
         </View>
       </Modal>
