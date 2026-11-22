@@ -34,7 +34,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Coordinator tests
+      - name: Check coordinator JavaScript syntax
         working-directory: worker-server
-        run: |
-          npm test
+        run: node --check server.js
+      - name: Coordinator integration tests
+        working-directory: worker-server
+        run: npm test
+
+  windows-worker:
+    name: Windows Worker Python syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Windows Worker source
+        run: python -m py_compile workers/windows/worker.py
