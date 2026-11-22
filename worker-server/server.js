@@ -416,6 +416,23 @@ async function handle(req, res) {
     return json(res, 200, { ok: true, serverTime: worker.lastSeenAt });
   }
 
+  if (req.method === 'POST' && url.pathname === '/v1/workers/gpu-capability') {
+    const worker = findWorkerByToken(bearer(req));
+    if (!worker) return json(res, 401, { error: 'Invalid worker token' });
+    const body = await readBody(req);
+    // Workers may downgrade an unverified GPU capability, never self-upgrade it.
+    if (!body || body.gpuAvailable !== false) {
+      return json(res, 400, { error: 'Only a GPU capability downgrade is accepted' });
+    }
+    worker.capabilities.gpu = false;
+    worker.capabilities.gpuMemoryMb = 0;
+    worker.capabilities.backend = 'llama.cpp';
+    worker.state = 'idle';
+    worker.lastSeenAt = Date.now();
+    await persist();
+    return json(res, 200, { ok: true, gpuAvailable: false });
+  }
+
   if (req.method === 'POST' && url.pathname === '/v1/tasks/claim') {
     const worker = findWorkerByToken(bearer(req));
     if (!worker) return json(res, 401, { error: 'Invalid worker token' });
@@ -438,7 +455,14 @@ async function handle(req, res) {
     worker.state = 'busy';
     await persist();
     return json(res, 200, {
-      task: { taskId: task.taskId, modelId: task.modelId, payload: task.payload, leaseId: task.leaseId, leaseExpiresAt: task.leaseExpiresAt },
+      task: {
+        taskId: task.taskId,
+        modelId: task.modelId,
+        payload: task.payload,
+        requirements: task.requirements,
+        leaseId: task.leaseId,
+        leaseExpiresAt: task.leaseExpiresAt,
+      },
     });
   }
 
