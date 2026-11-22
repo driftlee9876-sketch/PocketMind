@@ -1,0 +1,40 @@
+name: PocketMind Quality Checks
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  push:
+    branches: [ feat/pocketmind-foundation ]
+
+permissions:
+  contents: read
+
+jobs:
+  typescript:
+    name: TypeScript and Jest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+      - name: TypeScript validation
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test -- --runInBand
+
+  coordinator:
+    name: Worker coordinator integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Coordinator tests
+        working-directory: worker-server
+        run: |
+          npm test
