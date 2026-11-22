@@ -37,7 +37,7 @@ async function requestJson(
   let data: any = {};
   try { data = raw ? JSON.parse(raw) : {}; }
   catch { throw new Error('Worker coordinator returned invalid JSON.'); }
-  if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${data?.error || 'Request failed'}`);
   return data;
 }
 
@@ -131,7 +131,6 @@ export async function runAndroidWorkerTask(): Promise<void> {
       return;
     }
 
-    const latestConditions = await native.getDeviceConditions();
     heartbeat = setInterval(() => {
       native.getDeviceConditions()
         .then((current: any) => requestJson(baseUrl, '/v1/workers/heartbeat', token, {
