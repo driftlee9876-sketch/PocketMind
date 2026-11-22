@@ -497,11 +497,12 @@ function PocketMindChatGPTScreen() {
           return;
         }
       }
+      const stableWorkerId = await NativeModules.PocketMindWorker.getWorkerId();
       await NativeModules.PocketMindWorker.startWorker({
         enabled: true,
         coordinatorUrl: remotePC.serverUrl.trim(),
         enrollmentToken: workerEnrollmentToken.trim(),
-        workerId: `android-${Date.now().toString(36)}`,
+        workerId: stableWorkerId,
         displayName: 'PocketMind Android Worker',
         modelIds: selectedModels,
         useGpu: workerUseGpu,
