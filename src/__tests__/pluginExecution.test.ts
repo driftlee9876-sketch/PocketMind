@@ -17,19 +17,19 @@ describe('plugin execution policy', () => {
   });
 
   it('runs more than four matching automatic plugins in a bounded, ordered way', async () => {
-    const keywords = new Set<string>();
-    const targetPlugins = AI_PLUGIN_CATALOG.filter((plugin) => {
-      if (!plugin.autoRun) return false;
-      const keyword = plugin.triggerKeywords.find((item) => !keywords.has(item.toLocaleLowerCase()));
-      if (!keyword) return false;
-      keywords.add(keyword.toLocaleLowerCase());
-      return true;
-    }).slice(0, 5);
+    const selected: Array<{ plugin: (typeof AI_PLUGIN_CATALOG)[number]; keyword: string }> = [];
+    const seen = new Set<string>();
+    for (const plugin of AI_PLUGIN_CATALOG) {
+      if (!plugin.autoRun) continue;
+      const keyword = plugin.triggerKeywords.find((item) => !seen.has(item.toLocaleLowerCase()));
+      if (!keyword) continue;
+      seen.add(keyword.toLocaleLowerCase());
+      selected.push({ plugin, keyword });
+      if (selected.length === 5) break;
+    }
 
-    expect(targetPlugins.length).toBe(5);
-    const prompt = targetPlugins
-      .map((plugin) => plugin.triggerKeywords.find((item) => keywords.has(item.toLocaleLowerCase()))!)
-      .join(' ');
+    expect(selected).toHaveLength(5);
+    const prompt = selected.map((item) => item.keyword).join(' ');
     const output = await runAutonomousPlugins(prompt, AI_PLUGIN_CATALOG.map((plugin) => plugin.id));
 
     expect(output.length).toBeGreaterThan(4);
