@@ -8,7 +8,7 @@
 
 export type WorkerPlatform = 'windows' | 'android' | 'ios' | 'linux' | 'macos';
 export type WorkerState = 'idle' | 'busy' | 'paused' | 'offline';
-export type WorkerBackend = 'llama.cpp' | 'onnxruntime' | 'directml' | 'cuda' | 'metal' | 'unknown';
+export type WorkerBackend = 'llama.cpp' | 'ollama' | 'onnxruntime' | 'directml' | 'cuda' | 'metal' | 'unknown';
 
 export interface WorkerCapabilities {
   platform: WorkerPlatform;
