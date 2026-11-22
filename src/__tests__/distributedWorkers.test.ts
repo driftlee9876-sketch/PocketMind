@@ -52,6 +52,8 @@ describe('WorkerRegistry', () => {
     expect(registry.select({ modelId: 'qwen3-4b', requireGpu: true })?.workerId).toBe('windows-test');
     expect(registry.select({ modelId: 'unknown-model' })).toBeNull();
     expect(registry.select({ requireCharging: true })?.workerId).toBe('windows-test');
+    expect(registry.select({ requireGpu: true, minimumGpuMemoryMb: 4096 })?.workerId).toBe('windows-test');
+    expect(registry.select({ requireGpu: true, minimumGpuMemoryMb: 16384 })).toBeNull();
     registry.heartbeat('windows-test', {
       state: 'idle',
       conditions: { ...ad.conditions, thermalState: 'critical' },
