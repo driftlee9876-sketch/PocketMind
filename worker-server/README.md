@@ -16,7 +16,7 @@ Generate secrets with `openssl rand -hex 32`. Do not commit `.env` or the JSON s
 - Restrict network access where possible and configure `POCKETMIND_ALLOWED_ORIGINS` for browser clients.
 - Back up the state file and restrict its filesystem permissions.
 - Keep API and enrollment tokens private. Enrollment creates a separate random worker token.
-- The JSON persistence model is intended for one coordinator process. It is not a multi-instance database or HA queue.
+- The JSON persistence model is intended for one coordinator process. It is not a multi-instance database or HA queue. Task prompts, results, and integration action inputs are persisted without application-level encryption. Protect the volume and backups with encrypted storage and strict access controls; do not send passwords or long-lived provider secrets as task input.
 
 ## API
 
