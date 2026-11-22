@@ -24,6 +24,8 @@ const HEARTBEAT_TIMEOUT_MS = Math.max(30_000, Number(process.env.POCKETMIND_HEAR
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_PENDING_TASKS = 500;
 const MAX_ACTIVE_WORKERS = 1000;
+const MAX_STORED_RECORDS = 10_000;
+const HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const ALLOWED_ORIGINS = new Set((process.env.POCKETMIND_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean));
 let CONNECTOR_WEBHOOKS = {};
 try {
@@ -251,7 +253,48 @@ function eligible(worker, task) {
   return active < worker.capabilities.maxConcurrentTasks;
 }
 
+function pruneStoredRecords() {
+  const cutoff = Date.now() - HISTORY_RETENTION_MS;
+  for (const [taskId, task] of Object.entries(state.tasks)) {
+    if (['completed', 'failed', 'cancelled'].includes(task.status) && task.updatedAt < cutoff) {
+      delete state.tasks[taskId];
+    }
+  }
+  for (const [actionId, action] of Object.entries(state.actions)) {
+    if (['completed', 'failed', 'rejected', 'not_configured'].includes(action.status) && action.updatedAt < cutoff) {
+      delete state.actions[actionId];
+    }
+    if (action.status === 'awaiting_approval' && action.createdAt < cutoff) {
+      action.status = 'rejected';
+      action.lastError = 'Approval expired after seven days.';
+      action.updatedAt = Date.now();
+    }
+  }
+
+  const taskEntries = Object.entries(state.tasks);
+  if (taskEntries.length > MAX_STORED_RECORDS) {
+    const removable = taskEntries
+      .filter(([, task]) => ['completed', 'failed', 'cancelled'].includes(task.status))
+      .sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+    while (Object.keys(state.tasks).length > MAX_STORED_RECORDS && removable.length) {
+      const [taskId] = removable.shift();
+      delete state.tasks[taskId];
+    }
+  }
+  const actionEntries = Object.entries(state.actions);
+  if (actionEntries.length > MAX_STORED_RECORDS) {
+    const removable = actionEntries
+      .filter(([, action]) => ['completed', 'failed', 'rejected', 'not_configured'].includes(action.status))
+      .sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+    while (Object.keys(state.actions).length > MAX_STORED_RECORDS && removable.length) {
+      const [actionId] = removable.shift();
+      delete state.actions[actionId];
+    }
+  }
+}
+
 function recoverExpiredLeases() {
+  let changed = false;
   const now = Date.now();
   for (const task of Object.values(state.tasks)) {
     if (task.status === 'leased' && task.leaseExpiresAt <= now) {
@@ -261,12 +304,19 @@ function recoverExpiredLeases() {
       task.leaseExpiresAt = null;
       task.lastError = 'Worker lease expired';
       task.updatedAt = now;
+      changed = true;
     }
   }
   for (const worker of Object.values(state.workers)) {
-    if (now - worker.lastSeenAt > HEARTBEAT_TIMEOUT_MS) worker.state = 'offline';
+    if (worker.state !== 'offline' && now - worker.lastSeenAt > HEARTBEAT_TIMEOUT_MS) {
+      worker.state = 'offline';
+      changed = true;
+    }
   }
+  return changed;
 }
+
+
 
 function rateLimit(req, res) {
   const key = req.socket.remoteAddress || 'unknown';
@@ -309,7 +359,8 @@ async function handle(req, res) {
     return json(res, 200, { status: 'ok', service: 'pocketmind-worker-coordinator', version: 1, now: Date.now() });
   }
 
-  recoverExpiredLeases();
+  const recoveryChanged = recoverExpiredLeases();
+  if (recoveryChanged) await persist();
 
   if (req.method === 'POST' && url.pathname === '/v1/workers/enroll') {
     if (!authenticateEnrollment(req)) return json(res, 401, { error: 'Invalid enrollment token' });
@@ -491,20 +542,40 @@ async function handle(req, res) {
 
   if (req.method === 'POST' && url.pathname === '/v1/tasks') {
     const body = await readBody(req);
+    pruneStoredRecords();
     if (Object.keys(state.tasks).filter(id => ['pending', 'leased'].includes(state.tasks[id].status)).length >= MAX_PENDING_TASKS) {
       return json(res, 429, { error: 'Task queue is full' });
     }
-    if (!body || typeof body.modelId !== 'string' || body.modelId.length > 120 ||
-      !body.payload || typeof body.payload !== 'object' ||
+    if (!body || typeof body.modelId !== 'string' || !/^[a-zA-Z0-9._:-]{1,120}$/.test(body.modelId) ||
+      !body.payload || typeof body.payload !== 'object' || Array.isArray(body.payload) ||
       !Array.isArray(body.payload.messages) || body.payload.messages.length < 1 ||
       body.payload.messages.length > 20 ||
-      body.payload.messages.some(m => !m || !['system', 'user', 'assistant'].includes(m.role) || typeof m.content !== 'string' || m.content.length > 50_000)) {
+      body.payload.messages.some(m => !m || !['system', 'user', 'assistant'].includes(m.role) ||
+        typeof m.content !== 'string' || m.content.length > 50_000)) {
       return json(res, 400, { error: 'Invalid task payload' });
     }
+    const requested = body.requirements && typeof body.requirements === 'object' && !Array.isArray(body.requirements)
+      ? body.requirements : {};
+    if ((requested.minimumBatteryPercent !== undefined &&
+         (!Number.isFinite(requested.minimumBatteryPercent) || requested.minimumBatteryPercent < 0 || requested.minimumBatteryPercent > 100)) ||
+        (requested.minimumRamMb !== undefined &&
+         (!Number.isFinite(requested.minimumRamMb) || requested.minimumRamMb < 0 || requested.minimumRamMb > 2_000_000))) {
+      return json(res, 400, { error: 'Invalid worker requirements' });
+    }
+    const requirements = {
+      modelId: body.modelId,
+      requireGpu: requested.requireGpu === true,
+      requireCharging: requested.requireCharging === true,
+      requireUnmeteredNetwork: requested.requireUnmeteredNetwork === true,
+      ...(requested.minimumBatteryPercent !== undefined
+        ? { minimumBatteryPercent: requested.minimumBatteryPercent } : {}),
+      ...(requested.minimumRamMb !== undefined
+        ? { minimumRamMb: requested.minimumRamMb } : {}),
+    };
     const taskId = crypto.randomUUID();
     state.tasks[taskId] = {
       taskId, modelId: body.modelId, payload: body.payload,
-      requirements: body.requirements || { modelId: body.modelId },
+      requirements,
       status: 'pending', createdAt: Date.now(), updatedAt: Date.now(),
       attempts: 0, workerId: null, leaseId: null, leaseExpiresAt: null,
     };
