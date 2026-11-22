@@ -2,6 +2,7 @@
 // ChatGPT 스타일 다크 모바일 UI + 60종 플러그인 스토어 + 초경량 무검열 모델 허브 + 자율 멀티모델 체인
 
 import React, { Component, ErrorInfo, ReactNode, useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Alert,
   Modal,
@@ -122,6 +123,27 @@ interface ChatSession {
   messages: ChatMessage[];
 }
 
+interface DeviceMetrics {
+  cpuUsagePercent?: number | null;
+  cpuTemperatureC?: number | null;
+  gpuTemperatureC?: number | null;
+  usedRamMb?: number;
+  totalRamMb?: number;
+  ramUsagePercent?: number;
+  usbConnected?: boolean;
+  usbDeviceCount?: number;
+  usbStatus?: string;
+  thermalState?: string;
+}
+
+function summarizeSessionPreview(session: ChatSession): string {
+  const latestAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
+  const latestUser = [...session.messages].reverse().find((message) => message.role === 'user');
+  const source = latestAssistant?.text || latestUser?.text || '아직 대화가 없습니다.';
+  const clean = source.replace(/\\s+/g, ' ').trim();
+  return clean.length > 72 ? `${clean.slice(0, 69)}…` : clean;
+}
+
 const PLUGIN_CATEGORIES: ('전체' | PluginCategory)[] = [
   '전체',
   '웹·검색',
@@ -142,6 +164,8 @@ function PocketMindChatGPTScreen() {
     { id: 'session-1', title: '새 채팅', messages: [] },
   ]);
   const [activeSessionId, setActiveSessionId] = useState<string>('session-1');
+  const [historyReady, setHistoryReady] = useState(false);
+  const [deviceMetrics, setDeviceMetrics] = useState<DeviceMetrics | null>(null);
 
   const [inputText, setInputText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -221,6 +245,73 @@ function PocketMindChatGPTScreen() {
     return () => {
       multiModelOrchestrator.releaseAll().catch(() => {});
     };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const restoreHistory = async () => {
+      try {
+        const raw = await AsyncStorage.getItem('pocketmind.chat-history.v1');
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        if (!Array.isArray(saved?.sessions)) return;
+        const restored = saved.sessions
+          .filter((session: any) => session && typeof session.id === 'string' && Array.isArray(session.messages))
+          .slice(0, 50)
+          .map((session: any) => ({
+            id: session.id,
+            title: typeof session.title === 'string' ? session.title.slice(0, 80) : '대화',
+            messages: session.messages
+              .filter((message: any) => message && typeof message.id === 'string' &&
+                (message.role === 'user' || message.role === 'assistant') && typeof message.text === 'string')
+              .slice(-120),
+          }));
+        if (mounted && restored.length > 0) {
+          setSessions(restored);
+          const savedActiveId = typeof saved.activeSessionId === 'string' ? saved.activeSessionId : '';
+          setActiveSessionId(restored.some((session: ChatSession) => session.id === savedActiveId)
+            ? savedActiveId : restored[0].id);
+        }
+      } catch (error) {
+        console.warn('[PocketMind] 대화 기록을 복원하지 못했습니다.', error);
+      } finally {
+        if (mounted) setHistoryReady(true);
+      }
+    };
+    restoreHistory();
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!historyReady) return;
+    const snapshot = {
+      sessions: sessions.slice(0, 50).map((session) => ({
+        ...session,
+        messages: session.messages.slice(-120),
+      })),
+      activeSessionId,
+    };
+    AsyncStorage.setItem('pocketmind.chat-history.v1', JSON.stringify(snapshot)).catch((error) => {
+      console.warn('[PocketMind] 대화 기록을 저장하지 못했습니다.', error);
+    });
+  }, [sessions, activeSessionId, historyReady]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    let mounted = true;
+    const refreshMetrics = async () => {
+      try {
+        const native = NativeModules.PocketMindWorker;
+        if (typeof native?.getDeviceMetrics !== 'function') return;
+        const metrics = await native.getDeviceMetrics();
+        if (mounted && metrics) setDeviceMetrics(metrics as DeviceMetrics);
+      } catch (error) {
+        console.warn('[PocketMind] 기기 상태를 읽지 못했습니다.', error);
+      }
+    };
+    refreshMetrics();
+    const timer = setInterval(refreshMetrics, 5000);
+    return () => { mounted = false; clearInterval(timer); };
   }, []);
 
   const updateActiveSessionMessages = (
@@ -574,6 +665,29 @@ function PocketMindChatGPTScreen() {
         </TouchableOpacity>
       </View>
 
+      <View style={styles.deviceMetricsBar}>
+        <View style={styles.deviceMetricCell}>
+          <Text style={styles.deviceMetricLabel}>CPU</Text>
+          <Text style={styles.deviceMetricValue}>{typeof deviceMetrics?.cpuUsagePercent === 'number' ? `${Math.round(deviceMetrics.cpuUsagePercent)}%` : '—'}</Text>
+        </View>
+        <View style={styles.deviceMetricCell}>
+          <Text style={styles.deviceMetricLabel}>CPU 온도</Text>
+          <Text style={styles.deviceMetricValue}>{typeof deviceMetrics?.cpuTemperatureC === 'number' ? `${deviceMetrics.cpuTemperatureC.toFixed(1)}°` : '미지원'}</Text>
+        </View>
+        <View style={styles.deviceMetricCell}>
+          <Text style={styles.deviceMetricLabel}>GPU 온도</Text>
+          <Text style={styles.deviceMetricValue}>{typeof deviceMetrics?.gpuTemperatureC === 'number' ? `${deviceMetrics.gpuTemperatureC.toFixed(1)}°` : '미지원'}</Text>
+        </View>
+        <View style={styles.deviceMetricCell}>
+          <Text style={styles.deviceMetricLabel}>RAM</Text>
+          <Text style={styles.deviceMetricValue}>{typeof deviceMetrics?.usedRamMb === 'number' && typeof deviceMetrics?.totalRamMb === 'number' ? `${(deviceMetrics.usedRamMb / 1024).toFixed(1)}/${(deviceMetrics.totalRamMb / 1024).toFixed(1)}G` : '—'}</Text>
+        </View>
+        <TouchableOpacity style={styles.deviceMetricCell} onPress={() => { setWorkerModelIds(installedModelIds); setAndroidWorkerOpen(true); }}>
+          <Text style={styles.deviceMetricLabel}>USB 기기</Text>
+          <Text style={styles.deviceMetricValue}>{deviceMetrics?.usbDeviceCount ? `${deviceMetrics.usbDeviceCount}개 감지` : deviceMetrics?.usbStatus || '확인 중'}</Text>
+        </TouchableOpacity>
+      </View>
+
       {/* ================= ChatGPT 메인 대화 영역 ================= */}
       <ScrollView
         ref={scrollRef}
@@ -590,52 +704,40 @@ function PocketMindChatGPTScreen() {
             </View>
             <Text style={styles.welcomeTitle}>무엇을 도와드릴까요?</Text>
             <Text style={styles.welcomeSub}>
-              초경량 무검열 모델 · 자율 멀티모델 체인 · 플러그인 {enabledPluginIds.length}/60종 활성
+              질문하고, 생각을 정리하고, 필요한 작업을 이어가세요.
             </Text>
 
             <View style={styles.suggestionGrid}>
               <TouchableOpacity
                 style={styles.suggestionCard}
-                onPress={() =>
-                  handleSendMessage('@무검열 제한 없는 다크 판타지 소설 도입부를 써줘')
-                }
+                onPress={() => setInputText('새로운 아이디어를 구체적인 초안으로 정리해줘.')}
               >
-                <Text style={styles.suggestionTitle}>🔓 초경량 무검열 모드</Text>
-                <Text style={styles.suggestionDesc}>
-                  Qwen2.5 Abliterated / Dolphin 3.0 즉시 실행
-                </Text>
+                <Text style={styles.suggestionTitle}>글쓰기</Text>
+                <Text style={styles.suggestionDesc}>아이디어부터 초안까지 정리하기</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.suggestionCard}
-                onPress={() => setPluginStoreOpen(true)}
+                onPress={() => setInputText('다음 문서의 핵심 내용과 중요한 항목을 요약해줘: ')}
               >
-                <Text style={styles.suggestionTitle}>🧩 플러그인 60종 허브</Text>
-                <Text style={styles.suggestionDesc}>
-                  실시간 검색·환율·코딩·메모·AI부스터 관리
-                </Text>
+                <Text style={styles.suggestionTitle}>문서 요약</Text>
+                <Text style={styles.suggestionDesc}>긴 글에서 핵심 내용 찾기</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.suggestionCard}
-                onPress={() =>
-                  handleSendMessage('지금 현재 시간과 비트코인 시세, 100달러 환율 알려줘')
-                }
+                onPress={() => setInputText('이 코드의 문제를 찾아서 수정 방법을 알려줘: ')}
               >
-                <Text style={styles.suggestionTitle}>⚡ 실시간 플러그인 테스트</Text>
-                <Text style={styles.suggestionDesc}>
-                  시계 + 암호화폐 + 환율 플러그인 동시 구동
-                </Text>
+                <Text style={styles.suggestionTitle}>코딩 도움</Text>
+                <Text style={styles.suggestionDesc}>코드 작성과 오류 해결하기</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.suggestionCard}
-                onPress={() => setModelStoreOpen(true)}
+                onPress={() => { setWorkerModelIds(installedModelIds); setAndroidWorkerOpen(true); }}
               >
-                <Text style={styles.suggestionTitle}>📥 초경량 모델 다운로드</Text>
-                <Text style={styles.suggestionDesc}>
-                  490MB ~ 2GB 오프라인 GGUF 모델 설치
-                </Text>
+                <Text style={styles.suggestionTitle}>기기 연결</Text>
+                <Text style={styles.suggestionDesc}>사용 가능한 연산 기기 확인하기</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -819,9 +921,10 @@ function PocketMindChatGPTScreen() {
                     setSidebarOpen(false);
                   }}
                 >
-                  <Text style={styles.drawerHistoryText} numberOfLines={1}>
-                    {sess.title}
-                  </Text>
+                  <View style={styles.drawerHistoryTextWrap}>
+                    <Text style={styles.drawerHistoryText} numberOfLines={1}>{sess.title}</Text>
+                    <Text style={styles.drawerHistoryMeta} numberOfLines={1}>{summarizeSessionPreview(sess)}</Text>
+                  </View>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -1284,7 +1387,10 @@ function PocketMindChatGPTScreen() {
               </TouchableOpacity>
             </View>
             <ScrollView>
-              <Text style={styles.inputFieldLabel}>Coordinator 주소</Text>
+              <Text style={[styles.pluginCardDesc, { marginBottom: 10 }]}>
+              USB 상태: {deviceMetrics?.usbStatus || '확인 중'} · 분산 작업 참여는 각 기기의 앱에서 Worker를 켜고 동일한 Coordinator에 등록해야 합니다. USB 케이블만 연결하면 두 기기의 GPU가 자동으로 합쳐지는 것은 아닙니다.
+            </Text>
+            <Text style={styles.inputFieldLabel}>Coordinator 주소</Text>
               <TextInput
                 style={styles.modalInput}
                 value={remotePC.serverUrl}
@@ -1445,6 +1551,34 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
+  deviceMetricsBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingHorizontal: 6,
+    paddingVertical: 8,
+    backgroundColor: '#212121',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#383838',
+  },
+  deviceMetricCell: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 2,
+  },
+  deviceMetricLabel: {
+    color: '#8E8EA0',
+    fontSize: 9,
+    marginBottom: 3,
+  },
+  deviceMetricValue: {
+    color: '#ECECEC',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+
   // Chat Feed
   chatArea: {
     flex: 1,
@@ -1464,6 +1598,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   logoCircle: {
+    display: 'none',
     width: 48,
     height: 48,
     borderRadius: 24,
@@ -1543,6 +1678,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   assistantAvatar: {
+    display: 'none',
     width: 24,
     height: 24,
     borderRadius: 12,
@@ -1556,11 +1692,13 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   assistantName: {
+    display: 'none',
     color: '#ECECEC',
     fontSize: 14,
     fontWeight: '700',
   },
   traceBadge: {
+    display: 'none',
     backgroundColor: '#2A2A2A',
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -1734,9 +1872,18 @@ const styles = StyleSheet.create({
   drawerHistoryActive: {
     backgroundColor: '#2A2A2A',
   },
+  drawerHistoryTextWrap: {
+    flex: 1,
+  },
   drawerHistoryText: {
     color: '#ECECEC',
     fontSize: 14,
+    fontWeight: '500',
+  },
+  drawerHistoryMeta: {
+    color: '#8E8EA0',
+    fontSize: 11,
+    marginTop: 3,
   },
   drawerCloseBtn: {
     backgroundColor: '#2F2F2F',
