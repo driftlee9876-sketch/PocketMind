@@ -54,7 +54,7 @@ export class CoordinatorUnavailableError extends Error {
 }
 
 function normalizeBaseUrl(value: string): string {
-  return value.trim().replace(/\\/+$/, '');
+  return value.trim().replace(/\/+$/, '');
 }
 
 async function coordinatorFetch<T>(
