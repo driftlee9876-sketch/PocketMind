@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import ctypes
+import subprocess
 import platform
 import secrets
 import socket
@@ -26,8 +28,8 @@ LOCAL_LLM_URL = os.environ.get("POCKETMIND_LOCAL_LLM_URL", "http://127.0.0.1:808
 LOCAL_LLM_MODEL = os.environ.get("POCKETMIND_LOCAL_LLM_MODEL", "local-model")
 MODEL_IDS = [v.strip() for v in os.environ.get("POCKETMIND_MODEL_IDS", "").split(",") if v.strip()]
 BACKEND = os.environ.get("POCKETMIND_BACKEND", "cuda")
-GPU_AVAILABLE = os.environ.get("POCKETMIND_GPU_AVAILABLE", "false").lower() in {"1", "true", "yes"}
-GPU_MEMORY_MB = int(os.environ.get("POCKETMIND_GPU_MEMORY_MB", "0") or 0)
+GPU_SETTING = os.environ.get("POCKETMIND_GPU_AVAILABLE", "auto").lower()
+GPU_MEMORY_OVERRIDE_MB = int(os.environ.get("POCKETMIND_GPU_MEMORY_MB", "0") or 0)
 RAM_MB = int(os.environ.get("POCKETMIND_RAM_MB", "0") or 0)
 MIN_BATTERY = int(os.environ.get("POCKETMIND_MIN_BATTERY", "50"))
 POLL_SECONDS = max(2, int(os.environ.get("POCKETMIND_POLL_SECONDS", "5")))
@@ -82,14 +84,88 @@ def save_token(token: str) -> None:
     temp.replace(CONFIG_FILE)
 
 
+class SYSTEM_POWER_STATUS(ctypes.Structure):
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("SystemStatusFlag", ctypes.c_ubyte),
+        ("BatteryLifeTime", ctypes.c_ulong),
+        ("BatteryFullLifeTime", ctypes.c_ulong),
+    ]
+
+
+def device_power_status() -> tuple[bool, int]:
+    """Read Windows AC/battery status. Unknown/no battery is treated conservatively."""
+    try:
+        status = SYSTEM_POWER_STATUS()
+        ok = ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status))
+        if not ok:
+            return False, 0
+        no_battery = bool(status.BatteryFlag & 128)
+        battery = int(status.BatteryLifePercent) if status.BatteryLifePercent <= 100 else 100
+        charging = status.ACLineStatus == 1 or no_battery
+        return charging, battery
+    except Exception:
+        return False, 0
+
+
+def gpu_capabilities() -> tuple[bool, int, str]:
+    """Detect NVIDIA GPUs via nvidia-smi; otherwise require explicit opt-in."""
+    try:
+        if GPU_SETTING in {"0", "false", "no"}:
+            return False, 0, "llama.cpp"
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        values = [int(line.strip()) for line in result.stdout.splitlines() if line.strip().isdigit()]
+        if values:
+            return True, GPU_MEMORY_OVERRIDE_MB or sum(values), os.environ.get("POCKETMIND_BACKEND", "cuda")
+    except Exception:
+        pass
+    explicitly_enabled = GPU_SETTING in {"1", "true", "yes"}
+    backend = os.environ.get("POCKETMIND_BACKEND", "unknown" if not explicitly_enabled else "llama.cpp")
+    return explicitly_enabled, GPU_MEMORY_OVERRIDE_MB, backend
+
+
+def system_ram_mb() -> int:
+    if RAM_MB > 0:
+        return RAM_MB
+    try:
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        status = MEMORYSTATUSEX()
+        status.dwLength = ctypes.sizeof(status)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullTotalPhys // (1024 * 1024))
+    except Exception:
+        pass
+    return 0
+
+
 def conditions() -> dict[str, Any]:
-    # Windows battery/thermal telemetry is optional; conservative defaults are
-    # used when no reliable sensor library is installed.
+    charging, battery = device_power_status()
+    thermal = os.environ.get("POCKETMIND_THERMAL_STATE", "unknown").lower()
+    if thermal not in {"nominal", "fair", "serious", "critical", "unknown"}:
+        thermal = "unknown"
     return {
-        "charging": True,
-        "batteryPercent": 100,
-        "thermalState": "nominal",
-        "unmeteredNetwork": os.environ.get("POCKETMIND_UNMETERED", "true").lower() in {"1", "true", "yes"},
+        "charging": charging,
+        "batteryPercent": battery,
+        "thermalState": thermal,
+        # Windows does not expose a reliable, portable metered-network signal
+        # in the standard library; require explicit operator configuration.
+        "unmeteredNetwork": os.environ.get("POCKETMIND_UNMETERED", "false").lower() in {"1", "true", "yes"},
         "userOptedIn": True,
     }
 
@@ -99,16 +175,17 @@ def enroll() -> str:
         raise RuntimeError("Set POCKETMIND_COORDINATOR_URL and POCKETMIND_ENROLLMENT_TOKEN.")
     if not MODEL_IDS:
         raise RuntimeError("Set POCKETMIND_MODEL_IDS to the model IDs loaded by your local inference server.")
+    gpu_available, gpu_memory_mb, backend = gpu_capabilities()
     ad = {
         "workerId": machine_id(),
         "displayName": os.environ.get("POCKETMIND_WORKER_NAME", socket.gethostname()),
         "capabilities": {
             "platform": "windows",
-            "backend": BACKEND,
+            "backend": backend,
             "modelIds": MODEL_IDS,
-            "gpu": GPU_AVAILABLE,
-            "gpuMemoryMb": GPU_MEMORY_MB,
-            "ramMb": RAM_MB,
+            "gpu": gpu_available,
+            "gpuMemoryMb": gpu_memory_mb,
+            "ramMb": system_ram_mb(),
             "maxConcurrentTasks": 1,
         },
         "conditions": conditions(),
