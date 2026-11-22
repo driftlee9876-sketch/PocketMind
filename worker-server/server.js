@@ -25,13 +25,26 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_PENDING_TASKS = 500;
 const MAX_ACTIVE_WORKERS = 1000;
 const ALLOWED_ORIGINS = new Set((process.env.POCKETMIND_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean));
+let CONNECTOR_WEBHOOKS = {};
+try {
+  const configured = JSON.parse(process.env.POCKETMIND_INTEGRATION_WEBHOOKS_JSON || '{}');
+  if (configured && typeof configured === 'object' && !Array.isArray(configured)) {
+    CONNECTOR_WEBHOOKS = Object.fromEntries(
+      Object.entries(configured).filter(([id, url]) =>
+        /^[a-z0-9-]{2,80}$/.test(id) && typeof url === 'string' && url.startsWith('https://')
+      )
+    );
+  }
+} catch {
+  console.error('POCKETMIND_INTEGRATION_WEBHOOKS_JSON is invalid JSON; no integrations will be configured.');
+}
 
 if (API_TOKEN.length < 24 || ENROLLMENT_TOKEN.length < 24) {
   console.error('Set POCKETMIND_API_TOKEN and POCKETMIND_ENROLLMENT_TOKEN (each at least 24 characters).');
   process.exit(1);
 }
 
-const state = { workers: {}, tasks: {} };
+const state = { workers: {}, tasks: {}, actions: {} };
 let saveChain = Promise.resolve();
 const requestCounts = new Map();
 
@@ -134,11 +147,65 @@ async function load() {
     const raw = JSON.parse(await fs.readFile(DATA_FILE, 'utf8'));
     if (raw && typeof raw === 'object') {
       state.workers = raw.workers || {};
-      state.tasks = raw.tasks || {};
+      state.tasks = raw.tasks || {};\n      state.actions = raw.actions || {};
     }
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
+}
+
+async function dispatchIntegrationAction(action) {
+  const target = CONNECTOR_WEBHOOKS[action.integrationId];
+  if (!target) {
+    action.status = 'not_configured';
+    action.lastError = 'Integration webhook is not configured on the coordinator.';
+    action.updatedAt = Date.now();
+    await persist();
+    return;
+  }
+  try {
+    const response = await fetch(target, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-PocketMind-Event': 'integration-action' },
+      body: JSON.stringify({
+        event: 'pocketmind.integration.action',
+        actionId: action.actionId,
+        integrationId: action.integrationId,
+        action: action.action,
+        risk: action.risk,
+        input: action.input,
+        approvedAt: action.approvedAt || null,
+        createdAt: action.createdAt,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const body = await response.text();
+    action.status = response.ok ? 'completed' : 'failed';
+    action.result = body.slice(0, 20_000);
+    if (!response.ok) action.lastError = 'Integration webhook returned HTTP ' + response.status;
+    action.updatedAt = Date.now();
+  } catch (error) {
+    action.status = 'failed';
+    action.lastError = String(error.message || 'Webhook request failed').slice(0, 500);
+    action.updatedAt = Date.now();
+  }
+  await persist();
+}
+
+function safeAction(action) {
+  return {
+    actionId: action.actionId,
+    integrationId: action.integrationId,
+    action: action.action,
+    risk: action.risk,
+    input: action.input,
+    status: action.status,
+    result: action.result,
+    lastError: action.lastError,
+    createdAt: action.createdAt,
+    updatedAt: action.updatedAt,
+    approvedAt: action.approvedAt,
+  };
 }
 
 function safeWorker(worker) {
@@ -318,6 +385,74 @@ async function handle(req, res) {
     worker.state = 'idle';
     await persist();
     return json(res, 200, { ok: true, status: task.status });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/integrations') {
+    if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
+    return json(res, 200, {
+      integrations: Object.keys(CONNECTOR_WEBHOOKS).map(id => ({ id, configured: true })),
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/integrations/actions') {
+    if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
+    const body = await readBody(req);
+    if (!body || typeof body.integrationId !== 'string' || !/^[a-z0-9-]{2,80}$/.test(body.integrationId) ||
+      typeof body.action !== 'string' || !/^[a-z0-9_-]{2,80}$/.test(body.action) ||
+      !['read', 'write', 'sensitive'].includes(body.risk) ||
+      !body.input || typeof body.input !== 'object' || Array.isArray(body.input) ||
+      JSON.stringify(body.input).length > 32_000) {
+      return json(res, 400, { error: 'Invalid integration action payload' });
+    }
+    if (!CONNECTOR_WEBHOOKS[body.integrationId]) {
+      return json(res, 409, { error: 'Integration is not configured on the coordinator' });
+    }
+    const action = {
+      actionId: crypto.randomUUID(),
+      integrationId: body.integrationId,
+      action: body.action,
+      risk: body.risk,
+      input: body.input,
+      status: body.risk === 'read' ? 'queued' : 'awaiting_approval',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      approvedAt: null,
+      result: null,
+      lastError: null,
+    };
+    state.actions[action.actionId] = action;
+    await persist();
+    if (action.risk === 'read') await dispatchIntegrationAction(action);
+    return json(res, 201, safeAction(action));
+  }
+
+  if (req.method === 'GET' && parts.length === 4 && parts[0] === 'v1' && parts[1] === 'integrations' && parts[2] === 'actions') {
+    if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
+    const action = state.actions[parts[3]];
+    if (!action) return json(res, 404, { error: 'Integration action not found' });
+    return json(res, 200, safeAction(action));
+  }
+
+  if (req.method === 'POST' && parts.length === 5 && parts[0] === 'v1' &&
+      parts[1] === 'integrations' && parts[2] === 'actions' &&
+      ['approve', 'reject'].includes(parts[4])) {
+    if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
+    const action = state.actions[parts[3]];
+    if (!action) return json(res, 404, { error: 'Integration action not found' });
+    if (action.status !== 'awaiting_approval') return json(res, 409, { error: 'Action is not awaiting approval' });
+    await readBody(req);
+    if (parts[4] === 'reject') {
+      action.status = 'rejected';
+      action.updatedAt = Date.now();
+      await persist();
+      return json(res, 200, safeAction(action));
+    }
+    action.approvedAt = Date.now();
+    action.status = 'queued';
+    action.updatedAt = Date.now();
+    await persist();
+    await dispatchIntegrationAction(action);
+    return json(res, 200, safeAction(action));
   }
 
   if (req.method === 'GET' && url.pathname === '/v1/workers') {
