@@ -315,6 +315,16 @@ def main() -> int:
                 heartbeat_thread.join(timeout=3)
         except KeyboardInterrupt:
             print("Stopping worker.")
+            try:
+                request_json(
+                    COORDINATOR_URL + "/v1/workers/heartbeat",
+                    "POST",
+                    {"state": "offline", "conditions": conditions()},
+                    headers,
+                    timeout=10,
+                )
+            except Exception:
+                pass
             return 0
         except Exception as error:
             print(f"Coordinator error: {error}", file=sys.stderr)
