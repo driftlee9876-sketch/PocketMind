@@ -76,3 +76,5 @@ All URLs must be HTTPS. The Coordinator sends signed JSON `POST` requests using 
 - `actionUrl` receives the existing signed action events. It must reject actions when its provider token is missing or expired.
 
 Provider client secrets and refresh tokens belong in the trusted adapter's encrypted server-side storage. They must never be returned to the app, placed in these environment variables, or committed to Git. The legacy `POCKETMIND_INTEGRATION_WEBHOOKS_JSON` format remains supported for webhook-only integrations.
+
+This contract is provider-neutral: any ID in the mobile connected-app catalog can use it. API-key services should expose the same signed connect/status/disconnect interface from their trusted adapter rather than sending the key to the mobile app.

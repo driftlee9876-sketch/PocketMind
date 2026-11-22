@@ -1,4 +1,4 @@
-import { AI_PLUGIN_CATALOG, runAutonomousPlugins } from '../aiModelsAndPlugins';
+import { AI_PLUGIN_CATALOG, rankPluginsForPrompt, runAutonomousPlugins } from '../aiModelsAndPlugins';
 
 describe('plugin execution policy', () => {
   it('does not let a slash command bypass the enabled plugin list', async () => {
@@ -29,6 +29,9 @@ describe('plugin execution policy', () => {
     }
 
     expect(selected).toHaveLength(5);
+    const executeMocks = AI_PLUGIN_CATALOG.map((plugin) =>
+      jest.spyOn(plugin, 'execute').mockResolvedValue(`mock:${plugin.id}`),
+    );
     const prompt = selected.map((item) => item.keyword).join(' ');
     const output = await runAutonomousPlugins(prompt, AI_PLUGIN_CATALOG.map((plugin) => plugin.id));
 
@@ -36,5 +39,25 @@ describe('plugin execution policy', () => {
     expect(output.length).toBeLessThanOrEqual(8);
     const catalogIndexes = output.map((item) => AI_PLUGIN_CATALOG.findIndex((plugin) => plugin.id === item.id));
     expect(catalogIndexes).toEqual([...catalogIndexes].sort((a, b) => a - b));
+    executeMocks.forEach((mock) => mock.mockRestore());
+  });
+
+  it('routes a related natural-language command to an enabled on-demand plugin', async () => {
+    const pluginId = 'ai-devils-advocate';
+    const matches = rankPluginsForPrompt('이 사업 계획의 반론과 리스크를 검증해줘', [pluginId]);
+    expect(matches[0]?.plugin.id).toBe(pluginId);
+
+    const output = await runAutonomousPlugins(
+      '이 사업 계획의 반론과 리스크를 검증해줘',
+      [pluginId],
+    );
+    expect(output.map((item) => item.id)).toContain(pluginId);
+  });
+
+  it('inspects the entire enabled catalog but does not run disabled matches', async () => {
+    const apiPlugin = 'ai-api-spec';
+    expect(rankPluginsForPrompt('REST API 엔드포인트를 설계해줘', [apiPlugin])[0]?.plugin.id)
+      .toBe(apiPlugin);
+    expect(rankPluginsForPrompt('REST API 엔드포인트를 설계해줘', [])).toHaveLength(0);
   });
 });

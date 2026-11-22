@@ -76,7 +76,7 @@ Android may still stop a foreground service under system pressure, user force-st
 
 ## Connected apps
 
-The app hub currently lists Gmail, Google Calendar, Drive, Outlook, Outlook Calendar, Dropbox, Notion, Slack, GitHub, Discord, Telegram, Naver, Kakao, Todoist, Trello, Linear, Jira, Google Docs, Google Sheets, OneDrive, Microsoft Teams, Airtable, Asana, Zoom, YouTube, Spotify, WordPress, and custom webhooks.
+The app hub currently contains 53 integrations. In addition to Gmail, Google Calendar, Drive, Outlook, Dropbox, Notion, Slack, GitHub, Discord, Telegram, Todoist, Jira, Microsoft 365, Airtable, Asana, Zoom, YouTube, Spotify, and WordPress, it includes Google Contacts/Tasks, Box, GitLab, Bitbucket, Figma, ClickUp, monday.com, Salesforce, HubSpot, Zendesk, Freshdesk, Calendly, Reddit, Mastodon, RSS, Shopify, WooCommerce, Stripe, PayPal, Cloudflare, Amazon S3, Supabase, Twilio, SendGrid, and custom webhooks.
 
 A catalog entry is **not** an authenticated provider connection. Configure the provider's official OAuth/API credentials in a trusted adapter or automation platform (for example n8n, Make, Zapier, or a custom service), then map the integration ID to that adapter's HTTPS webhook using `POCKETMIND_INTEGRATION_WEBHOOKS_JSON`:
 
@@ -94,6 +94,8 @@ The coordinator lists only configured IDs. Server-side action policy determines 
 The webhook adapter must validate the request, apply the provider's OAuth scopes, and return a useful response. Configure provider secrets at the adapter, not in the mobile app or the Git repository. High-impact provider actions (payments, orders, public publishing, deleting accounts, etc.) should also require provider-side confirmation.
 
 For Pickle-style one-tap account connection, configure `POCKETMIND_INTEGRATION_CONNECTORS_JSON` with HTTPS `actionUrl`, `connectUrl`, `statusUrl`, and `disconnectUrl` values for each provider. PocketMind requests a secure provider authorization URL, opens the official login page, returns through `pocketmind://integrations/callback`, and checks `statusUrl` before enabling actions. The adapter owns OAuth state validation, token exchange, encrypted refresh-token storage, token revocation, and HMAC request verification. Provider credentials are never stored in the APK or Coordinator JSON state.
+
+The same one-tap contract works for every catalog ID; adding a provider does not require a new APK once its trusted adapter is installed on the Coordinator. Services that use API keys or signed credentials instead of OAuth still use the same connect/status/disconnect contract so the app can show an accurate account state without receiving the secret.
 
 ## API overview
 

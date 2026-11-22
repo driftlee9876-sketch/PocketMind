@@ -11,7 +11,7 @@ export interface IntegrationActionDefinition {
 export interface ConnectedAppDefinition {
   id: string;
   name: string;
-  category: '메일' | '일정' | '파일' | '협업' | '개발' | '검색·생활' | '문서·언어' | '자동화';
+  category: '메일' | '일정' | '파일' | '협업' | '개발' | '검색·생활' | '문서·언어' | 'CRM·고객' | '소셜' | '쇼핑·결제' | '인프라' | '자동화';
   description: string;
   auth: IntegrationAuth;
   actions: IntegrationActionDefinition[];
@@ -326,6 +326,131 @@ export const CONNECTED_APP_CATALOG: ConnectedAppDefinition[] = [
     ],
   },
   {
+    id: 'google-contacts', name: 'Google Contacts', category: '협업', auth: 'oauth2',
+    description: '연락처 검색·생성·수정', officialSetupUrl: 'https://developers.google.com/people', webhookKey: 'google-contacts',
+    actions: [READ('search_contacts', '연락처 검색', '연락처를 검색합니다.'), WRITE('create_contact', '연락처 생성', '연락처를 추가합니다.'), SENSITIVE('update_contact', '연락처 수정', '기존 연락처를 변경합니다.')],
+  },
+  {
+    id: 'google-tasks', name: 'Google Tasks', category: '일정', auth: 'oauth2',
+    description: '할 일 조회·생성·완료', officialSetupUrl: 'https://developers.google.com/tasks', webhookKey: 'google-tasks',
+    actions: [READ('list_tasks', '할 일 조회', '할 일 목록을 읽습니다.'), WRITE('create_task', '할 일 생성', '할 일을 추가합니다.'), SENSITIVE('complete_task', '할 일 완료', '할 일을 완료 처리합니다.')],
+  },
+  {
+    id: 'box', name: 'Box', category: '파일', auth: 'oauth2',
+    description: 'Box 파일 검색·업로드·삭제', officialSetupUrl: 'https://developer.box.com/', webhookKey: 'box',
+    actions: [READ('search_files', '파일 검색', 'Box 파일을 검색합니다.'), WRITE('upload_file', '파일 업로드', '파일을 업로드합니다.'), SENSITIVE('delete_file', '파일 삭제', 'Box 파일을 삭제합니다.')],
+  },
+  {
+    id: 'gitlab', name: 'GitLab', category: '개발', auth: 'oauth2',
+    description: '프로젝트·이슈 조회 및 Merge Request 작업', officialSetupUrl: 'https://docs.gitlab.com/api/', webhookKey: 'gitlab',
+    actions: [READ('list_projects', '프로젝트 조회', '프로젝트를 조회합니다.'), READ('search_issues', '이슈 검색', '이슈를 검색합니다.'), WRITE('create_issue', '이슈 생성', '새 이슈를 만듭니다.'), SENSITIVE('merge_request', 'Merge Request 병합', 'Merge Request를 병합합니다.')],
+  },
+  {
+    id: 'bitbucket', name: 'Bitbucket', category: '개발', auth: 'oauth2',
+    description: '저장소·Pull Request 조회 및 이슈 생성', officialSetupUrl: 'https://developer.atlassian.com/cloud/bitbucket/rest/', webhookKey: 'bitbucket',
+    actions: [READ('list_repositories', '저장소 조회', '저장소를 조회합니다.'), READ('list_pull_requests', 'Pull Request 조회', 'Pull Request를 조회합니다.'), WRITE('create_issue', '이슈 생성', '이슈를 만듭니다.')],
+  },
+  {
+    id: 'figma', name: 'Figma', category: '협업', auth: 'oauth2',
+    description: '파일·프로젝트 조회 및 댓글 작성', officialSetupUrl: 'https://www.figma.com/developers/api', webhookKey: 'figma',
+    actions: [READ('get_file', '파일 조회', 'Figma 파일 정보를 가져옵니다.'), READ('list_projects', '프로젝트 조회', '프로젝트를 조회합니다.'), WRITE('create_comment', '댓글 작성', '파일에 댓글을 남깁니다.')],
+  },
+  {
+    id: 'clickup', name: 'ClickUp', category: '협업', auth: 'oauth2',
+    description: '작업 조회·생성·상태 변경', officialSetupUrl: 'https://developer.clickup.com/', webhookKey: 'clickup',
+    actions: [READ('list_tasks', '작업 조회', '작업을 조회합니다.'), WRITE('create_task', '작업 생성', '작업을 생성합니다.'), SENSITIVE('update_task', '작업 변경', '작업 상태와 내용을 변경합니다.')],
+  },
+  {
+    id: 'monday', name: 'monday.com', category: '협업', auth: 'oauth2',
+    description: '보드·항목 조회 및 항목 생성', officialSetupUrl: 'https://developer.monday.com/api-reference/docs', webhookKey: 'monday',
+    actions: [READ('list_boards', '보드 조회', '보드를 조회합니다.'), READ('list_items', '항목 조회', '보드 항목을 조회합니다.'), WRITE('create_item', '항목 생성', '새 항목을 만듭니다.')],
+  },
+  {
+    id: 'salesforce', name: 'Salesforce', category: 'CRM·고객', auth: 'oauth2',
+    description: 'CRM 고객·리드 조회 및 레코드 생성', officialSetupUrl: 'https://developer.salesforce.com/docs/apis', webhookKey: 'salesforce',
+    actions: [READ('search_records', '레코드 검색', 'CRM 레코드를 검색합니다.'), READ('get_customer', '고객 조회', '고객 정보를 조회합니다.'), WRITE('create_lead', '리드 생성', '새 리드를 추가합니다.'), SENSITIVE('update_record', '레코드 변경', 'CRM 레코드를 변경합니다.')],
+  },
+  {
+    id: 'hubspot', name: 'HubSpot', category: 'CRM·고객', auth: 'oauth2',
+    description: '연락처·거래 조회 및 CRM 업데이트', officialSetupUrl: 'https://developers.hubspot.com/docs/api/overview', webhookKey: 'hubspot',
+    actions: [READ('search_contacts', '연락처 검색', '연락처를 검색합니다.'), READ('list_deals', '거래 조회', '거래를 조회합니다.'), WRITE('create_contact', '연락처 생성', 'CRM 연락처를 만듭니다.'), SENSITIVE('update_deal', '거래 변경', '거래 상태를 변경합니다.')],
+  },
+  {
+    id: 'zendesk', name: 'Zendesk', category: 'CRM·고객', auth: 'oauth2',
+    description: '고객지원 티켓 조회·생성·상태 변경', officialSetupUrl: 'https://developer.zendesk.com/api-reference/', webhookKey: 'zendesk',
+    actions: [READ('search_tickets', '티켓 검색', '지원 티켓을 검색합니다.'), WRITE('create_ticket', '티켓 생성', '새 티켓을 만듭니다.'), SENSITIVE('update_ticket', '티켓 변경', '티켓 상태나 답변을 변경합니다.')],
+  },
+  {
+    id: 'freshdesk', name: 'Freshdesk', category: 'CRM·고객', auth: 'oauth2',
+    description: '지원 티켓 조회·작성·업데이트', officialSetupUrl: 'https://developers.freshdesk.com/api/', webhookKey: 'freshdesk',
+    actions: [READ('list_tickets', '티켓 조회', '티켓을 조회합니다.'), WRITE('create_ticket', '티켓 생성', '티켓을 생성합니다.'), SENSITIVE('update_ticket', '티켓 변경', '티켓을 변경합니다.')],
+  },
+  {
+    id: 'calendly', name: 'Calendly', category: '일정', auth: 'oauth2',
+    description: '예약 유형·예정 일정 조회 및 예약 취소', officialSetupUrl: 'https://developer.calendly.com/', webhookKey: 'calendly',
+    actions: [READ('list_events', '예약 조회', '예정된 예약을 조회합니다.'), READ('list_event_types', '예약 유형 조회', '예약 가능한 유형을 조회합니다.'), SENSITIVE('cancel_event', '예약 취소', '예약을 취소합니다.')],
+  },
+  {
+    id: 'reddit', name: 'Reddit', category: '소셜', auth: 'oauth2',
+    description: '게시물 검색·저장 및 댓글 작성', officialSetupUrl: 'https://www.reddit.com/dev/api/', webhookKey: 'reddit',
+    actions: [READ('search_posts', '게시물 검색', 'Reddit 게시물을 검색합니다.'), WRITE('save_post', '게시물 저장', '게시물을 저장합니다.'), SENSITIVE('create_comment', '댓글 작성', '공개 댓글을 작성합니다.')],
+  },
+  {
+    id: 'mastodon', name: 'Mastodon', category: '소셜', auth: 'oauth2',
+    description: '타임라인 조회 및 게시물 작성', officialSetupUrl: 'https://docs.joinmastodon.org/api/', webhookKey: 'mastodon',
+    actions: [READ('read_timeline', '타임라인 조회', '타임라인을 읽습니다.'), WRITE('create_draft', '게시물 초안', '게시물 초안을 만듭니다.'), SENSITIVE('publish_status', '게시물 공개', '게시물을 공개합니다.')],
+  },
+  {
+    id: 'rss', name: 'RSS·Atom', category: '검색·생활', auth: 'local',
+    description: 'RSS·Atom 피드 읽기 및 요약', officialSetupUrl: 'https://www.rssboard.org/rss-specification', webhookKey: 'rss',
+    actions: [READ('read_feed', '피드 읽기', 'RSS·Atom 피드를 읽습니다.'), READ('summarize_feed', '피드 요약', '최근 항목을 요약합니다.')],
+  },
+  {
+    id: 'shopify', name: 'Shopify', category: '쇼핑·결제', auth: 'oauth2',
+    description: '상품·주문 조회 및 상품 업데이트', officialSetupUrl: 'https://shopify.dev/docs/api', webhookKey: 'shopify',
+    actions: [READ('list_products', '상품 조회', '상품을 조회합니다.'), READ('list_orders', '주문 조회', '주문을 조회합니다.'), WRITE('create_draft_order', '임시 주문 생성', '임시 주문을 만듭니다.'), SENSITIVE('update_product', '상품 변경', '상품 정보를 변경합니다.')],
+  },
+  {
+    id: 'woocommerce', name: 'WooCommerce', category: '쇼핑·결제', auth: 'oauth2',
+    description: '상품·주문 조회 및 상품 업데이트', officialSetupUrl: 'https://woocommerce.github.io/woocommerce-rest-api-docs/', webhookKey: 'woocommerce',
+    actions: [READ('list_products', '상품 조회', '상품을 조회합니다.'), READ('list_orders', '주문 조회', '주문을 조회합니다.'), SENSITIVE('update_order', '주문 변경', '주문 상태를 변경합니다.')],
+  },
+  {
+    id: 'stripe', name: 'Stripe', category: '쇼핑·결제', auth: 'oauth2',
+    description: '결제·고객 조회 및 환불 요청', officialSetupUrl: 'https://docs.stripe.com/api', webhookKey: 'stripe',
+    actions: [READ('list_payments', '결제 조회', '결제 내역을 조회합니다.'), READ('get_customer', '고객 조회', '고객 정보를 조회합니다.'), SENSITIVE('create_refund', '환불 실행', '결제를 환불합니다.')],
+  },
+  {
+    id: 'paypal', name: 'PayPal', category: '쇼핑·결제', auth: 'oauth2',
+    description: '거래 조회 및 환불 요청', officialSetupUrl: 'https://developer.paypal.com/api/rest/', webhookKey: 'paypal',
+    actions: [READ('list_transactions', '거래 조회', '거래를 조회합니다.'), SENSITIVE('create_refund', '환불 실행', '거래를 환불합니다.')],
+  },
+  {
+    id: 'cloudflare', name: 'Cloudflare', category: '인프라', auth: 'oauth2',
+    description: '도메인·DNS·Worker 상태 조회 및 설정 변경', officialSetupUrl: 'https://developers.cloudflare.com/api/', webhookKey: 'cloudflare',
+    actions: [READ('list_zones', '도메인 조회', 'Cloudflare Zone을 조회합니다.'), READ('list_dns_records', 'DNS 조회', 'DNS 레코드를 조회합니다.'), WRITE('create_dns_record', 'DNS 생성', 'DNS 레코드를 생성합니다.'), SENSITIVE('delete_dns_record', 'DNS 삭제', 'DNS 레코드를 삭제합니다.')],
+  },
+  {
+    id: 'aws-s3', name: 'Amazon S3', category: '인프라', auth: 'local',
+    description: 'S3 버킷·객체 조회 및 파일 업로드', officialSetupUrl: 'https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html', webhookKey: 'aws-s3',
+    actions: [READ('list_buckets', '버킷 조회', 'S3 버킷을 조회합니다.'), READ('list_objects', '객체 조회', '객체를 조회합니다.'), WRITE('upload_object', '객체 업로드', '파일을 업로드합니다.'), SENSITIVE('delete_object', '객체 삭제', '객체를 삭제합니다.')],
+  },
+  {
+    id: 'supabase', name: 'Supabase', category: '인프라', auth: 'oauth2',
+    description: '프로젝트·데이터 조회 및 데이터 변경', officialSetupUrl: 'https://supabase.com/docs/reference/api', webhookKey: 'supabase',
+    actions: [READ('list_projects', '프로젝트 조회', '프로젝트를 조회합니다.'), READ('query_rows', '데이터 조회', '허용된 테이블 데이터를 조회합니다.'), SENSITIVE('mutate_rows', '데이터 변경', '테이블 데이터를 변경합니다.')],
+  },
+  {
+    id: 'twilio', name: 'Twilio', category: '메일', auth: 'local',
+    description: '메시지 기록 조회 및 SMS 발송', officialSetupUrl: 'https://www.twilio.com/docs/usage/api', webhookKey: 'twilio',
+    actions: [READ('list_messages', '메시지 조회', '메시지 기록을 조회합니다.'), SENSITIVE('send_sms', 'SMS 발송', '외부 번호로 SMS를 전송합니다.')],
+  },
+  {
+    id: 'sendgrid', name: 'SendGrid', category: '메일', auth: 'local',
+    description: '이메일 통계 조회 및 이메일 발송', officialSetupUrl: 'https://docs.sendgrid.com/api-reference', webhookKey: 'sendgrid',
+    actions: [READ('get_stats', '발송 통계 조회', '이메일 발송 통계를 조회합니다.'), SENSITIVE('send_email', '이메일 발송', '외부 수신자에게 이메일을 전송합니다.')],
+  },
+  {
     id: 'custom-webhook', name: '사용자 지정 자동화', category: '자동화', auth: 'webhook',
     description: 'n8n·Make·Zapier 또는 직접 만든 HTTPS Webhook으로 다른 앱을 연결',
     officialSetupUrl: 'https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.webhook/',
@@ -338,4 +463,4 @@ export const CONNECTED_APP_CATALOG: ConnectedAppDefinition[] = [
   },
 ];
 
-export const CONNECTED_APP_CATEGORIES = ['전체', '메일', '일정', '파일', '협업', '개발', '검색·생활', '문서·언어', '자동화'] as const;
+export const CONNECTED_APP_CATEGORIES = ['전체', '메일', '일정', '파일', '협업', '개발', '검색·생활', '문서·언어', 'CRM·고객', '소셜', '쇼핑·결제', '인프라', '자동화'] as const;

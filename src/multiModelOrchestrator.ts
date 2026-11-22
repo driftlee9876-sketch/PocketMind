@@ -454,7 +454,7 @@ class MultiModelOrchestratorEngine {
     const { cleanPrompt, requestedModelIds } = this.parseExplicitDirectives(userPrompt);
     const intent = this.analyzeIntent(cleanPrompt);
 
-    callbacks?.onStatusUpdate?.('🧩 60종 플러그인 분석 및 실행 중...');
+    callbacks?.onStatusUpdate?.('🧩 활성화된 전체 플러그인 검사 및 자동 실행 중...');
     const pluginOutputs = await runAutonomousPlugins(cleanPrompt, enabledPluginIds);
     const pluginContext =
       pluginOutputs.length > 0

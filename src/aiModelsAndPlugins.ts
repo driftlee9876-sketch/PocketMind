@@ -489,6 +489,12 @@ export interface PluginExecutionOutput {
   result: string;
 }
 
+export interface PluginRouteMatch {
+  plugin: AIPluginSpec;
+  score: number;
+  matchedBy: string[];
+}
+
 function safeEvaluateMathExpression(expr: string): number | null {
   const cleaned = expr.replace(/[^0-9+\-*/().%\s^]/g, '').replace(/\^/g, '**').trim();
   if (!cleaned || !/[0-9]/.test(cleaned) || !/[+\-*/%]/.test(cleaned)) return null;
@@ -1704,6 +1710,71 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
 const MAX_AUTO_PLUGIN_RUNS = 8;
 const MAX_EXPLICIT_PLUGIN_RUNS = 12;
 
+function normalizePluginText(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase().replace(/[^a-z0-9가-힣]+/g, '');
+}
+
+function pluginWords(value: string): string[] {
+  return value.normalize('NFKC').toLocaleLowerCase()
+    .split(/[^a-z0-9가-힣]+/g)
+    .filter((word) => word.length >= 2);
+}
+
+/**
+ * Deterministically scans every enabled plugin before model inference. This is
+ * intentionally independent of the LLM so sub-3B models do not need to infer
+ * tool names or JSON parameters from a large catalog.
+ */
+export function rankPluginsForPrompt(
+  prompt: string,
+  enabledPluginIds?: string[],
+): PluginRouteMatch[] {
+  const enabled = new Set(enabledPluginIds ?? AI_PLUGIN_CATALOG.map((plugin) => plugin.id));
+  const lower = prompt.normalize('NFKC').toLocaleLowerCase();
+  const compact = normalizePluginText(prompt);
+  const promptWords = new Set(pluginWords(prompt));
+
+  return AI_PLUGIN_CATALOG
+    .filter((plugin) => enabled.has(plugin.id))
+    .map((plugin) => {
+      let score = 0;
+      const matchedBy: string[] = [];
+
+      for (const keyword of plugin.triggerKeywords) {
+        const keywordLower = keyword.normalize('NFKC').toLocaleLowerCase();
+        const keywordCompact = normalizePluginText(keyword);
+        if (!keywordCompact) continue;
+        if (compact.includes(keywordCompact)) {
+          score += 100 + Math.min(80, keywordCompact.length * 5);
+          matchedBy.push(`키워드:${keyword}`);
+        } else if (keywordLower.includes(' ') && lower.includes(keywordLower)) {
+          score += 120;
+          matchedBy.push(`구문:${keyword}`);
+        }
+      }
+
+      const nameCompact = normalizePluginText(plugin.name);
+      if (nameCompact.length >= 3 && compact.includes(nameCompact)) {
+        score += 180;
+        matchedBy.push('플러그인명');
+      }
+
+      const descriptionWords = new Set([
+        ...pluginWords(plugin.name),
+        ...pluginWords(plugin.description),
+      ]);
+      const overlap = [...descriptionWords].filter((word) => promptWords.has(word)).slice(0, 4);
+      if (overlap.length >= 2) {
+        score += overlap.length * 18;
+        matchedBy.push(`설명:${overlap.join(',')}`);
+      }
+
+      return { plugin, score, matchedBy };
+    })
+    .filter((match) => match.score >= 65)
+    .sort((a, b) => b.score - a.score || a.plugin.index - b.plugin.index);
+}
+
 export async function runAutonomousPlugins(
   prompt: string,
   enabledPluginIds?: string[],
@@ -1719,12 +1790,11 @@ export async function runAutonomousPlugins(
   const explicitPlugins = AI_PLUGIN_CATALOG.filter(
     (plugin) => explicitIds.has(plugin.id) && enabled.has(plugin.id),
   ).slice(0, MAX_EXPLICIT_PLUGIN_RUNS);
-  const automaticPlugins = AI_PLUGIN_CATALOG.filter((plugin) => {
-    if (!enabled.has(plugin.id) || !plugin.autoRun || explicitIds.has(plugin.id)) return false;
-    return plugin.triggerKeywords.some((keyword) =>
-      prompt.toLocaleLowerCase().includes(keyword.toLocaleLowerCase()),
-    );
-  }).slice(0, MAX_AUTO_PLUGIN_RUNS);
+  const automaticPlugins = rankPluginsForPrompt(prompt, [...enabled])
+    .map((match) => match.plugin)
+    .filter((plugin) => !explicitIds.has(plugin.id))
+    .slice(0, MAX_AUTO_PLUGIN_RUNS)
+    .sort((a, b) => a.index - b.index);
 
   const selected = [...explicitPlugins, ...automaticPlugins].filter(
     (plugin, index, all) => all.findIndex((candidate) => candidate.id === plugin.id) === index,
