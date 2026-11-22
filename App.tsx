@@ -163,6 +163,8 @@ function PocketMindChatGPTScreen() {
   const [pluginStoreOpen, setPluginStoreOpen] = useState(false);
   const [quickPlusOpen, setQuickPlusOpen] = useState(false);
   const [pcWorkerOpen, setPcWorkerOpen] = useState(false);\n  const [connectedAppsOpen, setConnectedAppsOpen] = useState(false);\n  const [androidWorkerOpen, setAndroidWorkerOpen] = useState(false);\n  const [androidWorkerRunning, setAndroidWorkerRunning] = useState(false);\n  const [workerEnrollmentToken, setWorkerEnrollmentToken] = useState('');\n  const [workerModelIds, setWorkerModelIds] = useState<string[]>([]);\n  const [workerUseGpu, setWorkerUseGpu] = useState(false);\n  const [configuredIntegrationIds, setConfiguredIntegrationIds] = useState<string[]>([]);
+  const [coordinatorWorkers, setCoordinatorWorkers] = useState<CoordinatorWorker[]>([]);
+  const [workerDiscoveryMessage, setWorkerDiscoveryMessage] = useState('아직 검색하지 않았습니다.');
 
   // 필터 검색 상태
   const [pluginCategory, setPluginCategory] = useState<'전체' | PluginCategory>('전체');
@@ -361,6 +363,21 @@ function PocketMindChatGPTScreen() {
     setEnabledPluginIds((prev) =>
       prev.includes(pluginId) ? prev.filter((id) => id !== pluginId) : [...prev, pluginId],
     );
+  };
+
+  const refreshCoordinatorWorkers = async () => {
+    if (!remotePC.serverUrl.trim() || remotePC.apiKey.trim().length < 24) {
+      setWorkerDiscoveryMessage('Coordinator 주소와 API 토큰을 먼저 설정하세요.');
+      return;
+    }
+    setWorkerDiscoveryMessage('Worker 네트워크를 검색하고 있습니다...');
+    try {
+      const workers = await discoverCoordinatorWorkers(remotePC.serverUrl, remotePC.apiKey);
+      setCoordinatorWorkers(workers);
+      setWorkerDiscoveryMessage(workers.length ? `${workers.length}개 기기를 찾았습니다.` : '연결된 Worker가 없습니다. Windows 또는 Android Worker를 등록하세요.');
+    } catch (error: any) {
+      setWorkerDiscoveryMessage(error?.message || 'Worker 검색 실패');
+    }
   };
 
   const openConnectedApps = async () => {
@@ -1272,6 +1289,18 @@ function PocketMindChatGPTScreen() {
                 <Text style={styles.drawerToggleLabel}>GPU 가속 사용 (기기 지원 확인 필요)</Text>
                 <Switch value={workerUseGpu} onValueChange={setWorkerUseGpu} />
               </View>
+              <TouchableOpacity style={styles.sheetPrimaryBtn} onPress={refreshCoordinatorWorkers}>
+                <Text style={styles.sheetPrimaryBtnText}>연결된 Worker 기기 검색</Text>
+              </TouchableOpacity>
+              <Text style={[styles.pluginCardDesc, { marginVertical: 8 }]}>{workerDiscoveryMessage}</Text>
+              {coordinatorWorkers.map((worker) => (
+                <View key={worker.workerId} style={styles.pluginCard}>
+                  <Text style={styles.pluginCardTitle}>{worker.displayName}</Text>
+                  <Text style={styles.pluginCardDesc}>
+                    {worker.capabilities.platform} · {worker.capabilities.gpu ? 'GPU' : 'CPU'} · {worker.state} · {worker.capabilities.modelIds.join(', ')}
+                  </Text>
+                </View>
+              ))}
               <Text style={styles.inputFieldLabel}>제공할 설치 모델</Text>
               {installedModelIds.length === 0 ? (
                 <Text style={styles.pluginCardDesc}>설치된 모델이 없습니다. 모델 허브에서 GGUF 모델을 설치하세요.</Text>
