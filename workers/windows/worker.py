@@ -127,7 +127,7 @@ def gpu_capabilities() -> tuple[bool, int, str]:
         )
         values = [int(line.strip()) for line in result.stdout.splitlines() if line.strip().isdigit()]
         if values:
-            return True, GPU_MEMORY_OVERRIDE_MB or sum(values), os.environ.get("POCKETMIND_BACKEND", "cuda")
+            return True, GPU_MEMORY_OVERRIDE_MB or max(values), os.environ.get("POCKETMIND_BACKEND", "cuda")
     except Exception:
         pass
     explicitly_enabled = GPU_SETTING in {"1", "true", "yes"}
@@ -259,6 +259,18 @@ def main() -> int:
     print("PocketMind Windows worker started. Ctrl+C to stop.")
     while True:
         try:
+            current_conditions = conditions()
+            if current_conditions["batteryPercent"] < MIN_BATTERY and not current_conditions["charging"]:
+                request_json(
+                    COORDINATOR_URL + "/v1/workers/heartbeat",
+                    "POST",
+                    {"state": "paused", "conditions": current_conditions},
+                    headers,
+                    timeout=15,
+                )
+                time.sleep(max(POLL_SECONDS, 15))
+                continue
+
             request_json(
                 COORDINATOR_URL + "/v1/workers/heartbeat",
                 "POST",
