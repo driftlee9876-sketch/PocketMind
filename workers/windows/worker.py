@@ -26,7 +26,7 @@ LOCAL_LLM_URL = os.environ.get("POCKETMIND_LOCAL_LLM_URL", "http://127.0.0.1:808
 LOCAL_LLM_MODEL = os.environ.get("POCKETMIND_LOCAL_LLM_MODEL", "local-model")
 MODEL_IDS = [v.strip() for v in os.environ.get("POCKETMIND_MODEL_IDS", "").split(",") if v.strip()]
 BACKEND = os.environ.get("POCKETMIND_BACKEND", "cuda")
-GPU_AVAILABLE = os.environ.get("POCKETMIND_GPU_AVAILABLE", "true").lower() in {"1", "true", "yes"}
+GPU_AVAILABLE = os.environ.get("POCKETMIND_GPU_AVAILABLE", "false").lower() in {"1", "true", "yes"}
 GPU_MEMORY_MB = int(os.environ.get("POCKETMIND_GPU_MEMORY_MB", "0") or 0)
 RAM_MB = int(os.environ.get("POCKETMIND_RAM_MB", "0") or 0)
 MIN_BATTERY = int(os.environ.get("POCKETMIND_MIN_BATTERY", "50"))
@@ -150,6 +150,21 @@ def call_local_model(payload: dict[str, Any], model_id: str) -> str:
     return output.strip()
 
 
+def keep_lease_alive(stop_event: Event, base_url: str, token: str) -> None:
+    headers = {"Authorization": "Bearer " + token}
+    while not stop_event.wait(20):
+        try:
+            request_json(
+                base_url + "/v1/workers/heartbeat",
+                "POST",
+                {"state": "busy", "conditions": conditions()},
+                headers,
+                timeout=15,
+            )
+        except Exception as error:
+            print(f"Heartbeat warning: {error}", file=sys.stderr)
+
+
 def main() -> int:
     if not COORDINATOR_URL:
         print("Missing POCKETMIND_COORDINATOR_URL.", file=sys.stderr)
@@ -183,6 +198,13 @@ def main() -> int:
             lease_id = claimed["leaseId"]
             model_id = claimed["modelId"]
             print(f"Task {task_id}: {model_id}")
+            heartbeat_stop = Event()
+            heartbeat_thread = Thread(
+                target=keep_lease_alive,
+                args=(heartbeat_stop, COORDINATOR_URL, token),
+                daemon=True,
+            )
+            heartbeat_thread.start()
             try:
                 output = call_local_model(claimed.get("payload", {}), model_id)
                 request_json(
@@ -205,6 +227,9 @@ def main() -> int:
                     )
                 except Exception as report_error:
                     print(f"Could not report failure: {report_error}", file=sys.stderr)
+            finally:
+                heartbeat_stop.set()
+                heartbeat_thread.join(timeout=3)
         except KeyboardInterrupt:
             print("Stopping worker.")
             return 0
