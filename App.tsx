@@ -152,7 +152,7 @@ function PocketMindChatGPTScreen() {
   // PC GPU 워커 설정
   const [remotePC, setRemotePC] = useState<RemotePCConfig>({
     enabled: false,
-    serverUrl: 'http://192.168.0.10:8080',
+    serverUrl: 'http://192.168.0.10:8787',
     apiKey: '',
   });
 
@@ -1209,13 +1209,24 @@ function PocketMindChatGPTScreen() {
               />
             </View>
 
-            <Text style={styles.inputFieldLabel}>llama.cpp / Ollama 서버 주소</Text>
+            <Text style={styles.inputFieldLabel}>Coordinator 또는 기존 OpenAI 호환 서버 주소</Text>
             <TextInput
               style={styles.modalInput}
               value={remotePC.serverUrl}
               onChangeText={(t) => setRemotePC((p) => ({ ...p, serverUrl: t }))}
-              placeholder="http://192.168.0.10:8080"
+              placeholder="https://your-coordinator.example"
               placeholderTextColor="#8E8EA0"
+            />
+
+            <Text style={styles.inputFieldLabel}>Coordinator API 토큰 (작업 제출·앱 연결용)</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={remotePC.apiKey || ''}
+              onChangeText={(t) => setRemotePC((p) => ({ ...p, apiKey: t }))}
+              placeholder="POCKETMIND_API_TOKEN"
+              placeholderTextColor="#8E8EA0"
+              secureTextEntry
+              autoCapitalize="none"
             />
 
             <TouchableOpacity
