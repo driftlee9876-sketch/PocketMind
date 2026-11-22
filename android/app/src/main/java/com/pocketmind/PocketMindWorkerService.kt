@@ -38,6 +38,7 @@ class PocketMindWorkerService : Service() {
     if (!taskRunning) {
       taskRunning = true
       try {
+        com.facebook.react.HeadlessJsTaskService.acquireWakeLockNow(this)
         startService(Intent(this, PocketMindWorkerHeadlessService::class.java))
         handler.postDelayed(watchdog, TASK_WATCHDOG_MS)
       } catch (_: Exception) {
@@ -56,8 +57,12 @@ class PocketMindWorkerService : Service() {
     super.onCreate()
     createNotificationChannel()
     val filter = IntentFilter(ACTION_ITERATION_FINISHED)
-    if (Build.VERSION.SDK_INT >= 33) registerReceiver(finishReceiver, filter, RECEIVER_NOT_EXPORTED)
-    else @Suppress("DEPRECATION") registerReceiver(finishReceiver, filter)
+    if (Build.VERSION.SDK_INT >= 33) {
+      registerReceiver(finishReceiver, filter, RECEIVER_NOT_EXPORTED)
+    } else {
+      @Suppress("DEPRECATION")
+      registerReceiver(finishReceiver, filter)
+    }
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
