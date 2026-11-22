@@ -1,11 +1,9 @@
 /**
  * PocketMind distributed-worker foundation.
  *
- * This module is deliberately transport- and platform-neutral. It provides
- * validated worker advertisements and deterministic scheduling primitives;
- * it does not claim that mobile operating systems will keep a GPU worker alive
- * in the background. A trusted coordinator must authenticate every request and
- * persist leases before using this registry across processes.
+ * Transport-neutral worker registration and scheduling primitives. This does
+ * not keep mobile GPUs alive in the background. A trusted coordinator must
+ * authenticate requests and persist leases before using this across processes.
  */
 
 export type WorkerPlatform = 'windows' | 'android' | 'ios' | 'linux' | 'macos';
@@ -80,10 +78,8 @@ function isFiniteNonNegative(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
-/** Reject malformed or unsafe worker advertisements before they enter a registry. */
-export function validateWorkerAdvertisement(
-  value: unknown,
-): value is WorkerAdvertisement {
+/** Reject malformed advertisements before they enter a registry. */
+export function validateWorkerAdvertisement(value: unknown): value is WorkerAdvertisement {
   if (!value || typeof value !== 'object') return false;
   const worker = value as Partial<WorkerAdvertisement>;
   const caps = worker.capabilities;
@@ -99,54 +95,45 @@ export function validateWorkerAdvertisement(
     !Array.isArray(caps.modelIds) ||
     !caps.modelIds.every(isNonEmptyString) ||
     typeof caps.gpu !== 'boolean' ||
+    typeof caps.maxConcurrentTasks !== 'number' ||
     !Number.isInteger(caps.maxConcurrentTasks) ||
     caps.maxConcurrentTasks < 1 ||
     caps.maxConcurrentTasks > 16 ||
     typeof conditions.charging !== 'boolean' ||
     typeof conditions.unmeteredNetwork !== 'boolean' ||
     typeof conditions.userOptedIn !== 'boolean' ||
+    typeof conditions.batteryPercent !== 'number' ||
     !Number.isFinite(conditions.batteryPercent) ||
     conditions.batteryPercent < 0 ||
     conditions.batteryPercent > 100 ||
     !['nominal', 'fair', 'serious', 'critical', 'unknown'].includes(String(conditions.thermalState)) ||
     !['idle', 'busy', 'paused', 'offline'].includes(String(worker.state)) ||
     !isFiniteNonNegative(worker.lastSeenAt)
-  ) {
-    return false;
-  }
+  ) return false;
 
   if (caps.gpuMemoryMb !== undefined && !isFiniteNonNegative(caps.gpuMemoryMb)) return false;
   if (caps.ramMb !== undefined && !isFiniteNonNegative(caps.ramMb)) return false;
   return true;
 }
 
-function meetsRequirements(
-  worker: WorkerAdvertisement,
-  requirements: WorkerRequirements = {},
-): boolean {
+function meetsRequirements(worker: WorkerAdvertisement, requirements: WorkerRequirements = {}): boolean {
   const { capabilities, conditions } = worker;
-  if (!conditions.userOptedIn) return false;
-  if (worker.state !== 'idle') return false;
+  if (!conditions.userOptedIn || worker.state !== 'idle') return false;
   if (conditions.thermalState === 'serious' || conditions.thermalState === 'critical') return false;
   if (requirements.modelId && !capabilities.modelIds.includes(requirements.modelId)) return false;
   if (requirements.requireGpu && !capabilities.gpu) return false;
   if (requirements.requireCharging && !conditions.charging) return false;
   if (requirements.requireUnmeteredNetwork && !conditions.unmeteredNetwork) return false;
-  if (
-    requirements.minimumBatteryPercent !== undefined &&
-    conditions.batteryPercent < requirements.minimumBatteryPercent
-  ) return false;
-  if (
-    requirements.minimumRamMb !== undefined &&
-    (capabilities.ramMb === undefined || capabilities.ramMb < requirements.minimumRamMb)
-  ) return false;
+  if (requirements.minimumBatteryPercent !== undefined &&
+      conditions.batteryPercent < requirements.minimumBatteryPercent) return false;
+  if (requirements.minimumRamMb !== undefined &&
+      (capabilities.ramMb === undefined || capabilities.ramMb < requirements.minimumRamMb)) return false;
   return true;
 }
 
 /**
- * In-memory worker registry for a coordinator process.
- * A production coordinator should back this with authenticated storage and
- * atomic lease operations (for example, a database transaction or Redis script).
+ * In-memory registry for one coordinator process. Production deployments need
+ * authenticated storage and atomic reservation/lease operations.
  */
 export class WorkerRegistry {
   private readonly workers = new Map<string, WorkerAdvertisement>();
@@ -159,9 +146,7 @@ export class WorkerRegistry {
   }
 
   register(advertisement: WorkerAdvertisement): void {
-    if (!validateWorkerAdvertisement(advertisement)) {
-      throw new Error('Invalid worker advertisement');
-    }
+    if (!validateWorkerAdvertisement(advertisement)) throw new Error('Invalid worker advertisement');
     this.workers.set(advertisement.workerId, {
       ...advertisement,
       capabilities: { ...advertisement.capabilities, modelIds: [...advertisement.capabilities.modelIds] },
@@ -170,16 +155,15 @@ export class WorkerRegistry {
     });
   }
 
-  heartbeat(
-    workerId: string,
-    update: Pick<WorkerAdvertisement, 'state' | 'conditions'>,
-  ): boolean {
+  heartbeat(workerId: string, update: Pick<WorkerAdvertisement, 'state' | 'conditions'>): boolean {
     const current = this.workers.get(workerId);
     if (!current) return false;
-    if (!update.conditions || !['idle', 'busy', 'paused', 'offline'].includes(update.state)) {
-      return false;
-    }
-    const next = { ...current, state: update.state, conditions: { ...update.conditions }, lastSeenAt: this.now() };
+    const next: WorkerAdvertisement = {
+      ...current,
+      state: update.state,
+      conditions: { ...update.conditions },
+      lastSeenAt: this.now(),
+    };
     if (!validateWorkerAdvertisement(next)) return false;
     this.workers.set(workerId, next);
     return true;
@@ -212,21 +196,19 @@ export class WorkerRegistry {
       }));
   }
 
-  /** Selects one eligible worker; prefer GPU and then the least-loaded capacity. */
+  /** Prefer eligible GPUs, then higher battery and task capacity. */
   select(requirements: WorkerRequirements = {}): WorkerAdvertisement | null {
     const candidates = this.list(requirements);
-    candidates.sort((a, b) => {
-      const gpuPreference = Number(b.capabilities.gpu) - Number(a.capabilities.gpu);
-      if (gpuPreference !== 0) return gpuPreference;
-      const batteryPreference = b.conditions.batteryPercent - a.conditions.batteryPercent;
-      if (batteryPreference !== 0) return batteryPreference;
-      return b.capabilities.maxConcurrentTasks - a.capabilities.maxConcurrentTasks;
-    });
+    candidates.sort((a, b) =>
+      Number(b.capabilities.gpu) - Number(a.capabilities.gpu) ||
+      b.conditions.batteryPercent - a.conditions.batteryPercent ||
+      b.capabilities.maxConcurrentTasks - a.capabilities.maxConcurrentTasks
+    );
     return candidates[0] ?? null;
   }
 }
 
-/** Create a lease only after the coordinator has atomically reserved the worker. */
+/** Call only after the coordinator has atomically reserved the worker. */
 export function createWorkerLease(
   taskId: string,
   workerId: string,
