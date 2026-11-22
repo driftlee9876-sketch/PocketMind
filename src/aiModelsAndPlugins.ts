@@ -1688,43 +1688,60 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
   },
 ];
 
-// 자율 실행 + 슬래시(/plugin-id) 수동 실행 통합 엔진
+// 자동 실행 + 사용자 요청 실행 통합 엔진
+// 수동 호출도 활성화된 플러그인만 실행하며, 카탈로그 순서를 보존한다.
+const MAX_AUTO_PLUGIN_RUNS = 8;
+const MAX_EXPLICIT_PLUGIN_RUNS = 12;
+
 export async function runAutonomousPlugins(
   prompt: string,
   enabledPluginIds?: string[],
 ): Promise<PluginExecutionOutput[]> {
-  const lower = prompt.toLowerCase();
-  const explicitIds = new Set<string>();
+  const enabled = new Set(enabledPluginIds ?? AI_PLUGIN_CATALOG.map((plugin) => plugin.id));
+  const commandMatches = [...prompt.matchAll(/(?:^|\\s)\\/([a-z0-9-]+)(?=\\s|$)/gi)];
+  const explicitIds = new Set(commandMatches.map((match) => match[1].toLowerCase()));
+  const cleanPrompt = prompt
+    .replace(/(?:^|\\s)\\/[a-z0-9-]+(?=\\s|$)/gi, ' ')
+    .replace(/\\s+/g, ' ')
+    .trim() || prompt.trim();
 
-  const slashTokens = lower.match(/\/([a-z0-9-]+)/g) || [];
-  for (const st of slashTokens) {
-    explicitIds.add(st.slice(1));
-  }
+  const explicitPlugins = AI_PLUGIN_CATALOG.filter(
+    (plugin) => explicitIds.has(plugin.id) && enabled.has(plugin.id),
+  ).slice(0, MAX_EXPLICIT_PLUGIN_RUNS);
+  const automaticPlugins = AI_PLUGIN_CATALOG.filter((plugin) => {
+    if (!enabled.has(plugin.id) || !plugin.autoRun || explicitIds.has(plugin.id)) return false;
+    return plugin.triggerKeywords.some((keyword) =>
+      prompt.toLocaleLowerCase().includes(keyword.toLocaleLowerCase()),
+    );
+  }).slice(0, MAX_AUTO_PLUGIN_RUNS);
 
-  const matchedPlugins = AI_PLUGIN_CATALOG.filter((p) => {
-    if (explicitIds.has(p.id)) return true;
-    if (enabledPluginIds && !enabledPluginIds.includes(p.id)) return false;
-    if (!p.autoRun) return false;
-    return p.triggerKeywords.some((kw) => lower.includes(kw.toLowerCase()));
-  }).slice(0, 4);
+  const selected = [...explicitPlugins, ...automaticPlugins].filter(
+    (plugin, index, all) => all.findIndex((candidate) => candidate.id === plugin.id) === index,
+  );
 
   const results: PluginExecutionOutput[] = [];
-  await Promise.all(
-    matchedPlugins.map(async (plugin) => {
-      try {
-        const cleanForPlugin = prompt.replace(/\/[a-z0-9-]+/gi, '').trim() || prompt;
-        const out = await plugin.execute(cleanForPlugin);
-        if (out && !out.includes('미감지') && !out.includes('없음')) {
-          results.push({
-            id: plugin.id,
-            title: `#${String(plugin.index).padStart(2, '0')} ${plugin.name}`,
-            category: plugin.category,
-            result: out,
-          });
-        }
-      } catch {}
-    }),
-  );
+  // Run sequentially to avoid bursts against external APIs and preserve output ordering.
+  for (const plugin of selected) {
+    try {
+      const output = await plugin.execute(cleanPrompt);
+      results.push({
+        id: plugin.id,
+        title: `#${String(plugin.index).padStart(2, '0')} ${plugin.name}`,
+        category: plugin.category,
+        result: typeof output === 'string' && output.trim()
+          ? output.trim()
+          : '플러그인이 빈 결과를 반환했습니다.',
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '알 수 없는 실행 오류';
+      results.push({
+        id: plugin.id,
+        title: `#${String(plugin.index).padStart(2, '0')} ${plugin.name} (실패)`,
+        category: plugin.category,
+        result: `플러그인 실행 실패: ${message.slice(0, 300)}`,
+      });
+    }
+  }
 
   return results;
 }
