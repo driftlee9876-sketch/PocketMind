@@ -5,6 +5,8 @@ import React, { Component, ErrorInfo, ReactNode, useEffect, useRef, useState } f
 import {
   Alert,
   Modal,
+  NativeModules,
+  PermissionsAndroid,
   Platform,
   SafeAreaView,
   ScrollView,
@@ -160,7 +162,7 @@ function PocketMindChatGPTScreen() {
   const [modelStoreOpen, setModelStoreOpen] = useState(false);
   const [pluginStoreOpen, setPluginStoreOpen] = useState(false);
   const [quickPlusOpen, setQuickPlusOpen] = useState(false);
-  const [pcWorkerOpen, setPcWorkerOpen] = useState(false);
+  const [pcWorkerOpen, setPcWorkerOpen] = useState(false);\n  const [connectedAppsOpen, setConnectedAppsOpen] = useState(false);\n  const [androidWorkerOpen, setAndroidWorkerOpen] = useState(false);\n  const [androidWorkerRunning, setAndroidWorkerRunning] = useState(false);\n  const [workerEnrollmentToken, setWorkerEnrollmentToken] = useState('');\n  const [workerModelIds, setWorkerModelIds] = useState<string[]>([]);\n  const [workerUseGpu, setWorkerUseGpu] = useState(false);\n  const [configuredIntegrationIds, setConfiguredIntegrationIds] = useState<string[]>([]);
 
   // 필터 검색 상태
   const [pluginCategory, setPluginCategory] = useState<'전체' | PluginCategory>('전체');
@@ -359,6 +361,134 @@ function PocketMindChatGPTScreen() {
     setEnabledPluginIds((prev) =>
       prev.includes(pluginId) ? prev.filter((id) => id !== pluginId) : [...prev, pluginId],
     );
+  };
+
+  const openConnectedApps = async () => {
+    setConnectedAppsOpen(true);
+    setConfiguredIntegrationIds([]);
+    if (!remotePC.serverUrl.trim() || !remotePC.apiKey.trim()) return;
+    try {
+      const ids = await getConfiguredIntegrations(remotePC.serverUrl, remotePC.apiKey);
+      setConfiguredIntegrationIds(ids);
+    } catch (error: any) {
+      Alert.alert('앱 연결 상태 확인 실패', error?.message || 'Coordinator 주소와 API 토큰을 확인하세요.');
+    }
+  };
+
+  const handleConnectedAppAction = async (
+    app: (typeof CONNECTED_APP_CATALOG)[number],
+    action: (typeof CONNECTED_APP_CATALOG)[number]['actions'][number],
+  ) => {
+    if (!remotePC.serverUrl.trim() || remotePC.apiKey.trim().length < 24) {
+      Alert.alert('Coordinator 설정 필요', '분산 Worker 설정에서 Coordinator 주소와 API 토큰을 먼저 입력하세요.');
+      return;
+    }
+    if (!configuredIntegrationIds.includes(app.id)) {
+      Alert.alert(
+        '앱 연동 설정 필요',
+        `${app.name}의 공식 OAuth/API 연결 또는 자동화 웹훅이 Coordinator에 아직 설정되지 않았습니다. 서버의 POCKETMIND_INTEGRATION_WEBHOOKS_JSON 설정을 확인하세요.`,
+      );
+      return;
+    }
+    const prompt = inputText.trim() || messages.slice(-4).map((message) => `${message.role}: ${message.text}`).join('\n');
+    if (!prompt.trim()) {
+      Alert.alert('요청 내용 필요', '채팅에 작업 내용을 입력하거나 먼저 요청을 보내 주세요.');
+      return;
+    }
+    try {
+      const submitted = await submitIntegrationAction(remotePC.serverUrl, remotePC.apiKey, app.id, action.id, {
+        prompt,
+        conversation: messages.slice(-6).map((message) => ({ role: message.role, content: message.text })),
+        requestedAt: new Date().toISOString(),
+      });
+      if (submitted.status === 'awaiting_approval') {
+        Alert.alert(
+          `${app.name} 작업 승인`,
+          `“${action.label}” 작업을 실행하려고 합니다. 실제 외부 앱에서 변경이 발생할 수 있습니다. 계속할까요?`,
+          [
+            {
+              text: '거절',
+              style: 'cancel',
+              onPress: () => {
+                rejectIntegrationAction(remotePC.serverUrl, remotePC.apiKey, submitted.actionId)
+                  .catch((error: any) => Alert.alert('거절 처리 실패', error?.message || '오류'));
+              },
+            },
+            {
+              text: '승인하고 실행',
+              onPress: async () => {
+                try {
+                  const result = await approveIntegrationAction(remotePC.serverUrl, remotePC.apiKey, submitted.actionId);
+                  Alert.alert(
+                    result.status === 'completed' ? '작업 완료' : '작업 결과',
+                    result.result || result.lastError || result.status,
+                  );
+                } catch (error: any) {
+                  Alert.alert('작업 실행 실패', error?.message || '오류');
+                }
+              },
+            },
+          ],
+        );
+      } else {
+        Alert.alert(
+          submitted.status === 'completed' ? '조회 완료' : '연동 작업 결과',
+          submitted.result || submitted.lastError || submitted.status,
+        );
+      }
+    } catch (error: any) {
+      Alert.alert('앱 작업 실패', error?.message || '연동 서버를 확인하세요.');
+    }
+  };
+
+  const startAndroidWorker = async () => {
+    if (Platform.OS !== 'android') {
+      Alert.alert('플랫폼 제한', 'iOS는 임의의 상시 백그라운드 GPU Worker 실행을 지원하지 않습니다.');
+      return;
+    }
+    const selectedModels = workerModelIds.filter((id) => installedModelIds.includes(id));
+    if (!remotePC.serverUrl.trim() || !workerEnrollmentToken.trim()) {
+      Alert.alert('Worker 설정 필요', 'Coordinator 주소와 Worker 등록 토큰을 입력하세요.');
+      return;
+    }
+    if (selectedModels.length === 0) {
+      Alert.alert('모델 선택 필요', '이 기기에 설치된 GGUF 모델을 하나 이상 선택하세요.');
+      return;
+    }
+    try {
+      if (Number(Platform.Version) >= 33) {
+        const permission = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+        if (permission !== PermissionsAndroid.RESULTS.GRANTED) {
+          Alert.alert('알림 권한 필요', 'Worker 실행 상태를 표시하려면 알림 권한을 허용해 주세요.');
+          return;
+        }
+      }
+      await NativeModules.PocketMindWorker.startWorker({
+        enabled: true,
+        coordinatorUrl: remotePC.serverUrl.trim(),
+        enrollmentToken: workerEnrollmentToken.trim(),
+        workerId: `android-${Date.now().toString(36)}`,
+        displayName: 'PocketMind Android Worker',
+        modelIds: selectedModels,
+        useGpu: workerUseGpu,
+        minimumBatteryPercent: 50,
+        requireCharging: true,
+        requireUnmeteredNetwork: true,
+      });
+      setAndroidWorkerRunning(true);
+      Alert.alert('Android Worker 시작', '충전 중·비과금 네트워크·안전한 발열 조건을 만족할 때 분산 작업을 확인합니다.');
+    } catch (error: any) {
+      Alert.alert('Worker 시작 실패', error?.message || 'Android Worker 서비스를 시작할 수 없습니다.');
+    }
+  };
+
+  const stopAndroidWorker = async () => {
+    try {
+      await NativeModules.PocketMindWorker.stopWorker();
+      setAndroidWorkerRunning(false);
+    } catch (error: any) {
+      Alert.alert('Worker 중지 실패', error?.message || '서비스를 중지할 수 없습니다.');
+    }
   };
 
   const activeModelSpec =
