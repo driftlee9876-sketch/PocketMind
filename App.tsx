@@ -188,7 +188,7 @@ function PocketMindChatGPTScreen() {
   const [pluginSearch, setPluginSearch] = useState('');
   const [modelTab, setModelTab] = useState<string>('전체');
 
-  const scrollRef = useRef<React.ElementRef<typeof ScrollView>>(null);
+  const scrollRef = useRef<any>(null);
 
   const activeSession =
     sessions.find((s) => s.id === activeSessionId) || sessions[0];
