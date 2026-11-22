@@ -78,6 +78,7 @@ test('coordinator authenticates, enrolls workers, leases tasks and validates res
       backend: 'cuda',
       modelIds: ['qwen3-4b'],
       gpu: true,
+      gpuMemoryMb: 8192,
       maxConcurrentTasks: 1,
       ramMb: 16384,
     },
@@ -96,7 +97,7 @@ test('coordinator authenticates, enrolls workers, leases tasks and validates res
   const createdResponse = await request('POST', '/v1/tasks', {
     modelId: 'qwen3-4b',
     payload: { messages: [{ role: 'user', content: 'hello' }], max_tokens: 64 },
-    requirements: { modelId: 'qwen3-4b', requireGpu: true },
+    requirements: { modelId: 'qwen3-4b', requireGpu: true, minimumGpuMemoryMb: 4096 },
   }, apiToken);
   assert.equal(createdResponse.status, 201);
   const created = await createdResponse.json();
