@@ -275,6 +275,8 @@ function eligible(worker, task) {
   if (requirements.requireUnmeteredNetwork && !conditions.unmeteredNetwork) return false;
   if (requirements.minimumBatteryPercent !== undefined && conditions.batteryPercent < requirements.minimumBatteryPercent) return false;
   if (requirements.minimumRamMb !== undefined && Number(worker.capabilities.ramMb || 0) < requirements.minimumRamMb) return false;
+  if (requirements.minimumGpuMemoryMb !== undefined &&
+      (!worker.capabilities.gpu || Number(worker.capabilities.gpuMemoryMb || 0) < requirements.minimumGpuMemoryMb)) return false;
   const active = Object.values(state.tasks).filter(t => t.workerId === worker.workerId && t.status === 'leased').length;
   return active < worker.capabilities.maxConcurrentTasks;
 }
@@ -609,7 +611,9 @@ async function handle(req, res) {
     if ((requested.minimumBatteryPercent !== undefined &&
          (!Number.isFinite(requested.minimumBatteryPercent) || requested.minimumBatteryPercent < 0 || requested.minimumBatteryPercent > 100)) ||
         (requested.minimumRamMb !== undefined &&
-         (!Number.isFinite(requested.minimumRamMb) || requested.minimumRamMb < 0 || requested.minimumRamMb > 2_000_000))) {
+         (!Number.isFinite(requested.minimumRamMb) || requested.minimumRamMb < 0 || requested.minimumRamMb > 2_000_000)) ||
+        (requested.minimumGpuMemoryMb !== undefined &&
+         (!Number.isFinite(requested.minimumGpuMemoryMb) || requested.minimumGpuMemoryMb < 0 || requested.minimumGpuMemoryMb > 2_000_000))) {
       return json(res, 400, { error: 'Invalid worker requirements' });
     }
     const requirements = {
@@ -621,6 +625,8 @@ async function handle(req, res) {
         ? { minimumBatteryPercent: requested.minimumBatteryPercent } : {}),
       ...(requested.minimumRamMb !== undefined
         ? { minimumRamMb: requested.minimumRamMb } : {}),
+      ...(requested.minimumGpuMemoryMb !== undefined
+        ? { minimumGpuMemoryMb: requested.minimumGpuMemoryMb } : {}),
     };
     const taskId = crypto.randomUUID();
     state.tasks[taskId] = {
