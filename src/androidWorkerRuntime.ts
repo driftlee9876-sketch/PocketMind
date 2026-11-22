@@ -200,3 +200,23 @@ export async function runAndroidWorkerTask(): Promise<void> {
     try { NativeModules.PocketMindWorker?.finishIteration?.(); } catch {}
   }
 }
+
+/** Mark the device offline before stopping its foreground service. */
+export async function stopAndroidWorkerService(): Promise<void> {
+  const native = NativeModules.PocketMindWorker;
+  try {
+    const config = await native.getConfig();
+    const token = await native.getSecret(WORKER_TOKEN_KEY);
+    if (config?.coordinatorUrl && token) {
+      const conditions = await native.getDeviceConditions();
+      await requestJson(
+        config.coordinatorUrl,
+        '/v1/workers/heartbeat',
+        token,
+        { state: 'offline', conditions: { ...conditions, userOptedIn: true } },
+      );
+    }
+  } finally {
+    await native.stopWorker();
+  }
+}
