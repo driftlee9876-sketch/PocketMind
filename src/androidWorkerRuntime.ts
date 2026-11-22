@@ -2,6 +2,7 @@ import { NativeModules } from 'react-native';
 import { AI_MODEL_CATALOG } from './aiModelsAndPlugins';
 
 const WORKER_TOKEN_KEY = 'pocketmind.android.worker-token';
+const WORKER_CAPABILITIES_KEY = 'pocketmind.android.worker-capabilities';
 const MAX_OUTPUT_CHARS = 100_000;
 
 type WorkerConfig = {
