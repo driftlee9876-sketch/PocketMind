@@ -361,6 +361,10 @@ class MultiModelOrchestratorEngine {
             maxTokens: 1536,
             requireGpu: model.tier === 'high' || model.tier === 'mid',
             minimumRamMb: model.minRamGB * 1024,
+            minimumGpuMemoryMb:
+              model.tier === 'high' || model.tier === 'mid'
+                ? Math.ceil(model.sizeGB * 1024 + 1024)
+                : undefined,
             timeoutMs: 10 * 60 * 1000,
             onStatus: callbacks?.onStatusUpdate,
           });
