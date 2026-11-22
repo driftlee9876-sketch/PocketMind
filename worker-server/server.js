@@ -254,6 +254,14 @@ async function handle(req, res) {
     worker.conditions = body.conditions;
     worker.state = body.state;
     worker.lastSeenAt = Date.now();
+    if (body.state === 'busy') {
+      for (const task of Object.values(state.tasks)) {
+        if (task.status === 'leased' && task.workerId === worker.workerId) {
+          task.leaseExpiresAt = worker.lastSeenAt + LEASE_MS;
+          task.updatedAt = worker.lastSeenAt;
+        }
+      }
+    }
     await persist();
     return json(res, 200, { ok: true, serverTime: worker.lastSeenAt });
   }
