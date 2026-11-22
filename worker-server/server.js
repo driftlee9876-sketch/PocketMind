@@ -110,6 +110,16 @@ const INTEGRATION_ACTION_RISKS = {
   trello: { list_boards: 'read', list_cards: 'read', create_card: 'write' },
   linear: { search_issues: 'read', create_issue: 'write' },
   jira: { search_issues: 'read', create_issue: 'write' },
+  'google-docs': { search_documents: 'read', get_document: 'read', create_document: 'write', share_document: 'sensitive' },
+  'google-sheets': { get_values: 'read', update_values: 'write', share_spreadsheet: 'sensitive' },
+  'microsoft-onedrive': { list_files: 'read', download_file: 'read', upload_file: 'write', delete_file: 'sensitive' },
+  'microsoft-teams': { search_messages: 'read', create_meeting: 'write', send_message: 'sensitive' },
+  airtable: { list_records: 'read', create_record: 'write', update_record: 'sensitive' },
+  asana: { list_tasks: 'read', create_task: 'write', update_task: 'sensitive' },
+  zoom: { list_meetings: 'read', create_meeting: 'write', delete_meeting: 'sensitive' },
+  youtube: { search_videos: 'read', create_playlist: 'write', upload_video: 'sensitive' },
+  spotify: { search_tracks: 'read', create_playlist: 'write', add_to_playlist: 'sensitive' },
+  wordpress: { list_posts: 'read', create_draft: 'write', publish_post: 'sensitive' },
   'custom-webhook': { run_readonly: 'read', run_action: 'write', run_sensitive_action: 'sensitive' },
 };
 
