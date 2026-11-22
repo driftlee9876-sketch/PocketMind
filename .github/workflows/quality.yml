@@ -41,6 +41,28 @@ jobs:
         working-directory: worker-server
         run: npm test
 
+  android-native:
+    name: Android native Kotlin compile (no APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install JavaScript dependencies
+        run: npm install --legacy-peer-deps
+      - name: Compile Android Kotlin sources only
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew :app:compileDebugKotlin --no-daemon --max-workers=2
+
   windows-worker:
     name: Windows Worker Python syntax
     runs-on: ubuntu-latest
