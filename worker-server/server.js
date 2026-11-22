@@ -17,7 +17,7 @@ const path = require('node:path');
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
 const API_TOKEN = process.env.POCKETMIND_API_TOKEN || '';
-const ENROLLMENT_TOKEN = process.env.POCKETMIND_ENROLLMENT_TOKEN || '';
+const ENROLLMENT_TOKEN = process.env.POCKETMIND_ENROLLMENT_TOKEN || '';\nconst WEBHOOK_SIGNING_SECRET = process.env.POCKETMIND_WEBHOOK_SIGNING_SECRET || '';
 const DATA_FILE = path.resolve(process.env.POCKETMIND_DATA_FILE || './data/pocketmind-state.json');
 const LEASE_MS = Math.max(15_000, Number(process.env.POCKETMIND_LEASE_MS || 90_000));
 const HEARTBEAT_TIMEOUT_MS = Math.max(30_000, Number(process.env.POCKETMIND_HEARTBEAT_TIMEOUT_MS || 60_000));
@@ -198,19 +198,29 @@ async function dispatchIntegrationAction(action) {
     return;
   }
   try {
+    const webhookPayload = JSON.stringify({
+      event: 'pocketmind.integration.action',
+      actionId: action.actionId,
+      integrationId: action.integrationId,
+      action: action.action,
+      risk: action.risk,
+      input: action.input,
+      approvedAt: action.approvedAt || null,
+      createdAt: action.createdAt,
+    });
+    const webhookHeaders = {
+      'Content-Type': 'application/json',
+      'X-PocketMind-Event': 'integration-action',
+    };
+    if (WEBHOOK_SIGNING_SECRET.length >= 32) {
+      webhookHeaders['X-PocketMind-Signature'] =
+        'sha256=' + crypto.createHmac('sha256', WEBHOOK_SIGNING_SECRET).update(webhookPayload).digest('hex');
+    }
     const response = await fetch(target, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-PocketMind-Event': 'integration-action' },
-      body: JSON.stringify({
-        event: 'pocketmind.integration.action',
-        actionId: action.actionId,
-        integrationId: action.integrationId,
-        action: action.action,
-        risk: action.risk,
-        input: action.input,
-        approvedAt: action.approvedAt || null,
-        createdAt: action.createdAt,
-      }),
+      headers: webhookHeaders,
+      body: webhookPayload,
+      redirect: 'error',
       signal: AbortSignal.timeout(20_000),
     });
     const body = await response.text();
