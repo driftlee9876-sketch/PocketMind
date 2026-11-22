@@ -42,6 +42,7 @@ export interface DistributedInferenceRequest {
   maxTokens?: number;
   requireGpu?: boolean;
   minimumRamMb?: number;
+  minimumGpuMemoryMb?: number;
   timeoutMs?: number;
   onStatus?: (message: string) => void;
 }
@@ -156,6 +157,7 @@ export async function runDistributedInference(
           modelId: request.modelId,
           requireGpu: request.requireGpu ?? false,
           minimumRamMb: request.minimumRamMb,
+          minimumGpuMemoryMb: request.minimumGpuMemoryMb,
         },
       }),
     },
