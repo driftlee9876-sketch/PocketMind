@@ -1,77 +1,81 @@
 // src/multiModelOrchestrator.ts
-// 크래시 방지 안전 가드 + RAM LRU 즉시 핫스왑 + 단일 명령 멀티 모델 파이프라인
+// 자율형 다중 모델 오케스트레이션 파이프라인 + 초경량 무검열 모델 라우팅 + 60종 플러그인 연동
 
-export type ModelSpecialty =
-  | 'general'
-  | 'coding'
-  | 'reasoning'
-  | 'korean'
-  | 'creative'
-  | 'uncensored'
-  | 'fast';
+import {
+  AI_MODEL_CATALOG,
+  AIModelSpec,
+  ModelSpecialty,
+  PluginExecutionOutput,
+  runAutonomousPlugins,
+} from './aiModelsAndPlugins';
 
-export interface AIModelSpec {
-  id: string;
-  name: string;
-  shortName: string;
-  family: string;
-  params: string;
-  quant: string;
-  sizeGB: number;
-  minRamGB: number;
-  tier: 'ultra-light' | 'light' | 'mid' | 'high';
-  specialtyRoles: ModelSpecialty[];
-  uncensored: boolean;
-  tags: string[];
-  description: string;
-  filename: string;
-  downloadUrl: string;
-  nCtx: number;
-}
-
-export interface PipelineStage {
-  stageIndex: number;
-  roleTitle: string;
-  specialty: ModelSpecialty;
-  model: AIModelSpec;
-  instruction: string;
-}
-
-export interface StageExecutionTrace {
-  stageIndex: number;
+export interface PipelineStepResult {
+  stepIndex: number;
   roleTitle: string;
   modelId: string;
-  modelShortName: string;
-  viaWorker: boolean;
-  elapsedMs: number;
-  outputPreview: string;
+  modelName: string;
+  location: 'on-device' | 'pc-worker';
+  durationMs: number;
+  output: string;
 }
 
-export interface MultiModelRunResult {
-  finalResponse: string;
-  traces: StageExecutionTrace[];
-  isMultiModel: boolean;
+export interface OrchestratorResponse {
+  finalText: string;
+  steps: PipelineStepResult[];
+  pluginOutputs: PluginExecutionOutput[];
+  isMultiModelChain: boolean;
 }
 
-// 외부 aiModelsAndPlugins.ts import 실패 시에도 앱이 절대 죽지 않도록 내장 기본 카탈로그 보장
-export const SAFE_DEFAULT_MODELS: AIModelSpec[] = [
+export interface RemotePCConfig {
+  enabled: boolean;
+  serverUrl: string;
+  apiKey?: string;
+}
+
+export interface InferenceCallbacks {
+  onStatusUpdate?: (statusText: string) => void;
+  onTokenStream?: (partialText: string) => void;
+  onStepComplete?: (step: PipelineStepResult) => void;
+}
+
+const SAFE_DEFAULT_MODELS: AIModelSpec[] = [
   {
-    id: 'qwen2.5-0.5b',
-    name: 'Qwen 2.5 0.5B Instruct',
-    shortName: 'Qwen 2.5 0.5B',
-    family: 'Qwen',
+    id: 'qwen2.5-0.5b-abliterated',
+    name: 'Qwen 2.5 0.5B Abliterated v3 (초경량 무검열)',
+    shortName: 'Qwen2.5 0.5B 무검열',
+    family: 'Qwen Abliterated',
     params: '0.5B',
     quant: 'Q4_K_M',
     sizeGB: 0.49,
     minRamGB: 3,
     tier: 'ultra-light',
-    specialtyRoles: ['fast', 'general'],
-    uncensored: false,
-    tags: ['초경량', '초고속'],
-    description: '490MB 초소형 모델. 즉각적인 요약 및 분류에 최적화.',
-    filename: 'qwen2.5-0.5b-instruct-q4_k_m.gguf',
-    downloadUrl: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf',
+    specialtyRoles: ['uncensored', 'fast', 'creative'],
+    uncensored: true,
+    tags: ['초경량무검열'],
+    description: '490MB 초경량 무검열 모델',
+    filename: 'qwen2.5-0.5b-abliterated-v3-q4_k_m.gguf',
+    downloadUrl:
+      'https://huggingface.co/tinyopsec/Qwen2.5-0.5B-Instruct-abliterated-v3-GGUF/resolve/main/model-Q4_K_M.gguf',
     nCtx: 2048,
+  },
+  {
+    id: 'dolphin-3.0-1b',
+    name: 'Dolphin 3.0 Llama 3.2 1B (초경량 무검열)',
+    shortName: 'Dolphin 3.0 1B',
+    family: 'Dolphin Uncensored',
+    params: '1.2B',
+    quant: 'Q4_K_M',
+    sizeGB: 0.81,
+    minRamGB: 3,
+    tier: 'ultra-light',
+    specialtyRoles: ['uncensored', 'fast', 'creative'],
+    uncensored: true,
+    tags: ['초경량무검열'],
+    description: '810MB 초경량 무검열 모델',
+    filename: 'Dolphin3.0-Llama3.2-1B-Q4_K_M.gguf',
+    downloadUrl:
+      'https://huggingface.co/bartowski/Dolphin3.0-Llama3.2-1B-GGUF/resolve/main/Dolphin3.0-Llama3.2-1B-Q4_K_M.gguf',
+    nCtx: 4096,
   },
   {
     id: 'qwen3-4b',
@@ -85,486 +89,469 @@ export const SAFE_DEFAULT_MODELS: AIModelSpec[] = [
     tier: 'light',
     specialtyRoles: ['reasoning', 'korean', 'general'],
     uncensored: false,
-    tags: ['최신Qwen3', '스마트폰추천'],
-    description: '2.5GB 용량으로 고성능 추론·한국어 성능을 내는 Qwen 3 주력 모델.',
+    tags: ['스마트폰추천'],
+    description: '스마트폰 주력 추론/한국어 모델',
     filename: 'Qwen3-4B-Q4_K_M.gguf',
-    downloadUrl: 'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf',
-    nCtx: 4096,
-  },
-  {
-    id: 'qwen2.5-coder-7b',
-    name: 'Qwen 2.5 Coder 7B Instruct',
-    shortName: 'Qwen 2.5 Coder 7B',
-    family: 'Qwen Coder',
-    params: '7.6B',
-    quant: 'Q4_K_M',
-    sizeGB: 4.68,
-    minRamGB: 10,
-    tier: 'mid',
-    specialtyRoles: ['coding'],
-    uncensored: false,
-    tags: ['코딩특화'],
-    description: '코드 생성과 디버깅에 최적화된 전문가 모델.',
-    filename: 'qwen2.5-coder-7b-instruct-q4_k_m.gguf',
-    downloadUrl: 'https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf',
-    nCtx: 4096,
-  },
-  {
-    id: 'exaone-3.5-7.8b',
-    name: 'LG EXAONE 3.5 7.8B Instruct',
-    shortName: 'EXAONE 3.5 7.8B',
-    family: 'EXAONE',
-    params: '7.8B',
-    quant: 'Q4_K_M',
-    sizeGB: 4.78,
-    minRamGB: 10,
-    tier: 'mid',
-    specialtyRoles: ['korean', 'general'],
-    uncensored: false,
-    tags: ['한국어특화'],
-    description: 'LG AI Research 한국어 특화 모델.',
-    filename: 'EXAONE-3.5-7.8B-Instruct-Q4_K_M.gguf',
-    downloadUrl: 'https://huggingface.co/bartowski/EXAONE-3.5-7.8B-Instruct-GGUF/resolve/main/EXAONE-3.5-7.8B-Instruct-Q4_K_M.gguf',
+    downloadUrl:
+      'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf',
     nCtx: 4096,
   },
 ];
 
-function getCatalogSafe(): AIModelSpec[] {
+function getSafeCatalog(): AIModelSpec[] {
+  return Array.isArray(AI_MODEL_CATALOG) && AI_MODEL_CATALOG.length > 0
+    ? AI_MODEL_CATALOG
+    : SAFE_DEFAULT_MODELS;
+}
+
+function getLlamaModule(): any | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const mod = require('./aiModelsAndPlugins');
-    if (mod && Array.isArray(mod.AI_MODEL_CATALOG) && mod.AI_MODEL_CATALOG.length > 0) {
-      return mod.AI_MODEL_CATALOG;
-    }
-  } catch {}
-  return SAFE_DEFAULT_MODELS;
-}
-
-interface CachedContextEntry {
-  modelId: string;
-  context: any;
-  lastUsedAt: number;
-}
-
-const CONTEXT_LRU_POOL = new Map<string, CachedContextEntry>();
-const MAX_CACHED_MODELS = 2;
-
-export async function getOrHotSwapLocalContext(
-  model: AIModelSpec,
-  onStatus?: (msg: string) => void,
-): Promise<any> {
-  const existing = CONTEXT_LRU_POOL.get(model.id);
-  if (existing) {
-    existing.lastUsedAt = Date.now();
-    onStatus?.(`⚡ 즉시 모델 전환 완료: ${model.shortName} (RAM 캐시 적중)`);
-    return existing.context;
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const RNFS = require('react-native-fs');
-  if (!RNFS || !RNFS.DocumentDirectoryPath) {
-    throw new Error('파일 시스템 모듈(RNFS)을 초기화할 수 없습니다.');
-  }
-
-  const modelPath = `${RNFS.DocumentDirectoryPath}/${model.filename}`;
-  const exists = await RNFS.exists(modelPath);
-  if (!exists) {
-    throw new Error(`모델 파일이 설치되지 않았습니다: ${model.name}`);
-  }
-
-  if (CONTEXT_LRU_POOL.size >= MAX_CACHED_MODELS) {
-    let oldestKey: string | null = null;
-    let oldestTime = Infinity;
-    for (const [key, entry] of CONTEXT_LRU_POOL.entries()) {
-      if (entry.lastUsedAt < oldestTime) {
-        oldestTime = entry.lastUsedAt;
-        oldestKey = key;
-      }
-    }
-    if (oldestKey) {
-      const evicted = CONTEXT_LRU_POOL.get(oldestKey);
-      CONTEXT_LRU_POOL.delete(oldestKey);
-      try {
-        await evicted?.context?.release?.();
-      } catch {}
-    }
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const llamaPkg = require('llama.rn');
-  const initLlama = llamaPkg?.initLlama;
-  if (typeof initLlama !== 'function') {
-    throw new Error('llama.rn 네이티브 엔진이 로드되지 않았습니다.');
-  }
-
-  onStatus?.(`🔄 모델 핫스왑 로딩 중: ${model.shortName}...`);
-
-  let context: any = null;
-  try {
-    context = await initLlama({
-      model: modelPath,
-      use_mlock: false,
-      n_ctx: model.nCtx || 4096,
-      n_gpu_layers: 99,
-    });
+    return require('llama.rn');
   } catch {
-    onStatus?.(`🛡️ CPU 안전 모드로 재시도: ${model.shortName}...`);
-    context = await initLlama({
-      model: modelPath,
-      use_mlock: false,
-      n_ctx: Math.min(model.nCtx || 2048, 2048),
-      n_gpu_layers: 0,
-    });
+    return null;
   }
-
-  CONTEXT_LRU_POOL.set(model.id, {
-    modelId: model.id,
-    context,
-    lastUsedAt: Date.now(),
-  });
-
-  onStatus?.(`✅ 활성 모델 전환됨: ${model.shortName}`);
-  return context;
 }
 
-export async function releaseAllCachedContexts(): Promise<void> {
-  for (const [, entry] of CONTEXT_LRU_POOL.entries()) {
-    try {
-      await entry.context?.release?.();
-    } catch {}
+function getRNFSModule(): any | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('react-native-fs');
+  } catch {
+    return null;
   }
-  CONTEXT_LRU_POOL.clear();
 }
 
-export function pickBestAvailableModel(
-  specialty: ModelSpecialty,
-  installedModelIds: string[],
-  fallbackModelId: string,
-  remoteWorkerConnected: boolean,
-  excludeModelIds: string[] = [],
-): AIModelSpec {
-  const catalog = getCatalogSafe();
-  const available = catalog.filter(
-    (m) => installedModelIds.includes(m.id) || (remoteWorkerConnected && m.tier !== 'ultra-light'),
-  );
-  const pool = available.length > 0 ? available : catalog;
+const DIRECTIVE_ALIASES: Record<string, string[]> = {
+  '@uncensored': [
+    'qwen2.5-0.5b-abliterated',
+    'dolphin-3.0-1b',
+    'qwen2.5-1.5b-abliterated',
+    'dolphin-3.0-3b',
+    'dolphin-3.0-8b',
+    'dolphin-3.0-mistral-24b',
+  ],
+  '@무검열': [
+    'qwen2.5-0.5b-abliterated',
+    'dolphin-3.0-1b',
+    'qwen2.5-1.5b-abliterated',
+    'dolphin-3.0-3b',
+    'dolphin-3.0-8b',
+    'dolphin-3.0-mistral-24b',
+  ],
+  '@dolphin': [
+    'dolphin-3.0-1b',
+    'dolphin-3.0-3b',
+    'dolphin-3.0-8b',
+    'dolphin-3.0-mistral-24b',
+  ],
+  '@abliterated': ['qwen2.5-0.5b-abliterated', 'qwen2.5-1.5b-abliterated'],
+  '@qwen3': ['qwen3-14b', 'qwen3-8b', 'qwen3-4b', 'qwen3-1.7b'],
+  '@qwen': ['qwen3-14b', 'qwen3-8b', 'qwen3-4b', 'qwen3-1.7b', 'qwen2.5-0.5b'],
+  '@deepseek': ['deepseek-r1-14b', 'deepseek-r1-8b', 'deepseek-r1-7b'],
+  '@r1': ['deepseek-r1-14b', 'deepseek-r1-8b', 'deepseek-r1-7b'],
+  '@coder': ['qwen2.5-coder-14b', 'qwen2.5-coder-7b', 'qwen2.5-coder-3b'],
+  '@exaone': ['exaone-3.5-7.8b'],
+  '@gemma': ['gemma-3-12b', 'gemma-3-4b'],
+  '@phi': ['phi-4-mini-3.8b'],
+  '@llama': ['llama-3.2-1b'],
+};
 
-  const diverseMatch = pool.find(
-    (m) => Array.isArray(m.specialtyRoles) && m.specialtyRoles.includes(specialty) && !excludeModelIds.includes(m.id),
-  );
-  if (diverseMatch) return diverseMatch;
+class MultiModelOrchestratorEngine {
+  private activeContext: any | null = null;
+  private loadedModelId: string | null = null;
 
-  const exactMatch = pool.find(
-    (m) => Array.isArray(m.specialtyRoles) && m.specialtyRoles.includes(specialty),
-  );
-  if (exactMatch) return exactMatch;
+  public parseExplicitDirectives(prompt: string): {
+    cleanPrompt: string;
+    requestedModelIds: string[];
+  } {
+    const tokens = prompt.match(/@[a-zA-Z0-9가-힣._-]+/g) || [];
+    const requestedModelIds: string[] = [];
+    let cleanPrompt = prompt;
+    const catalog = getSafeCatalog();
 
-  return (
-    pool.find((m) => m.id === fallbackModelId) ||
-    catalog.find((m) => m.id === fallbackModelId) ||
-    pool[0]
-  );
-}
-
-export function extractInlineModelDirectives(prompt: string): {
-  forcedModels: AIModelSpec[];
-  cleanedPrompt: string;
-} {
-  const catalog = getCatalogSafe();
-  const aliasMap: Record<string, string[]> = {
-    '@coder': ['qwen2.5-coder-14b', 'qwen2.5-coder-7b'],
-    '@r1': ['deepseek-r1-14b', 'deepseek-r1-8b', 'deepseek-r1-7b'],
-    '@reason': ['deepseek-r1-14b', 'deepseek-r1-8b', 'deepseek-r1-7b'],
-    '@exaone': ['exaone-3.5-7.8b'],
-    '@korean': ['exaone-3.5-7.8b', 'gemma-3-12b', 'qwen3-8b'],
-    '@dolphin': ['dolphin-3.0-mistral-24b-uncensored', 'dolphin-3.0-8b-uncensored', 'dolphin-3.0-3b-uncensored'],
-    '@uncensored': ['dolphin-3.0-mistral-24b-uncensored', 'dolphin-3.0-8b-uncensored', 'dolphin-3.0-3b-uncensored'],
-    '@qwen3': ['qwen3-14b', 'qwen3-8b', 'qwen3-4b', 'qwen3-1.7b'],
-    '@gemma3': ['gemma-3-12b', 'gemma-3-4b'],
-    '@phi4': ['phi-4-mini-3.8b'],
-    '@fast': ['qwen3-1.7b', 'qwen2.5-1.5b', 'llama-3.2-1b', 'qwen2.5-0.5b'],
-  };
-
-  const forcedModels: AIModelSpec[] = [];
-  let cleaned = prompt;
-
-  const tokens = prompt.match(/@[a-zA-Z0-9._-]+/g) || [];
-  for (const token of tokens) {
-    const key = token.toLowerCase();
-    if (aliasMap[key]) {
-      const candidateIds = aliasMap[key];
-      const found = catalog.find((m) => candidateIds.includes(m.id));
-      if (found && !forcedModels.some((x) => x.id === found.id)) {
-        forcedModels.push(found);
-        cleaned = cleaned.replace(token, '').trim();
+    for (const token of tokens) {
+      const lower = token.toLowerCase();
+      if (DIRECTIVE_ALIASES[lower]) {
+        requestedModelIds.push(...DIRECTIVE_ALIASES[lower]);
+        cleanPrompt = cleanPrompt.replace(token, '').trim();
+        continue;
       }
-    } else {
-      const direct = catalog.find(
-        (m) => m.id.toLowerCase() === key.slice(1) || m.shortName.toLowerCase().includes(key.slice(1)),
+      const rawName = lower.slice(1);
+      const exact = catalog.find(
+        (m) =>
+          m.id.toLowerCase() === rawName ||
+          m.shortName.toLowerCase().replace(/\s+/g, '') === rawName,
       );
-      if (direct && !forcedModels.some((x) => x.id === direct.id)) {
-        forcedModels.push(direct);
-        cleaned = cleaned.replace(token, '').trim();
+      if (exact) {
+        requestedModelIds.push(exact.id);
+        cleanPrompt = cleanPrompt.replace(token, '').trim();
       }
     }
+
+    return { cleanPrompt: cleanPrompt || prompt, requestedModelIds };
   }
 
-  return { forcedModels, cleanedPrompt: cleaned || prompt };
-}
+  public analyzeIntent(prompt: string): {
+    needsCoding: boolean;
+    needsReasoning: boolean;
+    needsKoreanPolish: boolean;
+    needsUncensored: boolean;
+    isComplexMultiStep: boolean;
+  } {
+    const lower = prompt.toLowerCase();
+    const needsCoding =
+      /(코드|파이썬|python|javascript|typescript|react|sql|함수|버그|에러|알고리즘|구현|api|스크립트|앱\s*만들|개발)/.test(
+        lower,
+      );
+    const needsReasoning =
+      /(왜|분석|비교|설계|아키텍처|수학|증명|추론|전략|원인|장단점|최적화|심층)/.test(lower);
+    const needsKoreanPolish = /[가-힣]/.test(prompt) && prompt.length > 10;
+    const needsUncensored =
+      /(무검열|검열\s*없|제약\s*없|uncensored|dolphin|abliterated|자유\s*창작|다크\s*판타지|소설|시나리오|롤플레잉)/.test(
+        lower,
+      );
+    const isComplexMultiStep =
+      (needsCoding && needsReasoning) ||
+      prompt.length > 75 ||
+      /(그리고|또한|동시에|단계별로|전체\s*코드|보고서)/.test(lower);
 
-export function planMultiModelExecution(
-  rawPrompt: string,
-  installedModelIds: string[],
-  currentModelId: string,
-  remoteWorkerConnected: boolean,
-  autoMultiModelEnabled: boolean,
-): PipelineStage[] {
-  const { forcedModels, cleanedPrompt } = extractInlineModelDirectives(rawPrompt);
-
-  if (forcedModels.length >= 2) {
-    return forcedModels.map((model, idx) => ({
-      stageIndex: idx + 1,
-      roleTitle:
-        idx === 0
-          ? '1단계 초안·분석'
-          : idx === forcedModels.length - 1
-          ? `${idx + 1}단계 최종 통합·검증`
-          : `${idx + 1}단계 심화 보완`,
-      specialty: model.specialtyRoles?.[0] || 'general',
-      model,
-      instruction:
-        idx === 0
-          ? `다음 사용자 요청의 핵심 분석과 1차 결과물을 작성하세요:\n${cleanedPrompt}`
-          : `이전 단계 모델의 분석 결과를 검토·보완하여 더 완성도 높은 결과물을 작성하세요.\n원래 요청: ${cleanedPrompt}`,
-    }));
+    return {
+      needsCoding,
+      needsReasoning,
+      needsKoreanPolish,
+      needsUncensored,
+      isComplexMultiStep,
+    };
   }
 
-  if (forcedModels.length === 1) {
-    const m = forcedModels[0];
-    return [
-      {
-        stageIndex: 1,
-        roleTitle: '지정 모델 즉시 실행',
-        specialty: m.specialtyRoles?.[0] || 'general',
-        model: m,
-        instruction: cleanedPrompt,
-      },
-    ];
-  }
+  public selectBestModelForRole(
+    role: ModelSpecialty,
+    installedModelIds: string[],
+    fallbackModelId: string,
+  ): AIModelSpec {
+    const catalog = getSafeCatalog();
+    const installedSpecs = catalog.filter((m) => installedModelIds.includes(m.id));
+    if (installedSpecs.length === 0) {
+      return catalog.find((m) => m.id === fallbackModelId) || catalog[0];
+    }
 
-  const needsReasoning = /(수학|증명|논리|추론|알고리즘|원인|분석|전략|아키텍처|비교|계산)/.test(cleanedPrompt);
-  const needsCoding = /(코드|구현|함수|버그|디버깅|리팩토링|typescript|python|react|sql|api|스크립트|앱\s*만들)/i.test(cleanedPrompt);
-  const needsCreative = /(소설|시나리오|창작|롤플|검열\s*없이|자유롭게|대본|세계관|브레인스토밍)/.test(cleanedPrompt);
-  const needsKoreanPolish = /(보고서|요약|정리|한국어|기획서|제안서|설명해|번역)/.test(cleanedPrompt);
+    const candidates = installedSpecs.filter((m) => m.specialtyRoles.includes(role));
+    if (candidates.length > 0) {
+      return candidates.sort((a, b) => b.sizeGB - a.sizeGB)[0];
+    }
 
-  if (!autoMultiModelEnabled) {
-    const singleSpecialty: ModelSpecialty = needsCoding
-      ? 'coding'
-      : needsReasoning
-      ? 'reasoning'
-      : needsCreative
-      ? 'uncensored'
-      : needsKoreanPolish
-      ? 'korean'
-      : 'general';
-    const chosen = pickBestAvailableModel(
-      singleSpecialty,
-      installedModelIds,
-      currentModelId,
-      remoteWorkerConnected,
+    return (
+      installedSpecs.find((m) => m.id === fallbackModelId) ||
+      installedSpecs.sort((a, b) => b.sizeGB - a.sizeGB)[0]
     );
-    return [
-      {
-        stageIndex: 1,
-        roleTitle: '능동 최적 모델 실행',
-        specialty: singleSpecialty,
-        model: chosen,
-        instruction: cleanedPrompt,
-      },
-    ];
   }
 
-  const stages: PipelineStage[] = [];
-  const usedIds: string[] = [];
+  private async ensureModelLoaded(
+    model: AIModelSpec,
+    onStatus?: (msg: string) => void,
+  ): Promise<void> {
+    if (this.activeContext && this.loadedModelId === model.id) return;
 
-  if (needsReasoning && needsCoding) {
-    const reasonModel = pickBestAvailableModel('reasoning', installedModelIds, currentModelId, remoteWorkerConnected, usedIds);
-    usedIds.push(reasonModel.id);
-    stages.push({
-      stageIndex: stages.length + 1,
-      roleTitle: '1단계 논리·설계 추론',
-      specialty: 'reasoning',
-      model: reasonModel,
-      instruction: `사용자 요청을 해결하기 위한 핵심 논리 구조, 엣지 케이스, 단계별 설계안을 도출하세요:\n${cleanedPrompt}`,
-    });
+    const llamaModule = getLlamaModule();
+    const RNFS = getRNFSModule();
+    if (!llamaModule || typeof llamaModule.initLlama !== 'function') {
+      throw new Error('네이티브 llama.rn 엔진을 사용할 수 없습니다.');
+    }
+    if (!RNFS || !RNFS.DocumentDirectoryPath) {
+      throw new Error('네이티브 파일 시스템을 사용할 수 없습니다.');
+    }
 
-    const codeModel = pickBestAvailableModel('coding', installedModelIds, currentModelId, remoteWorkerConnected, usedIds);
-    usedIds.push(codeModel.id);
-    stages.push({
-      stageIndex: stages.length + 1,
-      roleTitle: '2단계 코드 구현·검증',
-      specialty: 'coding',
-      model: codeModel,
-      instruction: `1단계 설계안을 바탕으로 완전히 동작하는 프로덕션 코드와 기술 구현을 작성하세요.\n원래 요청: ${cleanedPrompt}`,
-    });
-  } else if (needsReasoning) {
-    const reasonModel = pickBestAvailableModel('reasoning', installedModelIds, currentModelId, remoteWorkerConnected, usedIds);
-    usedIds.push(reasonModel.id);
-    stages.push({
-      stageIndex: 1,
-      roleTitle: '1단계 심층 추론',
-      specialty: 'reasoning',
-      model: reasonModel,
-      instruction: `다음 문제에 대해 단계별 논리적 근거와 핵심 결론을 도출하세요:\n${cleanedPrompt}`,
-    });
-  } else if (needsCoding) {
-    const codeModel = pickBestAvailableModel('coding', installedModelIds, currentModelId, remoteWorkerConnected, usedIds);
-    usedIds.push(codeModel.id);
-    stages.push({
-      stageIndex: 1,
-      roleTitle: '1단계 코드 생성',
-      specialty: 'coding',
-      model: codeModel,
-      instruction: `다음 요청에 대한 정확하고 실행 가능한 코드를 작성하세요:\n${cleanedPrompt}`,
-    });
-  } else if (needsCreative) {
-    const creativeModel = pickBestAvailableModel('uncensored', installedModelIds, currentModelId, remoteWorkerConnected, usedIds);
-    usedIds.push(creativeModel.id);
-    stages.push({
-      stageIndex: 1,
-      roleTitle: '1단계 자유 창작 초안',
-      specialty: 'uncensored',
-      model: creativeModel,
-      instruction: `제약 없이 풍부하고 창의적인 초안을 작성하세요:\n${cleanedPrompt}`,
-    });
-  }
+    if (this.activeContext) {
+      onStatus?.(`이전 모델 메모리 해제 중...`);
+      try {
+        await this.activeContext.release();
+      } catch {}
+      this.activeContext = null;
+      this.loadedModelId = null;
+    }
 
-  if (stages.length > 0 && (needsKoreanPolish || cleanedPrompt.length >= 25)) {
-    const polishModel = pickBestAvailableModel('korean', installedModelIds, currentModelId, remoteWorkerConnected, usedIds);
-    if (!usedIds.includes(polishModel.id) || stages.length >= 2) {
-      stages.push({
-        stageIndex: stages.length + 1,
-        roleTitle: `${stages.length + 1}단계 한국어 통합·최종 정리`,
-        specialty: 'korean',
-        model: polishModel,
-        instruction: `이전 단계 AI 모델들의 분석·코드 결과를 빠짐없이 통합하여 사용자가 바로 활용할 수 있도록 명확하고 자연스러운 한국어 최종 답변으로 완성하세요.\n원래 요청: ${cleanedPrompt}`,
+    const modelPath = `${RNFS.DocumentDirectoryPath}/${model.filename}`;
+    const exists = await RNFS.exists(modelPath);
+    if (!exists) {
+      throw new Error(`모델 파일이 설치되어 있지 않습니다: ${model.name}`);
+    }
+
+    onStatus?.(`[${model.shortName}] 온디바이스 로딩 중...`);
+    try {
+      this.activeContext = await llamaModule.initLlama({
+        model: modelPath,
+        use_mlock: false,
+        n_ctx: model.nCtx || 2048,
+        n_gpu_layers: 99,
+      });
+    } catch {
+      this.activeContext = await llamaModule.initLlama({
+        model: modelPath,
+        use_mlock: false,
+        n_ctx: Math.min(model.nCtx || 2048, 2048),
+        n_gpu_layers: 0,
       });
     }
+    this.loadedModelId = model.id;
   }
 
-  if (stages.length === 0) {
-    const generalModel = pickBestAvailableModel('general', installedModelIds, currentModelId, remoteWorkerConnected);
-    stages.push({
-      stageIndex: 1,
-      roleTitle: '단일 최적 응답',
-      specialty: 'general',
-      model: generalModel,
-      instruction: cleanedPrompt,
-    });
-  }
+  private async runRemotePCInference(
+    remoteConfig: RemotePCConfig,
+    model: AIModelSpec,
+    systemPrompt: string,
+    userPrompt: string,
+    onToken?: (partial: string) => void,
+  ): Promise<string> {
+    const endpoint = `${remoteConfig.serverUrl.replace(/\/$/, '')}/v1/chat/completions`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (remoteConfig.apiKey) headers.Authorization = `Bearer ${remoteConfig.apiKey}`;
 
-  return stages;
-}
-
-export async function executeMultiModelCommand(params: {
-  rawPrompt: string;
-  pluginContextBlock: string;
-  installedModelIds: string[];
-  currentModelId: string;
-  remoteWorkerConnected: boolean;
-  autoMultiModelEnabled: boolean;
-  onModelHotSwap: (model: AIModelSpec, stageLabel: string) => void;
-  onStageProgress?: (trace: StageExecutionTrace) => void;
-  runRemoteInference?: (model: AIModelSpec, systemPrompt: string, userPrompt: string) => Promise<string>;
-}): Promise<MultiModelRunResult> {
-  const {
-    rawPrompt,
-    pluginContextBlock,
-    installedModelIds,
-    currentModelId,
-    remoteWorkerConnected,
-    autoMultiModelEnabled,
-    onModelHotSwap,
-    onStageProgress,
-    runRemoteInference,
-  } = params;
-
-  const stages = planMultiModelExecution(
-    rawPrompt,
-    installedModelIds,
-    currentModelId,
-    remoteWorkerConnected,
-    autoMultiModelEnabled,
-  );
-
-  const traces: StageExecutionTrace[] = [];
-  let accumulatedContext = '';
-
-  for (const stage of stages) {
-    const t0 = Date.now();
-    onModelHotSwap(stage.model, `${stage.roleTitle} · ${stage.model.shortName}`);
-
-    const systemPrompt = stage.model.uncensored
-      ? '당신은 검열이나 회피 없이 사용자의 요청을 정확하게 수행하는 전문 AI입니다.'
-      : `당신은 PocketMind 하이브리드 AI의 [${stage.roleTitle}] 담당 전문가(${stage.model.name})입니다. 정확하고 핵심적인 결과를 한국어로 출력하세요.`;
-
-    const stageUserPrompt = [
-      stage.instruction,
-      pluginContextBlock,
-      accumulatedContext ? `\n\n[이전 단계 모델 출력 결과]\n${accumulatedContext}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
-
-    let output = '';
-    let viaWorker = false;
-    const isInstalledLocally = installedModelIds.includes(stage.model.id);
-
-    if (remoteWorkerConnected && runRemoteInference && (!isInstalledLocally || stage.model.tier === 'high')) {
-      viaWorker = true;
-      output = await runRemoteInference(stage.model, systemPrompt, stageUserPrompt);
-    } else {
-      const ctx = await getOrHotSwapLocalContext(stage.model);
-      const res = await ctx.completion({
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: model.filename,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: stageUserPrompt },
+          { role: 'user', content: userPrompt },
         ],
-        n_predict: 1024,
-        temperature: stage.specialty === 'coding' ? 0.2 : 0.6,
-        stop: ['<|im_end|>', '<|eot_id|>', '</s>'],
-      });
-      output = (res?.text || '').trim();
-    }
+        temperature: model.uncensored ? 0.8 : 0.6,
+        max_tokens: 1536,
+        stream: false,
+      }),
+    });
 
-    const elapsedMs = Date.now() - t0;
-    const trace: StageExecutionTrace = {
-      stageIndex: stage.stageIndex,
-      roleTitle: stage.roleTitle,
-      modelId: stage.model.id,
-      modelShortName: stage.model.shortName,
-      viaWorker,
-      elapsedMs,
-      outputPreview: output.slice(0, 140),
-    };
-    traces.push(trace);
-    onStageProgress?.(trace);
-
-    accumulatedContext += `\n### [${stage.roleTitle} - ${stage.model.shortName}]\n${output}\n`;
+    if (!res.ok) throw new Error(`PC GPU 서버 오류 (HTTP ${res.status})`);
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content || '';
+    onToken?.(content);
+    return content.trim();
   }
 
-  const lastStage = stages[stages.length - 1];
-  const finalOutput =
-    traces.length > 0 && lastStage
-      ? accumulatedContext
-          .split(`### [${lastStage.roleTitle} - ${lastStage.model.shortName}]\n`)
-          .pop()
-          ?.trim() || ''
-      : '';
+  private async runSingleStage(
+    model: AIModelSpec,
+    systemPrompt: string,
+    userPrompt: string,
+    remoteConfig: RemotePCConfig,
+    callbacks?: InferenceCallbacks,
+  ): Promise<{ output: string; location: 'on-device' | 'pc-worker'; durationMs: number }> {
+    const startTime = Date.now();
+    const preferPC =
+      remoteConfig.enabled &&
+      remoteConfig.serverUrl.trim().length > 0 &&
+      (model.tier === 'high' || model.tier === 'mid');
 
-  return {
-    finalResponse: finalOutput,
-    traces,
-    isMultiModel: stages.length > 1,
-  };
+    if (preferPC) {
+      try {
+        callbacks?.onStatusUpdate?.(`🖥️ PC GPU 워커로 [${model.shortName}] 연산 오프로딩 중...`);
+        const pcOut = await this.runRemotePCInference(
+          remoteConfig,
+          model,
+          systemPrompt,
+          userPrompt,
+          callbacks?.onTokenStream,
+        );
+        return { output: pcOut, location: 'pc-worker', durationMs: Date.now() - startTime };
+      } catch {
+        callbacks?.onStatusUpdate?.(`⚠️ PC 서버 응답 없음 → 스마트폰 로컬 엔진으로 전환`);
+      }
+    }
+
+    await this.ensureModelLoaded(model, callbacks?.onStatusUpdate);
+    let accumulated = '';
+    const result = await this.activeContext.completion(
+      {
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        n_predict: 1024,
+        temperature: model.uncensored ? 0.8 : 0.6,
+        top_p: 0.9,
+        stop: ['</s>', '<|im_end|>', '<|eot_id|>', '<|end_of_text|>'],
+      },
+      (data: { token?: string }) => {
+        if (data?.token) {
+          accumulated += data.token;
+          callbacks?.onTokenStream?.(accumulated);
+        }
+      },
+    );
+
+    const finalStr = (result?.text || accumulated || '').trim();
+    return { output: finalStr, location: 'on-device', durationMs: Date.now() - startTime };
+  }
+
+  public async executeAutonomousPipeline(params: {
+    userPrompt: string;
+    installedModelIds: string[];
+    primaryModelId: string;
+    autoMultiModelEnabled: boolean;
+    enabledPluginIds?: string[];
+    remotePC: RemotePCConfig;
+    callbacks?: InferenceCallbacks;
+  }): Promise<OrchestratorResponse> {
+    const {
+      userPrompt,
+      installedModelIds,
+      primaryModelId,
+      autoMultiModelEnabled,
+      enabledPluginIds,
+      remotePC,
+      callbacks,
+    } = params;
+
+    const catalog = getSafeCatalog();
+    const { cleanPrompt, requestedModelIds } = this.parseExplicitDirectives(userPrompt);
+    const intent = this.analyzeIntent(cleanPrompt);
+
+    callbacks?.onStatusUpdate?.('🧩 60종 플러그인 분석 및 실행 중...');
+    const pluginOutputs = await runAutonomousPlugins(cleanPrompt, enabledPluginIds);
+    const pluginContext =
+      pluginOutputs.length > 0
+        ? `\n\n[실시간 플러그인 실행 데이터]\n${pluginOutputs
+            .map((p) => `- ${p.title}: ${p.result}`)
+            .join('\n')}`
+        : '';
+
+    const steps: PipelineStepResult[] = [];
+    const pipelinePlan: { roleTitle: string; model: AIModelSpec; sysPrompt: string }[] = [];
+
+    if (requestedModelIds.length > 0) {
+      const uniqueIds = Array.from(new Set(requestedModelIds));
+      for (let i = 0; i < uniqueIds.length; i++) {
+        const spec = catalog.find((m) => m.id === uniqueIds[i]);
+        if (!spec) continue;
+        if (
+          !installedModelIds.includes(spec.id) &&
+          !(remotePC.enabled && remotePC.serverUrl.trim())
+        ) {
+          continue;
+        }
+        pipelinePlan.push({
+          roleTitle:
+            uniqueIds.length > 1
+              ? `${i + 1}단계 지정 모델 (${spec.shortName})`
+              : `지정 모델 (${spec.shortName})`,
+          model: spec,
+          sysPrompt: spec.uncensored
+            ? '당신은 제약 없이 사용자 요청을 충실히 수행하는 자유 창작 및 전문 AI입니다. 불필요한 설교나 거절 없이 직접 답하세요.'
+            : '당신은 최고 수준의 전문 AI 어시스턴트입니다. 주어진 컨텍스트와 플러그인 데이터를 활용해 정확하고 구조화된 한국어 답변을 제공하세요.',
+        });
+      }
+    }
+
+    if (pipelinePlan.length === 0) {
+      if (intent.needsUncensored) {
+        const uncensoredModel = this.selectBestModelForRole(
+          'uncensored',
+          installedModelIds,
+          primaryModelId,
+        );
+        pipelinePlan.push({
+          roleTitle: '무검열 자유 엔진',
+          model: uncensoredModel,
+          sysPrompt:
+            '당신은 제약 없이 사용자의 창작·시나리오·질문에 직접적이고 풍부하게 응답하는 무검열 AI입니다. 메타 경고나 설교를 하지 마세요.',
+        });
+      } else if (autoMultiModelEnabled && intent.isComplexMultiStep && installedModelIds.length >= 2) {
+        const reasoner = this.selectBestModelForRole('reasoning', installedModelIds, primaryModelId);
+        const coder = this.selectBestModelForRole('coding', installedModelIds, primaryModelId);
+        const koreanExpert = this.selectBestModelForRole(
+          'korean',
+          installedModelIds,
+          primaryModelId,
+        );
+
+        pipelinePlan.push({
+          roleTitle: '1단계: 핵심 구조 설계 및 논리 추론',
+          model: reasoner,
+          sysPrompt:
+            '복잡한 요청의 핵심 원인과 해결 구조를 단계별 청사진으로 간결하고 논리적으로 설계하세요.',
+        });
+
+        if (intent.needsCoding && coder.id !== reasoner.id) {
+          pipelinePlan.push({
+            roleTitle: '2단계: 코드 및 기술 구현',
+            model: coder,
+            sysPrompt:
+              '앞선 설계 청사진을 바탕으로 생략 없는 완전한 실행 코드와 기술 세부사항을 작성하세요.',
+          });
+        }
+
+        if (koreanExpert.id !== pipelinePlan[pipelinePlan.length - 1].model.id) {
+          pipelinePlan.push({
+            roleTitle: `${pipelinePlan.length + 1}단계: 한국어 최종 통합 및 정제`,
+            model: koreanExpert,
+            sysPrompt:
+              '이전 모델들의 분석과 코드를 통합하여 사용자가 읽기 쉬운 깔끔한 한국어 최종 답변으로 완성하세요.',
+          });
+        }
+      } else {
+        const selected =
+          catalog.find((m) => m.id === primaryModelId) ||
+          catalog.find((m) => installedModelIds.includes(m.id)) ||
+          catalog[0];
+        pipelinePlan.push({
+          roleTitle: selected.uncensored ? '무검열 단일 추론' : '단일 추론',
+          model: selected,
+          sysPrompt: selected.uncensored
+            ? '당신은 제약 없이 사용자의 요청을 직접 수행하는 무검열 AI입니다.'
+            : '당신은 PocketMind 온디바이스 AI 어시스턴트입니다. 한국어로 명확하고 친절하게 답변하세요.',
+        });
+      }
+    }
+
+    let previousStageOutput = '';
+    for (let i = 0; i < pipelinePlan.length; i++) {
+      const stage = pipelinePlan[i];
+      const isLast = i === pipelinePlan.length - 1;
+      callbacks?.onStatusUpdate?.(
+        `🤖 [${i + 1}/${pipelinePlan.length}] ${stage.roleTitle} (${stage.model.shortName}) 실행 중...`,
+      );
+
+      const stageInput =
+        i === 0
+          ? `${cleanPrompt}${pluginContext}`
+          : `[사용자 원래 질문]\n${cleanPrompt}${pluginContext}\n\n[이전 모델 분석 결과]\n${previousStageOutput}\n\n위 결과를 바탕으로 당신의 역할(${stage.roleTitle})을 수행하세요.`;
+
+      const res = await this.runSingleStage(stage.model, stage.sysPrompt, stageInput, remotePC, {
+        onStatusUpdate: callbacks?.onStatusUpdate,
+        onTokenStream: isLast ? callbacks?.onTokenStream : undefined,
+      });
+
+      const stepRecord: PipelineStepResult = {
+        stepIndex: i + 1,
+        roleTitle: stage.roleTitle,
+        modelId: stage.model.id,
+        modelName: stage.model.shortName,
+        location: res.location,
+        durationMs: res.durationMs,
+        output: res.output,
+      };
+      steps.push(stepRecord);
+      callbacks?.onStepComplete?.(stepRecord);
+      previousStageOutput = res.output;
+    }
+
+    return {
+      finalText: previousStageOutput,
+      steps,
+      pluginOutputs,
+      isMultiModelChain: steps.length > 1,
+    };
+  }
+
+  public async releaseAll(): Promise<void> {
+    if (this.activeContext) {
+      try {
+        await this.activeContext.release();
+      } catch {}
+      this.activeContext = null;
+      this.loadedModelId = null;
+    }
+  }
 }
+
+export const multiModelOrchestrator = new MultiModelOrchestratorEngine();
