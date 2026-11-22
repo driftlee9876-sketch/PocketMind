@@ -40,27 +40,39 @@ async function requestJson(
   return data;
 }
 
+function capabilityFingerprint(modelIds: string[], useGpu: boolean, ramMb: number): string {
+  return JSON.stringify({
+    modelIds: [...modelIds].sort(),
+    gpu: useGpu,
+    ramMb,
+    backend: 'llama.cpp',
+  });
+}
+
 async function getWorkerToken(config: WorkerConfig): Promise<string> {
+  const native = NativeModules.PocketMindWorker;
   const baseUrl = config.coordinatorUrl.trim().replace(/\/+$/, '');
-  let token = await NativeModules.PocketMindWorker.getSecret(WORKER_TOKEN_KEY);
-  if (token) {
+  const ramMb = Number(await native.getTotalRamMb()) || 0;
+  const fingerprint = capabilityFingerprint(config.modelIds, config.useGpu === true, ramMb);
+  let token = await native.getSecret(WORKER_TOKEN_KEY);
+  const previousFingerprint = await native.getSecret(WORKER_CAPABILITIES_KEY);
+
+  if (token && previousFingerprint === fingerprint) {
     try {
+      const conditions = await native.getDeviceConditions();
       await requestJson(baseUrl, '/v1/workers/heartbeat', token, {
         state: 'idle',
-        conditions: await NativeModules.PocketMindWorker.getDeviceConditions().then((c: any) => ({
-          ...c,
-          userOptedIn: true,
-        })),
+        conditions: { ...conditions, userOptedIn: true },
       });
       return token;
     } catch (error: any) {
       if (!String(error?.message || '').includes('401')) throw error;
-      await NativeModules.PocketMindWorker.removeSecret(WORKER_TOKEN_KEY);
-      token = null;
     }
   }
 
-  const conditions = await NativeModules.PocketMindWorker.getDeviceConditions();
+  // Refresh the server-side advertisement whenever model, RAM, or GPU capability changes.
+  if (token) await native.removeSecret(WORKER_TOKEN_KEY);
+  const conditions = await native.getDeviceConditions();
   const enrolled = await requestJson(
     baseUrl,
     '/v1/workers/enroll',
@@ -73,7 +85,7 @@ async function getWorkerToken(config: WorkerConfig): Promise<string> {
         backend: 'llama.cpp',
         modelIds: config.modelIds,
         gpu: config.useGpu === true,
-        ramMb: Number(ramMb) || undefined,
+        ramMb: ramMb > 0 ? ramMb : undefined,
         maxConcurrentTasks: 1,
       },
       conditions: { ...conditions, userOptedIn: true },
@@ -83,7 +95,8 @@ async function getWorkerToken(config: WorkerConfig): Promise<string> {
   if (typeof enrolled.workerToken !== 'string' || enrolled.workerToken.length < 32) {
     throw new Error('Coordinator did not issue a worker token.');
   }
-  await NativeModules.PocketMindWorker.setSecret(WORKER_TOKEN_KEY, enrolled.workerToken);
+  await native.setSecret(WORKER_TOKEN_KEY, enrolled.workerToken);
+  await native.setSecret(WORKER_CAPABILITIES_KEY, fingerprint);
   return enrolled.workerToken;
 }
 
@@ -91,12 +104,15 @@ async function getWorkerToken(config: WorkerConfig): Promise<string> {
 export async function runAndroidWorkerTask(): Promise<void> {
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let context: any = null;
+  let token: string | null = null;
+  let baseUrl = '';
+  let activeTask: any = null;
   try {
     const native = NativeModules.PocketMindWorker;
     const config = (await native.getConfig()) as WorkerConfig;
     if (!config?.enabled) return;
 
-    const baseUrl = config.coordinatorUrl.trim().replace(/\/+$/, '');
+    baseUrl = config.coordinatorUrl.trim().replace(/\/+$/, '');
     const normalizedUrl = baseUrl.toLowerCase();
     const secureUrl = normalizedUrl.startsWith('https://');
     const trustedLocalHttp =
@@ -112,7 +128,7 @@ export async function runAndroidWorkerTask(): Promise<void> {
       throw new Error('Select at least one installed model before enabling this Worker.');
     }
 
-    const token = await getWorkerToken(config);
+    token = await getWorkerToken(config);
     const conditions = await native.getDeviceConditions();
     const batteryFloor = config.minimumBatteryPercent ?? 50;
     if (conditions.batteryPercent < batteryFloor && !conditions.charging) return;
@@ -129,6 +145,7 @@ export async function runAndroidWorkerTask(): Promise<void> {
     });
     const task = claimed?.task;
     if (!task) return;
+    activeTask = task;
 
     const model = AI_MODEL_CATALOG.find((item) => item.id === task.modelId);
     if (!model || !config.modelIds.includes(task.modelId)) {
@@ -161,8 +178,23 @@ export async function runAndroidWorkerTask(): Promise<void> {
     };
     try {
       context = await llama.initLlama(initOptions);
-    } catch (error) {
-      if (config.useGpu !== true) throw error;
+    } catch (gpuError) {
+      if (config.useGpu !== true) throw gpuError;
+
+      // A Worker can only downgrade its own GPU capability; this prevents future
+      // GPU-required work from being assigned to a device whose runtime failed.
+      await requestJson(baseUrl, '/v1/workers/gpu-capability', token, { gpuAvailable: false });
+      await native.setGpuEnabled(false);
+      const ramMb = Number(await native.getTotalRamMb()) || 0;
+      await native.setSecret(
+        WORKER_CAPABILITIES_KEY,
+        capabilityFingerprint(config.modelIds, false, ramMb),
+      );
+      config.useGpu = false;
+
+      if (task.requirements?.requireGpu === true) {
+        throw new Error('GPU initialization failed; this Worker has been marked CPU-only.');
+      }
       context = await llama.initLlama({ ...initOptions, n_gpu_layers: 0 });
     }
 
@@ -189,8 +221,24 @@ export async function runAndroidWorkerTask(): Promise<void> {
       modelId: task.modelId,
       output,
     });
+    activeTask = null;
   } catch (error: any) {
-    // Headless tasks have no UI. Failures are logged and the next iteration retries.
+    if (activeTask && token && baseUrl) {
+      try {
+        await requestJson(
+          baseUrl,
+          `/v1/tasks/${encodeURIComponent(activeTask.taskId)}/fail`,
+          token,
+          {
+            leaseId: activeTask.leaseId,
+            error: String(error?.message || 'Android worker failed').slice(0, 1000),
+          },
+        );
+        activeTask = null;
+      } catch (reportError: any) {
+        console.warn('[PocketMind Worker] Could not report failure:', reportError?.message || reportError);
+      }
+    }
     console.warn('[PocketMind Worker]', error?.message || error);
   } finally {
     if (heartbeat) clearInterval(heartbeat);
