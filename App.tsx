@@ -1,9 +1,11 @@
+// App.tsx
+// ChatGPT 스타일 다크 모바일 UI + 60종 플러그인 스토어 + 초경량 무검열 모델 허브 + 자율 멀티모델 체인
+
 import React, { Component, ErrorInfo, ReactNode, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
-  FlatList,
   Modal,
+  Platform,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -15,77 +17,73 @@ import {
   View,
 } from 'react-native';
 import {
-  AIModelSpec,
-  executeMultiModelCommand,
-  getOrHotSwapLocalContext,
-  releaseAllCachedContexts,
-  SAFE_DEFAULT_MODELS,
-  StageExecutionTrace,
+  AI_MODEL_CATALOG,
+  AI_PLUGIN_CATALOG,
+  PluginCategory,
+  PluginExecutionOutput,
+} from './src/aiModelsAndPlugins';
+import {
+  multiModelOrchestrator,
+  PipelineStepResult,
+  RemotePCConfig,
 } from './src/multiModelOrchestrator';
 
-// 안전하게 카탈로그 로드 (aiModelsAndPlugins.ts 누락/오류 시에도 절대 크래시 나지 않음)
-function loadCatalogSafely(): AIModelSpec[] {
+function formatNowTime(): string {
+  try {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+  } catch {
+    return '00:00';
+  }
+}
+
+function getRNFS(): any | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const mod = require('./src/aiModelsAndPlugins');
-    if (mod && Array.isArray(mod.AI_MODEL_CATALOG) && mod.AI_MODEL_CATALOG.length > 0) {
-      return mod.AI_MODEL_CATALOG;
-    }
-  } catch {}
-  return SAFE_DEFAULT_MODELS;
+    return require('react-native-fs');
+  } catch {
+    return null;
+  }
 }
 
-const AI_MODEL_CATALOG: AIModelSpec[] = loadCatalogSafely();
-
-// Hermes/Android ICU 로케일 RangeError 방지용 안전한 시간 포맷터
-function formatNowTime(): string {
-  const d = new Date();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
-
-// 앱 강제 종료(팅김)를 막고 정확한 원인을 화면에 띄워주는 ErrorBoundary
-interface ErrorBoundaryProps {
+// ============================================================================
+// 전역 크래시 가드 (실행 즉시 종료 방지)
+// ============================================================================
+interface CrashGuardProps {
   children: ReactNode;
 }
-interface ErrorBoundaryState {
+interface CrashGuardState {
   hasError: boolean;
   errorMessage: string;
-  errorStack: string;
 }
 
-class AppCrashGuard extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  constructor(props: ErrorBoundaryProps) {
+class AppCrashGuard extends Component<CrashGuardProps, CrashGuardState> {
+  constructor(props: CrashGuardProps) {
     super(props);
-    this.state = { hasError: false, errorMessage: '', errorStack: '' };
+    this.state = { hasError: false, errorMessage: '' };
   }
 
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return {
-      hasError: true,
-      errorMessage: error?.message || '알 수 없는 렌더링 오류',
-      errorStack: error?.stack || '',
-    };
+  static getDerivedStateFromError(error: Error): CrashGuardState {
+    return { hasError: true, errorMessage: error?.message || '알 수 없는 런타임 오류' };
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('PocketMind CrashGuard caught:', error, info);
+    console.error('[PocketMind CrashGuard]', error, info);
   }
 
   render() {
     if (this.state.hasError) {
       return (
         <SafeAreaView style={styles.crashContainer}>
-          <Text style={styles.crashTitle}>⚠️ 앱 오류 감지 (강제 종료 방지됨)</Text>
-          <Text style={styles.crashMsg}>{this.state.errorMessage}</Text>
-          <ScrollView style={styles.crashScroll}>
-            <Text style={styles.crashStack}>{this.state.errorStack}</Text>
-          </ScrollView>
+          <Text style={styles.crashTitle}>⚠️ PocketMind 오류 복구</Text>
+          <Text style={styles.crashSub}>{this.state.errorMessage}</Text>
           <TouchableOpacity
-            style={styles.actionBtnPrimary}
-            onPress={() => this.setState({ hasError: false, errorMessage: '', errorStack: '' })}>
-            <Text style={styles.actionBtnText}>앱 화면 다시 복구하기</Text>
+            style={styles.crashRetryBtn}
+            onPress={() => this.setState({ hasError: false, errorMessage: '' })}
+          >
+            <Text style={styles.crashRetryText}>앱 다시 시작</Text>
           </TouchableOpacity>
         </SafeAreaView>
       );
@@ -94,737 +92,934 @@ class AppCrashGuard extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 }
 
+// ============================================================================
+// 메인 ChatGPT 스타일 화면
+// ============================================================================
 interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
+  role: 'user' | 'assistant';
+  text: string;
   timestamp: string;
-  traces?: StageExecutionTrace[];
-  isMultiModel?: boolean;
+  pipelineSteps?: PipelineStepResult[];
+  pluginOutputs?: PluginExecutionOutput[];
 }
 
-type TierFilter = 'all' | 'ultra-light' | 'light' | 'mid' | 'high';
+interface ChatSession {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+}
 
-const QUICK_MODEL_TAGS = [
-  { tag: '@r1', label: '🧠 @r1 추론' },
-  { tag: '@coder', label: '💻 @coder 코딩' },
-  { tag: '@exaone', label: '🇰🇷 @exaone 한국어' },
-  { tag: '@qwen3', label: '⚡ @qwen3 만능' },
-  { tag: '@gemma3', label: '✍️ @gemma3 작문' },
-  { tag: '@dolphin', label: '🔓 @dolphin 무검열' },
+const PLUGIN_CATEGORIES: ('전체' | PluginCategory)[] = [
+  '전체',
+  '웹·검색',
+  '수학·금융',
+  '코딩·개발',
+  '문서·언어',
+  '메모·시스템',
+  'AI부스터',
 ];
 
-function PocketMindMain() {
-  const defaultInitialId = AI_MODEL_CATALOG[0]?.id || 'qwen3-4b';
-  const [selectedModelId, setSelectedModelId] = useState<string>(defaultInitialId);
-  const activeModelIdRef = useRef<string>(defaultInitialId);
+const MODEL_FILTER_TABS = ['전체', '초경량·무검열', '경량 (3B~4B)', '중형 (7B~12B)', 'PC GPU (14B+)'];
 
-  const [installedModels, setInstalledModels] = useState<string[]>([]);
-  const [downloadingMap, setDownloadingMap] = useState<Record<string, number>>({});
-  const downloadJobsRef = useRef<Record<string, number>>({});
+function PocketMindChatGPTScreen() {
+  const safeCatalog = Array.isArray(AI_MODEL_CATALOG) ? AI_MODEL_CATALOG : [];
+  const safePlugins = Array.isArray(AI_PLUGIN_CATALOG) ? AI_PLUGIN_CATALOG : [];
 
-  const [autoMultiModelEnabled, setAutoMultiModelEnabled] = useState<boolean>(true);
-  const [activeStageBanner, setActiveStageBanner] = useState<string>('');
-  const [isGenerating, setIsGenerating] = useState<boolean>(false);
-
-  const [inputText, setInputText] = useState<string>('');
-  const [messages, setMessages] = useState<ChatMessage[]>(() => [
-    {
-      id: 'welcome-1',
-      role: 'assistant',
-      content:
-        'PocketMind 하이브리드 멀티 모델 AI가 준비되었습니다.\n' +
-        '• 상단 모델 칩을 누르면 RAM 캐시를 통해 즉시 모델이 전환됩니다.\n' +
-        '• "멀티체인 ON" 상태에서는 한 번의 명령 안에 추론·코딩·한국어 정리를 여러 모델이 자동으로 분담 실행합니다.\n' +
-        '• `@r1 @coder @exaone`처럼 태그를 입력해 원하는 모델 순서를 직접 지정할 수도 있습니다.',
-      timestamp: formatNowTime(),
-    },
+  const [sessions, setSessions] = useState<ChatSession[]>([
+    { id: 'session-1', title: '새 채팅', messages: [] },
   ]);
+  const [activeSessionId, setActiveSessionId] = useState<string>('session-1');
 
-  const [isModelModalVisible, setIsModelModalVisible] = useState<boolean>(false);
-  const [tierFilter, setTierFilter] = useState<TierFilter>('all');
-  const [modelSearchQuery, setModelSearchQuery] = useState<string>('');
+  const [inputText, setInputText] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [liveStatus, setLiveStatus] = useState('');
+  const [streamingText, setStreamingText] = useState('');
 
-  const [isWorkerModalVisible, setIsWorkerModalVisible] = useState<boolean>(false);
-  const [workerUrl, setWorkerUrl] = useState<string>('ws://192.168.0.10:8765');
-  const [workerConnected, setWorkerConnected] = useState<boolean>(false);
-  const workerSocketRef = useRef<WebSocket | null>(null);
-  const pendingWorkerResolversRef = useRef<
-    Map<string, { resolve: (text: string) => void; reject: (err: Error) => void }>
-  >(new Map());
+  // 설치된 모델 및 기본 선택 모델
+  const [installedModelIds, setInstalledModelIds] = useState<string[]>([]);
+  const [primaryModelId, setPrimaryModelId] = useState<string>('qwen2.5-0.5b-abliterated');
+  const [autoMultiModel, setAutoMultiModel] = useState<boolean>(true);
+  const [downloadingMap, setDownloadingMap] = useState<Record<string, number>>({});
 
-  const flatListRef = useRef<FlatList<ChatMessage>>(null);
+  // 60종 플러그인 활성화 상태 (기본 전체 활성화)
+  const [enabledPluginIds, setEnabledPluginIds] = useState<string[]>(() =>
+    safePlugins.map((p) => p.id),
+  );
 
-  const getRNFS = () => {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      return require('react-native-fs');
-    } catch {
-      return null;
-    }
-  };
+  // PC GPU 워커 설정
+  const [remotePC, setRemotePC] = useState<RemotePCConfig>({
+    enabled: false,
+    serverUrl: 'http://192.168.0.10:8080',
+    apiKey: '',
+  });
+
+  // 모달 & 사이드바 상태
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelStoreOpen, setModelStoreOpen] = useState(false);
+  const [pluginStoreOpen, setPluginStoreOpen] = useState(false);
+  const [quickPlusOpen, setQuickPlusOpen] = useState(false);
+  const [pcWorkerOpen, setPcWorkerOpen] = useState(false);
+
+  // 필터 검색 상태
+  const [pluginCategory, setPluginCategory] = useState<'전체' | PluginCategory>('전체');
+  const [pluginSearch, setPluginSearch] = useState('');
+  const [modelTab, setModelTab] = useState<string>('전체');
+
+  const scrollRef = useRef<ScrollView>(null);
+
+  const activeSession =
+    sessions.find((s) => s.id === activeSessionId) || sessions[0];
+  const messages = activeSession?.messages || [];
 
   const scanInstalledModels = async () => {
-    const RNFS = getRNFS();
-    if (!RNFS || !RNFS.DocumentDirectoryPath) return;
-
-    const foundIds: string[] = [];
-    for (const model of AI_MODEL_CATALOG) {
-      const path = `${RNFS.DocumentDirectoryPath}/${model.filename}`;
-      try {
-        const exists = await RNFS.exists(path);
+    try {
+      const RNFS = getRNFS();
+      if (!RNFS || !RNFS.DocumentDirectoryPath) return;
+      const found: string[] = [];
+      for (const spec of safeCatalog) {
+        const filePath = `${RNFS.DocumentDirectoryPath}/${spec.filename}`;
+        const exists = await RNFS.exists(filePath);
         if (exists) {
-          foundIds.push(model.id);
+          const stat = await RNFS.stat(filePath);
+          if (Number(stat.size || 0) > 1024 * 1024) {
+            found.push(spec.id);
+          }
         }
-      } catch {}
-    }
-    setInstalledModels(foundIds);
-    if (foundIds.length > 0 && !foundIds.includes(activeModelIdRef.current)) {
-      activeModelIdRef.current = foundIds[0];
-      setSelectedModelId(foundIds[0]);
-    }
+      }
+      setInstalledModelIds(found);
+      if (found.length > 0 && !found.includes(primaryModelId)) {
+        setPrimaryModelId(found[0]);
+      }
+    } catch {}
   };
 
   useEffect(() => {
     scanInstalledModels();
     return () => {
-      releaseAllCachedContexts();
-      if (workerSocketRef.current) {
-        workerSocketRef.current.close();
-      }
+      multiModelOrchestrator.releaseAll().catch(() => {});
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const currentModel =
-    AI_MODEL_CATALOG.find((m) => m.id === selectedModelId) || AI_MODEL_CATALOG[0];
-
-  const handleInstantModelSwitch = async (targetModel: AIModelSpec, stageLabel?: string) => {
-    activeModelIdRef.current = targetModel.id;
-    setSelectedModelId(targetModel.id);
-    if (stageLabel) {
-      setActiveStageBanner(stageLabel);
-    }
-
-    if (workerSocketRef.current && workerSocketRef.current.readyState === WebSocket.OPEN) {
-      workerSocketRef.current.send(
-        JSON.stringify({
-          type: 'switch_model',
-          modelId: targetModel.id,
-          filename: targetModel.filename,
-          downloadUrl: targetModel.downloadUrl,
-        }),
-      );
-    }
-
-    if (installedModels.includes(targetModel.id)) {
-      try {
-        await getOrHotSwapLocalContext(targetModel, (statusMsg) => {
-          setActiveStageBanner(statusMsg);
-        });
-        setTimeout(() => {
-          setActiveStageBanner((prev) =>
-            prev.startsWith('⚡') || prev.startsWith('✅') ? '' : prev,
-          );
-        }, 1800);
-      } catch (err: any) {
-        setActiveStageBanner('');
-        Alert.alert('모델 로딩 오류', err?.message || '로컬 모델을 불러오지 못했습니다.');
-      }
-    } else if (!workerConnected) {
-      setActiveStageBanner('');
-      Alert.alert(
-        '모델 미설치',
-        `${targetModel.name} (${targetModel.sizeGB}GB) 모델이 기기에 설치되어 있지 않습니다. 모델 관리자에서 다운로드하거나 원격 PC 워커를 연결하세요.`,
-        [
-          { text: '취소', style: 'cancel' },
-          { text: '모델 다운로드 열기', onPress: () => setIsModelModalVisible(true) },
-        ],
-      );
-    }
+  const updateActiveSessionMessages = (
+    updater: (prev: ChatMessage[]) => ChatMessage[],
+    newTitleIfFirst?: string,
+  ) => {
+    setSessions((prevSessions) =>
+      prevSessions.map((sess) => {
+        if (sess.id !== activeSession.id) return sess;
+        const nextMsgs = updater(sess.messages);
+        const nextTitle =
+          sess.messages.length === 0 && newTitleIfFirst
+            ? newTitleIfFirst.slice(0, 24)
+            : sess.title;
+        return { ...sess, title: nextTitle, messages: nextMsgs };
+      }),
+    );
   };
 
-  const handleDownloadModel = async (model: AIModelSpec) => {
-    if (downloadingMap[model.id] !== undefined) return;
+  const handleNewChat = () => {
+    const newId = `session-${Date.now()}`;
+    setSessions((prev) => [{ id: newId, title: '새 채팅', messages: [] }, ...prev]);
+    setActiveSessionId(newId);
+    setSidebarOpen(false);
+  };
+
+  const handleDownloadModel = async (modelId: string) => {
+    const spec = safeCatalog.find((m) => m.id === modelId);
+    if (!spec || downloadingMap[modelId] !== undefined) return;
     const RNFS = getRNFS();
     if (!RNFS || !RNFS.DocumentDirectoryPath) {
-      Alert.alert('오류', '저장소 모듈(RNFS)을 사용할 수 없습니다.');
+      Alert.alert('저장소 오류', '파일 시스템 모듈을 찾을 수 없습니다.');
       return;
     }
 
-    const destPath = `${RNFS.DocumentDirectoryPath}/${model.filename}`;
-    setDownloadingMap((prev) => ({ ...prev, [model.id]: 0 }));
+    const destPath = `${RNFS.DocumentDirectoryPath}/${spec.filename}`;
+    setDownloadingMap((prev) => ({ ...prev, [modelId]: 0 }));
 
     try {
-      const ret = RNFS.downloadFile({
-        fromUrl: model.downloadUrl,
+      const downloadJob = RNFS.downloadFile({
+        fromUrl: spec.downloadUrl,
         toFile: destPath,
-        progressDivider: 2,
-        begin: () => {
-          setDownloadingMap((prev) => ({ ...prev, [model.id]: 1 }));
-        },
-        progress: (res: { contentLength: number; bytesWritten: number }) => {
+        background: true,
+        progressDivider: 4,
+        progress: (res: any) => {
           if (res.contentLength > 0) {
             const pct = Math.min(99, Math.round((res.bytesWritten / res.contentLength) * 100));
-            setDownloadingMap((prev) => ({ ...prev, [model.id]: pct }));
+            setDownloadingMap((prev) => ({ ...prev, [modelId]: pct }));
           }
         },
       });
 
-      downloadJobsRef.current[model.id] = ret.jobId;
-      const result = await ret.promise;
-
-      delete downloadJobsRef.current[model.id];
-      setDownloadingMap((prev) => {
-        const next = { ...prev };
-        delete next[model.id];
-        return next;
-      });
-
-      if (result.statusCode === 200) {
+      const result = await downloadJob.promise;
+      if (result.statusCode >= 200 && result.statusCode < 300) {
         await scanInstalledModels();
-        await handleInstantModelSwitch(model, `✅ 다운로드 완료 및 즉시 활성화: ${model.shortName}`);
+        setPrimaryModelId(spec.id);
+        Alert.alert('설치 완료', `${spec.name} 모델이 준비되었습니다.`);
       } else {
-        if (await RNFS.exists(destPath)) {
-          await RNFS.unlink(destPath);
-        }
-        Alert.alert('다운로드 실패', `HTTP 상태 코드: ${result.statusCode}`);
+        throw new Error(`HTTP ${result.statusCode}`);
       }
     } catch (err: any) {
-      delete downloadJobsRef.current[model.id];
+      try {
+        await RNFS.unlink(destPath);
+      } catch {}
+      Alert.alert('다운로드 실패', err?.message || '네트워크 또는 저장공간을 확인하세요.');
+    } finally {
       setDownloadingMap((prev) => {
         const next = { ...prev };
-        delete next[model.id];
+        delete next[modelId];
         return next;
       });
-      try {
-        if (await RNFS.exists(destPath)) {
-          await RNFS.unlink(destPath);
-        }
-      } catch {}
-      Alert.alert('다운로드 중단/오류', err?.message || '네트워크 상태를 확인하세요.');
     }
   };
 
-  const handleDeleteModel = async (model: AIModelSpec) => {
+  const handleDeleteModel = async (modelId: string) => {
+    const spec = safeCatalog.find((m) => m.id === modelId);
     const RNFS = getRNFS();
-    if (!RNFS || !RNFS.DocumentDirectoryPath) return;
-
-    const destPath = `${RNFS.DocumentDirectoryPath}/${model.filename}`;
-    Alert.alert('모델 삭제', `${model.name} (${model.sizeGB}GB) 파일을 삭제할까요?`, [
-      { text: '취소', style: 'cancel' },
-      {
-        text: '삭제',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            if (await RNFS.exists(destPath)) {
-              await RNFS.unlink(destPath);
-            }
-            await scanInstalledModels();
-          } catch (e: any) {
-            Alert.alert('삭제 실패', e?.message || '파일 삭제 중 오류가 발생했습니다.');
-          }
-        },
-      },
-    ]);
-  };
-
-  const connectRemoteWorker = () => {
-    if (workerSocketRef.current) {
-      workerSocketRef.current.close();
-      workerSocketRef.current = null;
-    }
+    if (!spec || !RNFS) return;
     try {
-      const ws = new WebSocket(workerUrl.trim());
-      ws.onopen = () => {
-        setWorkerConnected(true);
-        setIsWorkerModalVisible(false);
-        Alert.alert('원격 워커 연결됨', '14B~32B 대형 모델 및 멀티 모델 오프로딩이 활성화되었습니다.');
-      };
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.requestId && pendingWorkerResolversRef.current.has(data.requestId)) {
-            const resolver = pendingWorkerResolversRef.current.get(data.requestId)!;
-            pendingWorkerResolversRef.current.delete(data.requestId);
-            if (data.error) {
-              resolver.reject(new Error(data.error));
-            } else {
-              resolver.resolve(String(data.text || data.response || ''));
-            }
-          }
-        } catch {}
-      };
-      ws.onerror = () => {
-        setWorkerConnected(false);
-      };
-      ws.onclose = () => {
-        setWorkerConnected(false);
-        for (const [, resolver] of pendingWorkerResolversRef.current.entries()) {
-          resolver.reject(new Error('원격 워커 연결이 종료되었습니다.'));
-        }
-        pendingWorkerResolversRef.current.clear();
-      };
-      workerSocketRef.current = ws;
-    } catch (err: any) {
-      Alert.alert('연결 오류', err?.message || '올바른 WebSocket 주소를 입력하세요.');
-    }
+      const path = `${RNFS.DocumentDirectoryPath}/${spec.filename}`;
+      if (await RNFS.exists(path)) await RNFS.unlink(path);
+      await scanInstalledModels();
+    } catch {}
   };
 
-  const sendRequestToRemoteWorker = (payload: {
-    modelId: string;
-    filename: string;
-    downloadUrl: string;
-    systemPrompt: string;
-    prompt: string;
-  }): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const ws = workerSocketRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        reject(new Error('원격 GPU 워커가 연결되어 있지 않습니다.'));
-        return;
-      }
-      const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      pendingWorkerResolversRef.current.set(requestId, { resolve, reject });
-      ws.send(
-        JSON.stringify({
-          type: 'inference',
-          requestId,
-          ...payload,
-        }),
-      );
-    });
-  };
-
-  const handleSend = async () => {
-    const trimmed = inputText.trim();
+  const handleSendMessage = async (overridePrompt?: string) => {
+    const trimmed = (overridePrompt !== undefined ? overridePrompt : inputText).trim();
     if (!trimmed || isGenerating) return;
 
-    if (installedModels.length === 0 && !workerConnected) {
+    const hasLocal = installedModelIds.length > 0;
+    const hasPC = remotePC.enabled && remotePC.serverUrl.trim().length > 0;
+
+    // 플러그인 슬래시 명령어 단독 실행일 경우 모델 없이도 즉시 실행 가능
+    const isPurePluginCommand = /^\/[a-z0-9-]+(\s|$)/i.test(trimmed);
+
+    if (!hasLocal && !hasPC && !isPurePluginCommand) {
       Alert.alert(
-        '실행 가능한 모델 없음',
-        '최소 1개 이상의 로컬 AI 모델을 다운로드하거나 원격 PC GPU 워커를 연결해주세요.',
-        [{ text: '모델 다운로드', onPress: () => setIsModelModalVisible(true) }],
+        'AI 모델 다운로드 필요',
+        '초경량 무검열 모델(490MB Qwen 2.5 0.5B 또는 810MB Dolphin 3.0 1B)을 먼저 다운로드하거나 PC GPU 워커를 연결해 주세요.',
+        [{ text: '모델 허브 열기', onPress: () => setModelStoreOpen(true) }],
       );
       return;
     }
 
     const userMsg: ChatMessage = {
-      id: `u_${Date.now()}`,
+      id: `u-${Date.now()}`,
       role: 'user',
-      content: trimmed,
+      text: trimmed,
       timestamp: formatNowTime(),
     };
 
-    setMessages((prev) => [...prev, userMsg]);
-    setInputText('');
+    updateActiveSessionMessages((prev) => [...prev, userMsg], trimmed);
+    if (overridePrompt === undefined) setInputText('');
     setIsGenerating(true);
+    setLiveStatus('생각 중...');
+    setStreamingText('');
 
     try {
-      let pluginContextBlock = '';
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const mod = require('./src/aiModelsAndPlugins');
-        if (mod && typeof mod.runAutonomousPlugins === 'function') {
-          const pluginResults = await mod.runAutonomousPlugins(trimmed);
-          if (Array.isArray(pluginResults) && pluginResults.length > 0) {
-            pluginContextBlock =
-              '\n[자율 실행 플러그인 컨텍스트]\n' +
-              pluginResults.map((p: any) => `- ${p.title}: ${p.result}`).join('\n');
-          }
-        }
-      } catch {}
-
-      const result = await executeMultiModelCommand({
-        rawPrompt: trimmed,
-        pluginContextBlock,
-        installedModelIds: installedModels,
-        currentModelId: activeModelIdRef.current,
-        remoteWorkerConnected: workerConnected,
-        autoMultiModelEnabled,
-        onModelHotSwap: (swappedModel, stageLabel) => {
-          activeModelIdRef.current = swappedModel.id;
-          setSelectedModelId(swappedModel.id);
-          setActiveStageBanner(stageLabel);
-        },
-        onStageProgress: (trace) => {
-          setActiveStageBanner(
-            `완료: ${trace.roleTitle} (${trace.modelShortName}, ${(trace.elapsedMs / 1000).toFixed(1)}초)`,
-          );
-        },
-        runRemoteInference: async (model, systemPrompt, userPrompt) => {
-          return await sendRequestToRemoteWorker({
-            modelId: model.id,
-            filename: model.filename,
-            downloadUrl: model.downloadUrl,
-            systemPrompt,
-            prompt: userPrompt,
-          });
+      const response = await multiModelOrchestrator.executeAutonomousPipeline({
+        userPrompt: trimmed,
+        installedModelIds,
+        primaryModelId,
+        autoMultiModelEnabled: autoMultiModel,
+        enabledPluginIds,
+        remotePC,
+        callbacks: {
+          onStatusUpdate: (s) => setLiveStatus(s),
+          onTokenStream: (partial) => setStreamingText(partial),
         },
       });
 
       const assistantMsg: ChatMessage = {
-        id: `a_${Date.now()}`,
+        id: `a-${Date.now()}`,
         role: 'assistant',
-        content: result.finalResponse || '(응답이 비어 있습니다)',
+        text: response.finalText || '응답을 생성하지 못했습니다.',
         timestamp: formatNowTime(),
-        traces: result.traces,
-        isMultiModel: result.isMultiModel,
+        pipelineSteps: response.steps,
+        pluginOutputs: response.pluginOutputs,
       };
-
-      setMessages((prev) => [...prev, assistantMsg]);
+      updateActiveSessionMessages((prev) => [...prev, assistantMsg]);
     } catch (err: any) {
-      const errorMsg: ChatMessage = {
-        id: `err_${Date.now()}`,
-        role: 'system',
-        content: `⚠️ 실행 오류: ${err?.message || '알 수 없는 오류가 발생했습니다.'}`,
+      const errMsg: ChatMessage = {
+        id: `err-${Date.now()}`,
+        role: 'assistant',
+        text: `⚠️ 실행 오류: ${err?.message || '알 수 없는 오류'}`,
         timestamp: formatNowTime(),
       };
-      setMessages((prev) => [...prev, errorMsg]);
+      updateActiveSessionMessages((prev) => [...prev, errMsg]);
     } finally {
       setIsGenerating(false);
-      setActiveStageBanner('');
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+      setLiveStatus('');
+      setStreamingText('');
     }
   };
 
-  const handleInsertTag = (tag: string) => {
-    setInputText((prev) => {
-      if (prev.includes(tag)) return prev;
-      return prev.trim().length > 0 ? `${tag} ${prev}` : `${tag} `;
-    });
+  const togglePlugin = (pluginId: string) => {
+    setEnabledPluginIds((prev) =>
+      prev.includes(pluginId) ? prev.filter((id) => id !== pluginId) : [...prev, pluginId],
+    );
   };
 
-  const filteredCatalog = AI_MODEL_CATALOG.filter((m) => {
-    const matchTier = tierFilter === 'all' || m.tier === tierFilter;
-    const q = modelSearchQuery.trim().toLowerCase();
-    const matchQuery =
+  const activeModelSpec =
+    safeCatalog.find((m) => m.id === primaryModelId) || safeCatalog[0];
+
+  const filteredPlugins = safePlugins.filter((p) => {
+    const matchCat = pluginCategory === '전체' || p.category === pluginCategory;
+    const q = pluginSearch.trim().toLowerCase();
+    const matchQ =
       !q ||
-      m.name.toLowerCase().includes(q) ||
-      m.family.toLowerCase().includes(q) ||
-      (Array.isArray(m.tags) && m.tags.some((t) => t.toLowerCase().includes(q))) ||
-      (Array.isArray(m.specialtyRoles) && m.specialtyRoles.some((r) => r.toLowerCase().includes(q)));
-    return matchTier && matchQuery;
+      p.name.toLowerCase().includes(q) ||
+      p.description.toLowerCase().includes(q) ||
+      p.id.toLowerCase().includes(q) ||
+      p.triggerKeywords.some((k) => k.toLowerCase().includes(q));
+    return matchCat && matchQ;
   });
 
-  const quickSwitchModels = AI_MODEL_CATALOG.filter(
-    (m) => installedModels.includes(m.id) || (workerConnected && m.tier !== 'ultra-light'),
-  );
-  const displayQuickModels =
-    quickSwitchModels.length > 0 ? quickSwitchModels : AI_MODEL_CATALOG.slice(0, 6);
+  const filteredModels = safeCatalog.filter((m) => {
+    if (modelTab === '초경량·무검열') return m.uncensored || m.tier === 'ultra-light';
+    if (modelTab === '경량 (3B~4B)') return m.tier === 'light';
+    if (modelTab === '중형 (7B~12B)') return m.tier === 'mid';
+    if (modelTab === 'PC GPU (14B+)') return m.tier === 'high';
+    return true;
+  });
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#0B0F19" />
+    <SafeAreaView style={styles.root}>
+      <StatusBar barStyle="light-content" backgroundColor="#212121" />
 
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Text style={styles.appTitle}>PocketMind AI</Text>
-          <Text style={styles.subTitle}>
-            활성: {currentModel?.shortName || '준비됨'} ({currentModel?.params || '-'})
+      {/* ================= ChatGPT 상단 헤더 ================= */}
+      <View style={styles.topHeader}>
+        <TouchableOpacity style={styles.iconBtn} onPress={() => setSidebarOpen(true)}>
+          <Text style={styles.iconBtnText}>☰</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.modelPillBtn}
+          onPress={() => setModelPickerOpen(true)}
+        >
+          <Text style={styles.modelPillBrand}>PocketMind</Text>
+          <Text style={styles.modelPillName} numberOfLines={1}>
+            {activeModelSpec ? activeModelSpec.shortName : '모델 선택'} ▾
           </Text>
-        </View>
+        </TouchableOpacity>
 
-        <View style={styles.headerControls}>
-          <View style={styles.switchPill}>
-            <Text style={styles.switchLabel}>멀티체인</Text>
-            <Switch
-              value={autoMultiModelEnabled}
-              onValueChange={setAutoMultiModelEnabled}
-              trackColor={{ false: '#334155', true: '#2563EB' }}
-              thumbColor="#F8FAFC"
-            />
+        <TouchableOpacity style={styles.iconBtn} onPress={handleNewChat}>
+          <Text style={styles.iconBtnText}>✎</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ================= ChatGPT 메인 대화 영역 ================= */}
+      <ScrollView
+        ref={scrollRef}
+        style={styles.chatArea}
+        contentContainerStyle={
+          messages.length === 0 ? styles.emptyChatContainer : styles.chatContentContainer
+        }
+        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+      >
+        {messages.length === 0 ? (
+          <View style={styles.welcomeHero}>
+            <View style={styles.logoCircle}>
+              <Text style={styles.logoSymbol}>✦</Text>
+            </View>
+            <Text style={styles.welcomeTitle}>무엇을 도와드릴까요?</Text>
+            <Text style={styles.welcomeSub}>
+              초경량 무검열 모델 · 자율 멀티모델 체인 · 플러그인 {enabledPluginIds.length}/60종 활성
+            </Text>
+
+            <View style={styles.suggestionGrid}>
+              <TouchableOpacity
+                style={styles.suggestionCard}
+                onPress={() =>
+                  handleSendMessage('@무검열 제한 없는 다크 판타지 소설 도입부를 써줘')
+                }
+              >
+                <Text style={styles.suggestionTitle}>🔓 초경량 무검열 모드</Text>
+                <Text style={styles.suggestionDesc}>
+                  Qwen2.5 Abliterated / Dolphin 3.0 즉시 실행
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.suggestionCard}
+                onPress={() => setPluginStoreOpen(true)}
+              >
+                <Text style={styles.suggestionTitle}>🧩 플러그인 60종 허브</Text>
+                <Text style={styles.suggestionDesc}>
+                  실시간 검색·환율·코딩·메모·AI부스터 관리
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.suggestionCard}
+                onPress={() =>
+                  handleSendMessage('지금 현재 시간과 비트코인 시세, 100달러 환율 알려줘')
+                }
+              >
+                <Text style={styles.suggestionTitle}>⚡ 실시간 플러그인 테스트</Text>
+                <Text style={styles.suggestionDesc}>
+                  시계 + 암호화폐 + 환율 플러그인 동시 구동
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.suggestionCard}
+                onPress={() => setModelStoreOpen(true)}
+              >
+                <Text style={styles.suggestionTitle}>📥 초경량 모델 다운로드</Text>
+                <Text style={styles.suggestionDesc}>
+                  490MB ~ 2GB 오프라인 GGUF 모델 설치
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
+        ) : (
+          messages.map((msg) => (
+            <View
+              key={msg.id}
+              style={msg.role === 'user' ? styles.userRow : styles.assistantRow}
+            >
+              {msg.role === 'user' ? (
+                <View style={styles.userBubble}>
+                  <Text style={styles.userBubbleText}>{msg.text}</Text>
+                </View>
+              ) : (
+                <View style={styles.assistantBlock}>
+                  <View style={styles.assistantHeaderRow}>
+                    <View style={styles.assistantAvatar}>
+                      <Text style={styles.assistantAvatarText}>✦</Text>
+                    </View>
+                    <Text style={styles.assistantName}>PocketMind</Text>
+                    {msg.pipelineSteps && msg.pipelineSteps.length > 0 && (
+                      <View style={styles.traceBadge}>
+                        <Text style={styles.traceBadgeText}>
+                          {msg.pipelineSteps.map((s) => s.modelName).join(' → ')}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
 
+                  {msg.pluginOutputs && msg.pluginOutputs.length > 0 && (
+                    <View style={styles.pluginResultBox}>
+                      <Text style={styles.pluginResultHeader}>
+                        🧩 실행된 플러그인 ({msg.pluginOutputs.length}개)
+                      </Text>
+                      {msg.pluginOutputs.map((po) => (
+                        <Text key={po.id} style={styles.pluginResultLine}>
+                          • {po.title}: {po.result}
+                        </Text>
+                      ))}
+                    </View>
+                  )}
+
+                  <Text style={styles.assistantBodyText}>{msg.text}</Text>
+                </View>
+              )}
+            </View>
+          ))
+        )}
+
+        {isGenerating && (
+          <View style={styles.assistantRow}>
+            <View style={styles.assistantBlock}>
+              <View style={styles.assistantHeaderRow}>
+                <View style={styles.assistantAvatar}>
+                  <Text style={styles.assistantAvatarText}>✦</Text>
+                </View>
+                <Text style={styles.streamingStatusText}>{liveStatus || '생성 중...'}</Text>
+              </View>
+              {streamingText ? (
+                <Text style={styles.assistantBodyText}>{streamingText}</Text>
+              ) : null}
+            </View>
+          </View>
+        )}
+      </ScrollView>
+
+      {/* ================= ChatGPT 하단 캡슐 입력창 ================= */}
+      <View style={styles.composerOuter}>
+        <View style={styles.composerPill}>
           <TouchableOpacity
-            style={[styles.iconBtn, workerConnected && styles.iconBtnConnected]}
-            onPress={() => setIsWorkerModalVisible(true)}>
-            <Text style={styles.iconBtnText}>{workerConnected ? 'GPU연결됨' : 'PC워커'}</Text>
+            style={styles.plusBtn}
+            onPress={() => setQuickPlusOpen(true)}
+          >
+            <Text style={styles.plusBtnText}>+</Text>
           </TouchableOpacity>
 
+          <TextInput
+            style={styles.composerInput}
+            value={inputText}
+            onChangeText={setInputText}
+            placeholder="PocketMind에게 메시지 보내기..."
+            placeholderTextColor="#8E8EA0"
+            multiline
+          />
+
           <TouchableOpacity
-            style={styles.modelManagerBtn}
-            onPress={() => setIsModelModalVisible(true)}>
-            <Text style={styles.modelManagerBtnText}>
-              모델 ({installedModels.length}/{AI_MODEL_CATALOG.length})
+            style={[
+              styles.sendCircleBtn,
+              (!inputText.trim() || isGenerating) && styles.sendCircleDisabled,
+            ]}
+            onPress={() => handleSendMessage()}
+            disabled={!inputText.trim() || isGenerating}
+          >
+            <Text
+              style={[
+                styles.sendArrowText,
+                (!inputText.trim() || isGenerating) && styles.sendArrowDisabled,
+              ]}
+            >
+              ↑
             </Text>
           </TouchableOpacity>
         </View>
       </View>
 
-      <View style={styles.hotSwapBar}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.hotSwapScroll}>
-          {displayQuickModels.map((model) => {
-            const isSelected = model.id === selectedModelId;
-            const isInstalled = installedModels.includes(model.id);
-            return (
-              <TouchableOpacity
-                key={model.id}
-                style={[
-                  styles.modelChip,
-                  isSelected && styles.modelChipActive,
-                  !isInstalled && !workerConnected && styles.modelChipUninstalled,
-                ]}
-                onPress={() => handleInstantModelSwitch(model)}>
-                <Text style={[styles.modelChipText, isSelected && styles.modelChipTextActive]}>
-                  {isInstalled ? '● ' : '☁ '}
-                  {model.shortName}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
-      </View>
-
-      {activeStageBanner.length > 0 && (
-        <View style={styles.stageBanner}>
-          <ActivityIndicator size="small" color="#38BDF8" style={{ marginRight: 8 }} />
-          <Text style={styles.stageBannerText} numberOfLines={1}>
-            {activeStageBanner}
-          </Text>
-        </View>
-      )}
-
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.chatList}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-        renderItem={({ item }) => {
-          const isUser = item.role === 'user';
-          const isSystem = item.role === 'system';
-          return (
-            <View
-              style={[
-                styles.messageBubble,
-                isUser ? styles.userBubble : isSystem ? styles.systemBubble : styles.assistantBubble,
-              ]}>
-              {item.traces && item.traces.length > 0 && (
-                <View style={styles.traceContainer}>
-                  <Text style={styles.traceHeader}>
-                    {item.isMultiModel
-                      ? `🔗 멀티 모델 파이프라인 (${item.traces.length}개 모델 협업)`
-                      : `⚡ 단일 모델 실행`}
-                  </Text>
-                  {item.traces.map((t) => (
-                    <Text key={`${item.id}_st_${t.stageIndex}`} style={styles.traceItem}>
-                      {t.stageIndex}. [{t.roleTitle}] {t.modelShortName} (
-                      {t.viaWorker ? 'PC GPU' : '로컬'}, {(t.elapsedMs / 1000).toFixed(1)}s)
-                    </Text>
-                  ))}
-                </View>
-              )}
-              <Text style={styles.messageText}>{item.content}</Text>
-              <Text style={styles.timestampText}>{item.timestamp}</Text>
-            </View>
-          );
-        }}
-      />
-
-      <View style={styles.tagBar}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.tagScroll}>
-          {QUICK_MODEL_TAGS.map((item) => (
-            <TouchableOpacity
-              key={item.tag}
-              style={styles.tagChip}
-              onPress={() => handleInsertTag(item.tag)}>
-              <Text style={styles.tagChipText}>{item.label}</Text>
+      {/* ================= 좌측 ChatGPT 사이드바 Drawer ================= */}
+      <Modal visible={sidebarOpen} transparent animationType="fade">
+        <View style={styles.drawerOverlay}>
+          <View style={styles.drawerPanel}>
+            <TouchableOpacity style={styles.drawerNewChatBtn} onPress={handleNewChat}>
+              <Text style={styles.drawerNewChatText}>✎  새 채팅</Text>
             </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
 
-      <View style={styles.inputRow}>
-        <TextInput
-          style={styles.textInput}
-          value={inputText}
-          onChangeText={setInputText}
-          placeholder="명령 입력 (예: @r1 @coder @exaone 알고리즘 설계하고 코드 짠 뒤 요약해줘)"
-          placeholderTextColor="#64748B"
-          multiline
-          maxLength={4000}
-        />
-        <TouchableOpacity
-          style={[styles.sendBtn, (!inputText.trim() || isGenerating) && styles.sendBtnDisabled]}
-          onPress={handleSend}
-          disabled={!inputText.trim() || isGenerating}>
-          {isGenerating ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
-          ) : (
-            <Text style={styles.sendBtnText}>전송</Text>
-          )}
-        </TouchableOpacity>
-      </View>
+            <TouchableOpacity
+              style={styles.drawerNavItem}
+              onPress={() => {
+                setSidebarOpen(false);
+                setPluginStoreOpen(true);
+              }}
+            >
+              <Text style={styles.drawerNavText}>
+                🧩  플러그인 60종 허브 ({enabledPluginIds.length}/60)
+              </Text>
+            </TouchableOpacity>
 
-      <Modal
-        visible={isModelModalVisible}
-        animationType="slide"
-        onRequestClose={() => setIsModelModalVisible(false)}>
-        <SafeAreaView style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>AI 모델 허브 ({AI_MODEL_CATALOG.length}종 GGUF)</Text>
-            <TouchableOpacity onPress={() => setIsModelModalVisible(false)}>
-              <Text style={styles.modalCloseText}>닫기</Text>
+            <TouchableOpacity
+              style={styles.drawerNavItem}
+              onPress={() => {
+                setSidebarOpen(false);
+                setModelStoreOpen(true);
+              }}
+            >
+              <Text style={styles.drawerNavText}>
+                🤖  AI 모델 허브 ({installedModelIds.length}개 설치됨)
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.drawerNavItem}
+              onPress={() => {
+                setSidebarOpen(false);
+                setPcWorkerOpen(true);
+              }}
+            >
+              <Text style={styles.drawerNavText}>
+                🖥️  PC GPU 워커 ({remotePC.enabled ? '연결됨' : '꺼짐'})
+              </Text>
+            </TouchableOpacity>
+
+            <View style={styles.drawerToggleRow}>
+              <Text style={styles.drawerToggleLabel}>🔗 자율 멀티모델 체인</Text>
+              <Switch
+                value={autoMultiModel}
+                onValueChange={setAutoMultiModel}
+                trackColor={{ false: '#3E3E42', true: '#10A37F' }}
+              />
+            </View>
+
+            <Text style={styles.drawerSectionTitle}>최근 대화</Text>
+            <ScrollView style={styles.drawerHistoryList}>
+              {sessions.map((sess) => (
+                <TouchableOpacity
+                  key={sess.id}
+                  style={[
+                    styles.drawerHistoryItem,
+                    sess.id === activeSession.id && styles.drawerHistoryActive,
+                  ]}
+                  onPress={() => {
+                    setActiveSessionId(sess.id);
+                    setSidebarOpen(false);
+                  }}
+                >
+                  <Text style={styles.drawerHistoryText} numberOfLines={1}>
+                    {sess.title}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <TouchableOpacity
+              style={styles.drawerCloseBtn}
+              onPress={() => setSidebarOpen(false)}
+            >
+              <Text style={styles.drawerCloseText}>닫기</Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            style={styles.drawerBackdrop}
+            onPress={() => setSidebarOpen(false)}
+          />
+        </View>
+      </Modal>
+
+      {/* ================= 상단 모델 빠른 전환 팝업 ================= */}
+      <Modal visible={modelPickerOpen} transparent animationType="slide">
+        <View style={styles.bottomSheetOverlay}>
+          <View style={styles.bottomSheetCard}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>활성 AI 모델 선택</Text>
+              <TouchableOpacity onPress={() => setModelPickerOpen(false)}>
+                <Text style={styles.sheetClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ maxHeight: 360 }}>
+              {safeCatalog.map((m) => {
+                const isInstalled = installedModelIds.includes(m.id);
+                const isSelected = primaryModelId === m.id;
+                return (
+                  <TouchableOpacity
+                    key={m.id}
+                    style={[styles.pickerRow, isSelected && styles.pickerRowSelected]}
+                    onPress={() => {
+                      if (isInstalled || remotePC.enabled) {
+                        setPrimaryModelId(m.id);
+                        setModelPickerOpen(false);
+                      } else {
+                        setModelPickerOpen(false);
+                        setModelStoreOpen(true);
+                      }
+                    }}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={styles.pickerModelName}>{m.shortName}</Text>
+                        {m.uncensored && (
+                          <View style={styles.uncensoredBadge}>
+                            <Text style={styles.uncensoredBadgeText}>무검열</Text>
+                          </View>
+                        )}
+                        {m.tier === 'ultra-light' && (
+                          <View style={styles.ultraLightBadge}>
+                            <Text style={styles.ultraLightBadgeText}>초경량</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.pickerModelMeta}>
+                        {m.params} · {m.sizeGB}GB · {isInstalled ? '설치됨' : '미설치'}
+                      </Text>
+                    </View>
+                    <Text style={styles.pickerCheck}>{isSelected ? '✓' : ''}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <TouchableOpacity
+              style={styles.sheetPrimaryBtn}
+              onPress={() => {
+                setModelPickerOpen(false);
+                setModelStoreOpen(true);
+              }}
+            >
+              <Text style={styles.sheetPrimaryBtnText}>+ 모델 다운로드 관리 열기</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ================= 입력창 '+' 빠른 실행 메뉴 ================= */}
+      <Modal visible={quickPlusOpen} transparent animationType="slide">
+        <View style={styles.bottomSheetOverlay}>
+          <View style={styles.bottomSheetCard}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>빠른 도구 및 모델 태그</Text>
+              <TouchableOpacity onPress={() => setQuickPlusOpen(false)}>
+                <Text style={styles.sheetClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.quickActionRow}>
+              <TouchableOpacity
+                style={styles.quickActionCard}
+                onPress={() => {
+                  setQuickPlusOpen(false);
+                  setPluginStoreOpen(true);
+                }}
+              >
+                <Text style={styles.quickActionIcon}>🧩</Text>
+                <Text style={styles.quickActionLabel}>플러그인 60종</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.quickActionCard}
+                onPress={() => {
+                  setQuickPlusOpen(false);
+                  setInputText((prev) => `@무검열 ${prev}`.trim() + ' ');
+                }}
+              >
+                <Text style={styles.quickActionIcon}>🔓</Text>
+                <Text style={styles.quickActionLabel}>@무검열 호출</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.quickActionCard}
+                onPress={() => {
+                  setQuickPlusOpen(false);
+                  setInputText((prev) => `@deepseek @coder @exaone ${prev}`.trim() + ' ');
+                }}
+              >
+                <Text style={styles.quickActionIcon}>🔗</Text>
+                <Text style={styles.quickActionLabel}>3단 멀티체인</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.quickSubHeader}>인기 플러그인 원터치 삽입</Text>
+            <ScrollView style={{ maxHeight: 220 }}>
+              {safePlugins.slice(0, 12).map((pl) => (
+                <TouchableOpacity
+                  key={pl.id}
+                  style={styles.quickPluginRow}
+                  onPress={() => {
+                    setQuickPlusOpen(false);
+                    setInputText(`/${pl.id} `);
+                  }}
+                >
+                  <Text style={styles.quickPluginTitle}>
+                    #{String(pl.index).padStart(2, '0')} {pl.name}
+                  </Text>
+                  <Text style={styles.quickPluginCmd}>/{pl.id}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ================= 60종 플러그인 전체 허브 모달 ================= */}
+      <Modal visible={pluginStoreOpen} animationType="slide">
+        <SafeAreaView style={styles.fullModal}>
+          <View style={styles.fullModalHeader}>
+            <Text style={styles.fullModalTitle}>
+              🧩 자율·수동 플러그인 허브 ({enabledPluginIds.length}/60 활성)
+            </Text>
+            <TouchableOpacity onPress={() => setPluginStoreOpen(false)}>
+              <Text style={styles.sheetClose}>닫기</Text>
             </TouchableOpacity>
           </View>
 
-          <TextInput
-            style={styles.searchInput}
-            value={modelSearchQuery}
-            onChangeText={setModelSearchQuery}
-            placeholder="모델명, Qwen3, Gemma3, DeepSeek, 무검열, 코딩 검색..."
-            placeholderTextColor="#64748B"
-          />
+          <View style={styles.searchBarBox}>
+            <TextInput
+              style={styles.searchInput}
+              value={pluginSearch}
+              onChangeText={setPluginSearch}
+              placeholder="플러그인 이름, 키워드, ID 검색..."
+              placeholderTextColor="#8E8EA0"
+            />
+          </View>
 
-          <View style={styles.filterRow}>
-            {(
-              [
-                { key: 'all', label: '전체' },
-                { key: 'ultra-light', label: '초경량(0.5~2B)' },
-                { key: 'light', label: '표준(3~4B)' },
-                { key: 'mid', label: '중형(7~12B)' },
-                { key: 'high', label: '대형(14~32B)' },
-              ] as { key: TierFilter; label: string }[]
-            ).map((tab) => (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.catScroll}
+            contentContainerStyle={{ paddingHorizontal: 14, gap: 8 }}
+          >
+            {PLUGIN_CATEGORIES.map((cat) => (
               <TouchableOpacity
-                key={tab.key}
-                style={[styles.filterTab, tierFilter === tab.key && styles.filterTabActive]}
-                onPress={() => setTierFilter(tab.key)}>
+                key={cat}
+                style={[styles.catChip, pluginCategory === cat && styles.catChipActive]}
+                onPress={() => setPluginCategory(cat)}
+              >
                 <Text
                   style={[
-                    styles.filterTabText,
-                    tierFilter === tab.key && styles.filterTabTextActive,
-                  ]}>
-                  {tab.label}
+                    styles.catChipText,
+                    pluginCategory === cat && styles.catChipTextActive,
+                  ]}
+                >
+                  {cat}
                 </Text>
               </TouchableOpacity>
             ))}
-          </View>
+          </ScrollView>
 
-          <FlatList
-            data={filteredCatalog}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.modelListContent}
-            renderItem={({ item }) => {
-              const isInstalled = installedModels.includes(item.id);
-              const isActive = item.id === selectedModelId;
-              const progress = downloadingMap[item.id];
-              const isDownloading = progress !== undefined;
-
+          <ScrollView style={styles.modalScrollBody}>
+            {filteredPlugins.map((pl) => {
+              const isEnabled = enabledPluginIds.includes(pl.id);
               return (
-                <View style={[styles.modelCard, isActive && styles.modelCardActive]}>
-                  <View style={styles.modelCardTop}>
+                <View key={pl.id} style={styles.pluginCard}>
+                  <View style={styles.pluginCardTop}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.modelName}>{item.name}</Text>
-                      <Text style={styles.modelMeta}>
-                        {item.params} · {item.quant} · {item.sizeGB}GB · 최소 RAM {item.minRamGB}GB
+                      <Text style={styles.pluginCardTitle}>
+                        #{String(pl.index).padStart(2, '0')} {pl.name}
+                      </Text>
+                      <Text style={styles.pluginCardCat}>
+                        {pl.category} · /{pl.id} · {pl.autoRun ? '자동트리거' : '수동호출'}
                       </Text>
                     </View>
-                    {item.uncensored && (
+                    <Switch
+                      value={isEnabled}
+                      onValueChange={() => togglePlugin(pl.id)}
+                      trackColor={{ false: '#3E3E42', true: '#10A37F' }}
+                    />
+                  </View>
+
+                  <Text style={styles.pluginCardDesc}>{pl.description}</Text>
+
+                  <View style={styles.pluginCardBottom}>
+                    <Text style={styles.pluginKeywordsText} numberOfLines={1}>
+                      키워드: {pl.triggerKeywords.join(', ')}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.pluginRunBtn}
+                      onPress={() => {
+                        setPluginStoreOpen(false);
+                        setInputText(`/${pl.id} `);
+                      }}
+                    >
+                      <Text style={styles.pluginRunBtnText}>즉시 입력</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* ================= AI 모델 허브 모달 (초경량 무검열 포함) ================= */}
+      <Modal visible={modelStoreOpen} animationType="slide">
+        <SafeAreaView style={styles.fullModal}>
+          <View style={styles.fullModalHeader}>
+            <Text style={styles.fullModalTitle}>🤖 온디바이스 GGUF 모델 허브</Text>
+            <TouchableOpacity onPress={() => setModelStoreOpen(false)}>
+              <Text style={styles.sheetClose}>닫기</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.catScroll}
+            contentContainerStyle={{ paddingHorizontal: 14, gap: 8 }}
+          >
+            {MODEL_FILTER_TABS.map((tab) => (
+              <TouchableOpacity
+                key={tab}
+                style={[styles.catChip, modelTab === tab && styles.catChipActive]}
+                onPress={() => setModelTab(tab)}
+              >
+                <Text
+                  style={[styles.catChipText, modelTab === tab && styles.catChipTextActive]}
+                >
+                  {tab}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          <ScrollView style={styles.modalScrollBody}>
+            {filteredModels.map((m) => {
+              const isInstalled = installedModelIds.includes(m.id);
+              const pct = downloadingMap[m.id];
+              return (
+                <View key={m.id} style={styles.modelCard}>
+                  <View style={styles.modelCardTop}>
+                    <Text style={styles.modelCardTitle}>{m.name}</Text>
+                    {m.uncensored && (
                       <View style={styles.uncensoredBadge}>
                         <Text style={styles.uncensoredBadgeText}>무검열</Text>
                       </View>
                     )}
                   </View>
 
-                  <Text style={styles.modelDesc}>{item.description}</Text>
+                  <Text style={styles.modelCardMeta}>
+                    파라미터: {m.params} · 용량: {m.sizeGB}GB · 권장 RAM: {m.minRamGB}GB+
+                  </Text>
+                  <Text style={styles.modelCardDesc}>{m.description}</Text>
 
-                  <View style={styles.tagWrap}>
-                    {(item.tags || []).map((t) => (
-                      <View key={t} style={styles.specTag}>
-                        <Text style={styles.specTagText}>{t}</Text>
-                      </View>
-                    ))}
-                  </View>
-
-                  <View style={styles.cardActions}>
-                    {isDownloading ? (
-                      <View style={styles.progressBox}>
-                        <ActivityIndicator size="small" color="#38BDF8" />
-                        <Text style={styles.progressText}>다운로드 중... {progress}%</Text>
-                      </View>
-                    ) : isInstalled ? (
+                  <View style={styles.modelCardActions}>
+                    {isInstalled ? (
                       <>
                         <TouchableOpacity
-                          style={[styles.actionBtnPrimary, isActive && styles.actionBtnCurrent]}
+                          style={[
+                            styles.useModelBtn,
+                            primaryModelId === m.id && styles.useModelBtnActive,
+                          ]}
                           onPress={() => {
-                            handleInstantModelSwitch(item);
-                            setIsModelModalVisible(false);
-                          }}>
-                          <Text style={styles.actionBtnText}>
-                            {isActive ? '현재 활성 모델' : '즉시 전환'}
+                            setPrimaryModelId(m.id);
+                            setModelStoreOpen(false);
+                          }}
+                        >
+                          <Text style={styles.useModelBtnText}>
+                            {primaryModelId === m.id ? '✓ 현재 선택됨' : '기본 모델로 사용'}
                           </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
-                          style={styles.actionBtnDelete}
-                          onPress={() => handleDeleteModel(item)}>
-                          <Text style={styles.actionBtnDeleteText}>삭제</Text>
+                          style={styles.delModelBtn}
+                          onPress={() => handleDeleteModel(m.id)}
+                        >
+                          <Text style={styles.delModelBtnText}>삭제</Text>
                         </TouchableOpacity>
                       </>
+                    ) : pct !== undefined ? (
+                      <View style={styles.progressBox}>
+                        <Text style={styles.progressText}>다운로드 중... {pct}%</Text>
+                      </View>
                     ) : (
-                      <>
-                        <TouchableOpacity
-                          style={styles.actionBtnDownload}
-                          onPress={() => handleDownloadModel(item)}>
-                          <Text style={styles.actionBtnText}>다운로드 ({item.sizeGB}GB)</Text>
-                        </TouchableOpacity>
-                        {workerConnected && (
-                          <TouchableOpacity
-                            style={styles.actionBtnWorker}
-                            onPress={() => {
-                              handleInstantModelSwitch(item);
-                              setIsModelModalVisible(false);
-                            }}>
-                            <Text style={styles.actionBtnText}>PC워커로 즉시 실행</Text>
-                          </TouchableOpacity>
-                        )}
-                      </>
+                      <TouchableOpacity
+                        style={styles.downloadModelBtn}
+                        onPress={() => handleDownloadModel(m.id)}
+                      >
+                        <Text style={styles.downloadModelBtnText}>
+                          다운로드 ({m.sizeGB}GB)
+                        </Text>
+                      </TouchableOpacity>
                     )}
                   </View>
                 </View>
               );
-            }}
-          />
+            })}
+          </ScrollView>
         </SafeAreaView>
       </Modal>
 
-      <Modal
-        visible={isWorkerModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setIsWorkerModalVisible(false)}>
-        <View style={styles.overlayBg}>
-          <View style={styles.workerBox}>
-            <Text style={styles.modalTitle}>원격 PC GPU 워커 연결</Text>
-            <Text style={styles.modelDesc}>
-              RTX 3060 12GB 등 PC 워커를 연결하면 스마트폰 용량 부담 없이 14B~32B 대형 모델과 다중 모델 체인을 초고속으로 실행합니다.
-            </Text>
-            <TextInput
-              style={styles.searchInput}
-              value={workerUrl}
-              onChangeText={setWorkerUrl}
-              placeholder="ws://192.168.0.10:8765"
-              placeholderTextColor="#64748B"
-              autoCapitalize="none"
-            />
-            <View style={styles.cardActions}>
-              <TouchableOpacity style={styles.actionBtnPrimary} onPress={connectRemoteWorker}>
-                <Text style={styles.actionBtnText}>연결하기</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.actionBtnDelete}
-                onPress={() => setIsWorkerModalVisible(false)}>
-                <Text style={styles.actionBtnDeleteText}>닫기</Text>
+      {/* ================= PC GPU 워커 모달 ================= */}
+      <Modal visible={pcWorkerOpen} transparent animationType="slide">
+        <View style={styles.bottomSheetOverlay}>
+          <View style={styles.bottomSheetCard}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>🖥️ 원격 PC GPU 워커 오프로딩</Text>
+              <TouchableOpacity onPress={() => setPcWorkerOpen(false)}>
+                <Text style={styles.sheetClose}>✕</Text>
               </TouchableOpacity>
             </View>
+
+            <View style={styles.drawerToggleRow}>
+              <Text style={styles.drawerToggleLabel}>PC GPU 워커 활성화</Text>
+              <Switch
+                value={remotePC.enabled}
+                onValueChange={(v) => setRemotePC((p) => ({ ...p, enabled: v }))}
+                trackColor={{ false: '#3E3E42', true: '#10A37F' }}
+              />
+            </View>
+
+            <Text style={styles.inputFieldLabel}>llama.cpp / Ollama 서버 주소</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={remotePC.serverUrl}
+              onChangeText={(t) => setRemotePC((p) => ({ ...p, serverUrl: t }))}
+              placeholder="http://192.168.0.10:8080"
+              placeholderTextColor="#8E8EA0"
+            />
+
+            <TouchableOpacity
+              style={styles.sheetPrimaryBtn}
+              onPress={() => setPcWorkerOpen(false)}
+            >
+              <Text style={styles.sheetPrimaryBtnText}>저장 후 닫기</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -835,262 +1030,743 @@ function PocketMindMain() {
 export default function App() {
   return (
     <AppCrashGuard>
-      <PocketMindMain />
+      <PocketMindChatGPTScreen />
     </AppCrashGuard>
   );
 }
 
+// ============================================================================
+// ChatGPT 다크 테마 스타일시트 (#212121 메인, #171717 사이드바, #2F2F2F 버블/입력창)
+// ============================================================================
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0B0F19' },
-  crashContainer: { flex: 1, backgroundColor: '#0B0F19', padding: 20, justifyContent: 'center' },
-  crashTitle: { color: '#F87171', fontSize: 18, fontWeight: '700', marginBottom: 10 },
-  crashMsg: { color: '#F8FAFC', fontSize: 15, fontWeight: '600', marginBottom: 12 },
-  crashScroll: {
-    maxHeight: 280,
-    backgroundColor: '#1E293B',
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 16,
-  },
-  crashStack: { color: '#94A3B8', fontSize: 11 },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: '#111827',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1F2937',
-  },
-  headerLeft: { flex: 1 },
-  appTitle: { color: '#F8FAFC', fontSize: 17, fontWeight: '700' },
-  subTitle: { color: '#38BDF8', fontSize: 12, marginTop: 2 },
-  headerControls: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  switchPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1E293B',
-    paddingLeft: 8,
-    paddingRight: 2,
-    borderRadius: 16,
-  },
-  switchLabel: { color: '#CBD5E1', fontSize: 11, fontWeight: '600', marginRight: 2 },
-  iconBtn: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 9,
-    paddingVertical: 7,
-    borderRadius: 8,
-  },
-  iconBtnConnected: { backgroundColor: '#065F46' },
-  iconBtnText: { color: '#E2E8F0', fontSize: 11, fontWeight: '600' },
-  modelManagerBtn: {
-    backgroundColor: '#2563EB',
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 8,
-  },
-  modelManagerBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
-  hotSwapBar: {
-    backgroundColor: '#0F172A',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
-    paddingVertical: 6,
-  },
-  hotSwapScroll: { paddingHorizontal: 12, gap: 6 },
-  modelChip: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  modelChipActive: { backgroundColor: '#1D4ED8', borderColor: '#60A5FA' },
-  modelChipUninstalled: { opacity: 0.7 },
-  modelChipText: { color: '#CBD5E1', fontSize: 12, fontWeight: '600' },
-  modelChipTextActive: { color: '#FFFFFF' },
-  stageBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0C4A6E',
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-  },
-  stageBannerText: { color: '#E0F2FE', fontSize: 12, fontWeight: '600', flex: 1 },
-  chatList: { padding: 14, gap: 10 },
-  messageBubble: { maxWidth: '88%', padding: 12, borderRadius: 14 },
-  userBubble: { alignSelf: 'flex-end', backgroundColor: '#2563EB' },
-  assistantBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#1E293B',
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  systemBubble: {
-    alignSelf: 'center',
-    backgroundColor: '#450A0A',
-    borderWidth: 1,
-    borderColor: '#991B1B',
-  },
-  traceContainer: {
-    backgroundColor: '#0F172A',
-    padding: 8,
-    borderRadius: 8,
-    marginBottom: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: '#38BDF8',
-  },
-  traceHeader: { color: '#38BDF8', fontSize: 11, fontWeight: '700', marginBottom: 4 },
-  traceItem: { color: '#94A3B8', fontSize: 11, lineHeight: 16 },
-  messageText: { color: '#F8FAFC', fontSize: 14, lineHeight: 20 },
-  timestampText: { color: '#94A3B8', fontSize: 10, marginTop: 6, alignSelf: 'flex-end' },
-  tagBar: {
-    backgroundColor: '#0F172A',
-    paddingVertical: 6,
-    borderTopWidth: 1,
-    borderTopColor: '#1E293B',
-  },
-  tagScroll: { paddingHorizontal: 12, gap: 6 },
-  tagChip: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  tagChipText: { color: '#93C5FD', fontSize: 11, fontWeight: '600' },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    padding: 10,
-    backgroundColor: '#111827',
-    gap: 8,
-  },
-  textInput: {
+  root: {
     flex: 1,
-    backgroundColor: '#1E293B',
-    color: '#F8FAFC',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    maxHeight: 110,
-    fontSize: 14,
+    backgroundColor: '#212121',
   },
-  sendBtn: {
-    backgroundColor: '#2563EB',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
+  crashContainer: {
+    flex: 1,
+    backgroundColor: '#171717',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  crashTitle: {
+    color: '#F87171',
+    fontSize: 20,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  crashSub: {
+    color: '#D1D5DB',
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  crashRetryBtn: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  crashRetryText: {
+    color: '#000000',
+    fontWeight: '700',
+  },
+
+  // Top Header
+  topHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: '#212121',
+  },
+  iconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  sendBtnDisabled: { backgroundColor: '#334155' },
-  sendBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
-  modalContainer: { flex: 1, backgroundColor: '#0B0F19' },
-  modalHeader: {
+  iconBtnText: {
+    color: '#ECECEC',
+    fontSize: 20,
+    fontWeight: '600',
+  },
+  modelPillBtn: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
-  },
-  modalTitle: { color: '#F8FAFC', fontSize: 17, fontWeight: '700' },
-  modalCloseText: { color: '#38BDF8', fontSize: 15, fontWeight: '600' },
-  searchInput: {
-    backgroundColor: '#1E293B',
-    color: '#F8FAFC',
-    marginHorizontal: 14,
-    marginTop: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 10,
-    fontSize: 13,
-  },
-  filterRow: {
-    flexDirection: 'row',
+    backgroundColor: '#2F2F2F',
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 7,
+    borderRadius: 18,
     gap: 6,
+    maxWidth: 230,
+  },
+  modelPillBrand: {
+    color: '#ECECEC',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  modelPillName: {
+    color: '#B4B4B4',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+
+  // Chat Feed
+  chatArea: {
+    flex: 1,
+  },
+  emptyChatContainer: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 24,
+  },
+  chatContentContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 24,
+  },
+  welcomeHero: {
+    alignItems: 'center',
+  },
+  logoCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  logoSymbol: {
+    color: '#000000',
+    fontSize: 24,
+    fontWeight: '700',
+  },
+  welcomeTitle: {
+    color: '#ECECEC',
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  welcomeSub: {
+    color: '#9B9B9B',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  suggestionGrid: {
+    width: '100%',
+    gap: 10,
+  },
+  suggestionCard: {
+    backgroundColor: '#2A2A2A',
+    borderWidth: 1,
+    borderColor: '#383838',
+    borderRadius: 16,
+    padding: 14,
+  },
+  suggestionTitle: {
+    color: '#ECECEC',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 3,
+  },
+  suggestionDesc: {
+    color: '#9B9B9B',
+    fontSize: 12,
+  },
+
+  // Messages
+  userRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginBottom: 18,
+  },
+  userBubble: {
+    backgroundColor: '#2F2F2F',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    maxWidth: '82%',
+  },
+  userBubbleText: {
+    color: '#ECECEC',
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  assistantRow: {
+    marginBottom: 22,
+  },
+  assistantBlock: {
+    width: '100%',
+  },
+  assistantHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 8,
     flexWrap: 'wrap',
   },
-  filterTab: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 14,
-  },
-  filterTabActive: { backgroundColor: '#2563EB' },
-  filterTabText: { color: '#94A3B8', fontSize: 11, fontWeight: '600' },
-  filterTabTextActive: { color: '#FFFFFF' },
-  modelListContent: { padding: 14, gap: 10 },
-  modelCard: {
-    backgroundColor: '#111827',
+  assistantAvatar: {
+    width: 24,
+    height: 24,
     borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#1F2937',
+    backgroundColor: '#10A37F',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  modelCardActive: { borderColor: '#3B82F6' },
-  modelCardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  modelName: { color: '#F8FAFC', fontSize: 15, fontWeight: '700' },
-  modelMeta: { color: '#38BDF8', fontSize: 12, marginTop: 2 },
-  uncensoredBadge: {
-    backgroundColor: '#7F1D1D',
+  assistantAvatarText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  assistantName: {
+    color: '#ECECEC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  traceBadge: {
+    backgroundColor: '#2A2A2A',
     paddingHorizontal: 8,
     paddingVertical: 3,
+    borderRadius: 10,
+  },
+  traceBadgeText: {
+    color: '#10A37F',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  streamingStatusText: {
+    color: '#10A37F',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  pluginResultBox: {
+    backgroundColor: '#1E2422',
+    borderLeftWidth: 3,
+    borderLeftColor: '#10A37F',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+  },
+  pluginResultHeader: {
+    color: '#10A37F',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  pluginResultLine: {
+    color: '#D1D5DB',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  assistantBodyText: {
+    color: '#ECECEC',
+    fontSize: 15,
+    lineHeight: 23,
+  },
+
+  // Bottom Composer Pill
+  composerOuter: {
+    paddingHorizontal: 14,
+    paddingTop: 6,
+    paddingBottom: Platform.OS === 'ios' ? 14 : 12,
+    backgroundColor: '#212121',
+  },
+  composerPill: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    backgroundColor: '#2F2F2F',
+    borderRadius: 26,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    minHeight: 50,
+  },
+  plusBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#3E3E42',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  plusBtnText: {
+    color: '#ECECEC',
+    fontSize: 22,
+    fontWeight: '400',
+    lineHeight: 24,
+  },
+  composerInput: {
+    flex: 1,
+    color: '#ECECEC',
+    fontSize: 15,
+    maxHeight: 120,
+    paddingVertical: 7,
+  },
+  sendCircleBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  sendCircleDisabled: {
+    backgroundColor: '#4A4A4F',
+  },
+  sendArrowText: {
+    color: '#000000',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  sendArrowDisabled: {
+    color: '#212121',
+  },
+
+  // Sidebar Drawer
+  drawerOverlay: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  drawerPanel: {
+    width: '78%',
+    maxWidth: 320,
+    backgroundColor: '#171717',
+    paddingTop: 48,
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+  },
+  drawerBackdrop: {
+    flex: 1,
+  },
+  drawerNewChatBtn: {
+    backgroundColor: '#262626',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    marginBottom: 14,
+  },
+  drawerNewChatText: {
+    color: '#ECECEC',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  drawerNavItem: {
+    paddingVertical: 11,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+  },
+  drawerNavText: {
+    color: '#D1D5DB',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  drawerToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    marginTop: 6,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#2A2A2A',
+  },
+  drawerToggleLabel: {
+    color: '#ECECEC',
+    fontSize: 14,
+  },
+  drawerSectionTitle: {
+    color: '#8E8EA0',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 16,
+    marginBottom: 8,
+    paddingHorizontal: 10,
+  },
+  drawerHistoryList: {
+    flex: 1,
+  },
+  drawerHistoryItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    marginBottom: 4,
+  },
+  drawerHistoryActive: {
+    backgroundColor: '#2A2A2A',
+  },
+  drawerHistoryText: {
+    color: '#ECECEC',
+    fontSize: 14,
+  },
+  drawerCloseBtn: {
+    backgroundColor: '#2F2F2F',
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  drawerCloseText: {
+    color: '#ECECEC',
+    fontWeight: '600',
+  },
+
+  // Bottom Sheets & Modals
+  bottomSheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'flex-end',
+  },
+  bottomSheetCard: {
+    backgroundColor: '#1E1E1E',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: 20,
+    paddingBottom: 30,
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  sheetTitle: {
+    color: '#ECECEC',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  sheetClose: {
+    color: '#B4B4B4',
+    fontSize: 16,
+    fontWeight: '600',
+    padding: 4,
+  },
+  pickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    marginBottom: 6,
+    backgroundColor: '#282828',
+  },
+  pickerRowSelected: {
+    borderWidth: 1,
+    borderColor: '#10A37F',
+  },
+  pickerModelName: {
+    color: '#ECECEC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  pickerModelMeta: {
+    color: '#9B9B9B',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  pickerCheck: {
+    color: '#10A37F',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  uncensoredBadge: {
+    backgroundColor: '#7F1D1D',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     borderRadius: 6,
   },
-  uncensoredBadgeText: { color: '#FCA5A5', fontSize: 11, fontWeight: '700' },
-  modelDesc: { color: '#CBD5E1', fontSize: 13, marginTop: 8, lineHeight: 18 },
-  tagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
-  specTag: { backgroundColor: '#1E293B', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
-  specTagText: { color: '#94A3B8', fontSize: 11 },
-  cardActions: { flexDirection: 'row', gap: 8, marginTop: 12 },
-  progressBox: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
-  progressText: { color: '#38BDF8', fontSize: 13, fontWeight: '600' },
-  actionBtnPrimary: {
-    flex: 1,
-    backgroundColor: '#2563EB',
-    paddingVertical: 9,
-    borderRadius: 8,
-    alignItems: 'center',
+  uncensoredBadgeText: {
+    color: '#FCA5A5',
+    fontSize: 10,
+    fontWeight: '700',
   },
-  actionBtnCurrent: { backgroundColor: '#059669' },
-  actionBtnDownload: {
-    flex: 1,
-    backgroundColor: '#0284C7',
-    paddingVertical: 9,
-    borderRadius: 8,
-    alignItems: 'center',
+  ultraLightBadge: {
+    backgroundColor: '#064E3B',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
   },
-  actionBtnWorker: {
-    flex: 1,
-    backgroundColor: '#4F46E5',
-    paddingVertical: 9,
-    borderRadius: 8,
-    alignItems: 'center',
+  ultraLightBadgeText: {
+    color: '#6EE7B7',
+    fontSize: 10,
+    fontWeight: '700',
   },
-  actionBtnDelete: {
-    backgroundColor: '#334155',
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  actionBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
-  actionBtnDeleteText: { color: '#FCA5A5', fontSize: 13, fontWeight: '600' },
-  overlayBg: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  workerBox: {
-    backgroundColor: '#111827',
+  sheetPrimaryBtn: {
+    backgroundColor: '#FFFFFF',
     borderRadius: 14,
-    padding: 18,
+    paddingVertical: 13,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  sheetPrimaryBtnText: {
+    color: '#000000',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  // Quick Plus Sheet
+  quickActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  quickActionCard: {
+    flex: 1,
+    backgroundColor: '#2A2A2A',
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  quickActionIcon: {
+    fontSize: 22,
+    marginBottom: 4,
+  },
+  quickActionLabel: {
+    color: '#ECECEC',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  quickSubHeader: {
+    color: '#9B9B9B',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  quickPluginRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2C2C2C',
+  },
+  quickPluginTitle: {
+    color: '#ECECEC',
+    fontSize: 13,
+  },
+  quickPluginCmd: {
+    color: '#10A37F',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  // Full Modals (Plugin Store & Model Hub)
+  fullModal: {
+    flex: 1,
+    backgroundColor: '#171717',
+  },
+  fullModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2A2A2A',
+  },
+  fullModalTitle: {
+    color: '#ECECEC',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  searchBarBox: {
+    paddingHorizontal: 14,
+    paddingTop: 10,
+  },
+  searchInput: {
+    backgroundColor: '#262626',
+    color: '#ECECEC',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+  },
+  catScroll: {
+    maxHeight: 48,
+    marginVertical: 10,
+  },
+  catChip: {
+    backgroundColor: '#262626',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
+  },
+  catChipActive: {
+    backgroundColor: '#FFFFFF',
+  },
+  catChipText: {
+    color: '#B4B4B4',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  catChipTextActive: {
+    color: '#000000',
+  },
+  modalScrollBody: {
+    flex: 1,
+    paddingHorizontal: 14,
+  },
+  pluginCard: {
+    backgroundColor: '#212121',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#2F2F2F',
+  },
+  pluginCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  pluginCardTitle: {
+    color: '#ECECEC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  pluginCardCat: {
+    color: '#10A37F',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  pluginCardDesc: {
+    color: '#B4B4B4',
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 10,
+  },
+  pluginCardBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  pluginKeywordsText: {
+    color: '#8E8EA0',
+    fontSize: 11,
+    flex: 1,
+    marginRight: 8,
+  },
+  pluginRunBtn: {
+    backgroundColor: '#2F2F2F',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  pluginRunBtnText: {
+    color: '#ECECEC',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  // Model Store Cards
+  modelCard: {
+    backgroundColor: '#212121',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#2F2F2F',
+  },
+  modelCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+    gap: 8,
+  },
+  modelCardTitle: {
+    color: '#ECECEC',
+    fontSize: 15,
+    fontWeight: '700',
+    flex: 1,
+  },
+  modelCardMeta: {
+    color: '#10A37F',
+    fontSize: 12,
+    marginBottom: 6,
+  },
+  modelCardDesc: {
+    color: '#B4B4B4',
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  modelCardActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  downloadModelBtn: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  downloadModelBtnText: {
+    color: '#000000',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  useModelBtn: {
+    flex: 1,
+    backgroundColor: '#2F2F2F',
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  useModelBtnActive: {
+    backgroundColor: '#10A37F',
+  },
+  useModelBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  delModelBtn: {
+    backgroundColor: '#3F1D1D',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    justifyContent: 'center',
+  },
+  delModelBtnText: {
+    color: '#FCA5A5',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  progressBox: {
+    flex: 1,
+    backgroundColor: '#2A2A2A',
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  progressText: {
+    color: '#10A37F',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  inputFieldLabel: {
+    color: '#B4B4B4',
+    fontSize: 12,
+    marginTop: 12,
+    marginBottom: 6,
+  },
+  modalInput: {
+    backgroundColor: '#2A2A2A',
+    color: '#ECECEC',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
   },
 });
