@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -66,7 +67,15 @@ class PocketMindWorkerService : Service() {
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    startForeground(NOTIFICATION_ID, notification())
+    if (Build.VERSION.SDK_INT >= 34) {
+      startForeground(
+        NOTIFICATION_ID,
+        notification(),
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+      )
+    } else {
+      startForeground(NOTIFICATION_ID, notification())
+    }
     handler.removeCallbacks(startIteration)
     handler.post(startIteration)
     return START_STICKY
