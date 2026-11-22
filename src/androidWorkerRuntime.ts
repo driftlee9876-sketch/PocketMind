@@ -27,7 +27,7 @@ async function requestJson(
   const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/json' };
   if (token && headerName === 'X-Enrollment-Token') headers[headerName] = token;
   else if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(`${baseUrl.replace(/\\/+$/, '')}${path}`, {
+  const response = await fetch(`${baseUrl.replace(/\/+$/, '')}${path}`, {
     method: body === undefined ? 'GET' : 'POST',
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -41,7 +41,7 @@ async function requestJson(
 }
 
 async function getWorkerToken(config: WorkerConfig): Promise<string> {
-  const baseUrl = config.coordinatorUrl.trim().replace(/\\/+$/, '');
+  const baseUrl = config.coordinatorUrl.trim().replace(/\/+$/, '');
   let token = await NativeModules.PocketMindWorker.getSecret(WORKER_TOKEN_KEY);
   if (token) {
     try {
@@ -95,7 +95,7 @@ export async function runAndroidWorkerTask(): Promise<void> {
     const config = (await native.getConfig()) as WorkerConfig;
     if (!config?.enabled) return;
 
-    const baseUrl = config.coordinatorUrl.trim().replace(/\\/+$/, '');
+    const baseUrl = config.coordinatorUrl.trim().replace(/\/+$/, '');
     if (!/^https:\\/\\//i.test(baseUrl) && !/^http:\\/\\/(localhost|127\\.0\\.1|10\\.|192\\.168\\.)/i.test(baseUrl)) {
       throw new Error('Worker coordinator must use HTTPS unless it is on a trusted local network.');
     }
