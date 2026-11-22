@@ -2,6 +2,7 @@ package com.pocketmind
 
 import android.content.Context
 import android.content.Intent
+import android.app.ActivityManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
@@ -151,6 +152,18 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
     context.getSharedPreferences("pocketmind_worker_secrets", Context.MODE_PRIVATE)
       .edit().remove(name).apply()
     promise.resolve(true)
+  }
+
+  @ReactMethod
+  fun getTotalRamMb(promise: Promise) {
+    try {
+      val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+      val memoryInfo = ActivityManager.MemoryInfo()
+      manager.getMemoryInfo(memoryInfo)
+      promise.resolve((memoryInfo.totalMem / (1024L * 1024L)).toInt())
+    } catch (error: Exception) {
+      promise.reject("WORKER_RAM_FAILED", error)
+    }
   }
 
   @ReactMethod
