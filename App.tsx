@@ -121,6 +121,7 @@ interface ChatSession {
   id: string;
   title: string;
   messages: ChatMessage[];
+  pinned?: boolean;
 }
 
 interface DeviceMetrics {
@@ -140,7 +141,7 @@ function summarizeSessionPreview(session: ChatSession): string {
   const latestAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
   const latestUser = [...session.messages].reverse().find((message) => message.role === 'user');
   const source = latestAssistant?.text || latestUser?.text || '아직 대화가 없습니다.';
-  const clean = source.replace(/\\s+/g, ' ').trim();
+  const clean = source.replace(/\s+/g, ' ').trim();
   return clean.length > 72 ? `${clean.slice(0, 69)}…` : clean;
 }
 
@@ -165,6 +166,7 @@ function PocketMindChatGPTScreen() {
   ]);
   const [activeSessionId, setActiveSessionId] = useState<string>('session-1');
   const [historyReady, setHistoryReady] = useState(false);
+  const [historySearch, setHistorySearch] = useState('');
   const [deviceMetrics, setDeviceMetrics] = useState<DeviceMetrics | null>(null);
   const [connectionSettingsReady, setConnectionSettingsReady] = useState(false);
 
@@ -262,6 +264,7 @@ function PocketMindChatGPTScreen() {
           .map((session: any) => ({
             id: session.id,
             title: typeof session.title === 'string' ? session.title.slice(0, 80) : '대화',
+            pinned: session.pinned === true,
             messages: session.messages
               .filter((message: any) => message && typeof message.id === 'string' &&
                 (message.role === 'user' || message.role === 'assistant') && typeof message.text === 'string')
@@ -369,6 +372,20 @@ function PocketMindChatGPTScreen() {
         return { ...sess, title: nextTitle, messages: nextMsgs };
       }),
     );
+  };
+
+  const visibleSessions = sessions
+    .filter((session) => {
+      const query = historySearch.trim().toLocaleLowerCase();
+      return !query || session.title.toLocaleLowerCase().includes(query) ||
+        summarizeSessionPreview(session).toLocaleLowerCase().includes(query);
+    })
+    .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+
+  const toggleSessionPinned = (sessionId: string) => {
+    setSessions((previous) => previous.map((session) =>
+      session.id === sessionId ? { ...session, pinned: !session.pinned } : session,
+    ));
   };
 
   const handleNewChat = () => {
@@ -953,9 +970,18 @@ function PocketMindChatGPTScreen() {
               />
             </View>
 
-            <Text style={styles.drawerSectionTitle}>최근 대화</Text>
+            <Text style={styles.drawerSectionTitle}>대화 기록</Text>
+            <TextInput
+              style={styles.historySearchInput}
+              value={historySearch}
+              onChangeText={setHistorySearch}
+              placeholder="대화 검색"
+              placeholderTextColor="#8E8EA0"
+              returnKeyType="search"
+              autoCapitalize="none"
+            />
             <ScrollView style={styles.drawerHistoryList}>
-              {sessions.map((sess) => (
+              {visibleSessions.map((sess) => (
                 <TouchableOpacity
                   key={sess.id}
                   style={[
@@ -966,9 +992,17 @@ function PocketMindChatGPTScreen() {
                     setActiveSessionId(sess.id);
                     setSidebarOpen(false);
                   }}
+                  onLongPress={() => Alert.alert(
+                    sess.pinned ? '고정 해제' : '대화 고정',
+                    `“${sess.title}” 대화를 ${sess.pinned ? '고정 해제' : '상단에 고정'}할까요?`,
+                    [
+                      { text: '취소', style: 'cancel' },
+                      { text: sess.pinned ? '고정 해제' : '고정', onPress: () => toggleSessionPinned(sess.id) },
+                    ],
+                  )}
                 >
                   <View style={styles.drawerHistoryTextWrap}>
-                    <Text style={styles.drawerHistoryText} numberOfLines={1}>{sess.title}</Text>
+                    <Text style={styles.drawerHistoryText} numberOfLines={1}>{sess.pinned ? '📌 ' : ''}{sess.title}</Text>
                     <Text style={styles.drawerHistoryMeta} numberOfLines={1}>{summarizeSessionPreview(sess)}</Text>
                   </View>
                 </TouchableOpacity>
@@ -1905,6 +1939,18 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginBottom: 8,
     paddingHorizontal: 10,
+  },
+  historySearchInput: {
+    backgroundColor: '#262626',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#383838',
+    color: '#ECECEC',
+    fontSize: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginHorizontal: 6,
+    marginBottom: 10,
   },
   drawerHistoryList: {
     flex: 1,
