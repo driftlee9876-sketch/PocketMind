@@ -1,6 +1,8 @@
 // src/multiModelOrchestrator.ts
 // 자율형 다중 모델 오케스트레이션 파이프라인 + 초경량 무검열 모델 라우팅 + 60종 플러그인 연동
 
+import { runDistributedInference, isCoordinatorEndpoint } from './distributedCoordinatorClient';
+
 import {
   AI_MODEL_CATALOG,
   AIModelSpec,
@@ -343,8 +345,31 @@ class MultiModelOrchestratorEngine {
       (model.tier === 'high' || model.tier === 'mid');
 
     if (preferPC) {
+      let coordinatorAvailable = false;
       try {
-        callbacks?.onStatusUpdate?.(`🖥️ PC GPU 워커로 [${model.shortName}] 연산 오프로딩 중...`);
+        coordinatorAvailable = await isCoordinatorEndpoint(remoteConfig.serverUrl);
+        if (coordinatorAvailable) {
+          callbacks?.onStatusUpdate?.(`🌐 Worker 네트워크에서 [${model.shortName}] 지원 기기를 찾는 중...`);
+          const distributed = await runDistributedInference({
+            coordinatorUrl: remoteConfig.serverUrl,
+            apiToken: remoteConfig.apiKey || '',
+            modelId: model.id,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+            temperature: model.uncensored ? 0.8 : 0.6,
+            maxTokens: 1536,
+            requireGpu: model.tier === 'high' || model.tier === 'mid',
+            minimumRamMb: model.minRamGB * 1024,
+            timeoutMs: 10 * 60 * 1000,
+            onStatus: callbacks?.onStatusUpdate,
+          });
+          callbacks?.onTokenStream?.(distributed.output);
+          return { output: distributed.output, location: 'pc-worker', durationMs: Date.now() - startTime };
+        }
+
+        callbacks?.onStatusUpdate?.(`🖥️ 기존 OpenAI 호환 PC 서버로 [${model.shortName}] 연결 중...`);
         const pcOut = await this.runRemotePCInference(
           remoteConfig,
           model,
@@ -353,8 +378,11 @@ class MultiModelOrchestratorEngine {
           callbacks?.onTokenStream,
         );
         return { output: pcOut, location: 'pc-worker', durationMs: Date.now() - startTime };
-      } catch {
-        callbacks?.onStatusUpdate?.(`⚠️ PC 서버 응답 없음 → 스마트폰 로컬 엔진으로 전환`);
+      } catch (error) {
+        // A configured coordinator that has accepted a task must report its failure;
+        // do not silently claim the work was completed locally.
+        if (coordinatorAvailable) throw error;
+        callbacks?.onStatusUpdate?.(`⚠️ 원격 서버 응답 없음 → 스마트폰 로컬 엔진으로 전환`);
       }
     }
 
