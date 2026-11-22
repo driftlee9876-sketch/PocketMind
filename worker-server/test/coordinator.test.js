@@ -14,9 +14,9 @@ async function freePort() {
   return port;
 }
 
-async function waitForHealth(url, child) {
+async function waitForHealth(url, child, getOutput) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    if (child.exitCode !== null) throw new Error('Coordinator exited before becoming healthy.');
+    if (child.exitCode !== null) throw new Error('Coordinator exited before becoming healthy. ' + getOutput());
     try {
       const response = await fetch(url + '/v1/health');
       if (response.ok) return;
@@ -51,7 +51,7 @@ test('coordinator authenticates, enrolls workers, leases tasks and validates res
   });
 
   const baseUrl = 'http://127.0.0.1:' + port;
-  await waitForHealth(baseUrl, child);
+  await waitForHealth(baseUrl, child, getOutput);
   const request = (method, endpoint, payload, token, extraHeaders = {}) => fetch(baseUrl + endpoint, {
     method,
     headers: {
