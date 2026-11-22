@@ -32,3 +32,23 @@ Tasks are only leased to workers that explicitly opted in, are idle and thermall
 ## Model execution
 
 The coordinator does not run models. Workers run their local inference backend and send results back. See `../workers/windows/README.md` for the Windows GPU worker.
+
+## Connected-app actions
+
+The coordinator can dispatch approved app actions to **server-configured HTTPS webhooks** (n8n, Make, Zapier, or a trusted custom adapter). Set `POCKETMIND_INTEGRATION_WEBHOOKS_JSON` to a JSON object mapping catalog integration IDs to HTTPS webhook URLs, for example:
+
+```json
+{
+  "google-gmail": "https://automation.example/webhook/gmail",
+  "google-calendar": "https://automation.example/webhook/calendar",
+  "custom-webhook": "https://automation.example/webhook/pocketmind"
+}
+```
+
+- `GET /v1/integrations` lists only configured connector IDs.
+- `POST /v1/integrations/actions` dispatches `risk=read` actions immediately.
+- Actions with `risk=write` or `risk=sensitive` are stored as `awaiting_approval` and are **not sent** until `POST /v1/integrations/actions/:id/approve`.
+- `POST /v1/integrations/actions/:id/reject` rejects a pending action.
+- `GET /v1/integrations/actions/:id` returns status and adapter result.
+
+The webhook URL and provider credentials stay on the coordinator, not in the mobile app. Configure OAuth/bot credentials in your automation platform or adapter. A catalog entry alone is not an authenticated provider integration: it becomes operational only after its trusted webhook is configured and its adapter is implemented. Payment, purchases, bookings, account deletion, and other irreversible actions should require an additional provider-side confirmation as well.
