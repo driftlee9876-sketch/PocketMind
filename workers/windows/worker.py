@@ -27,6 +27,12 @@ ENROLLMENT_TOKEN = os.environ.get("POCKETMIND_ENROLLMENT_TOKEN", "")
 LOCAL_LLM_URL = os.environ.get("POCKETMIND_LOCAL_LLM_URL", "http://127.0.0.1:8080").rstrip("/")
 LOCAL_LLM_MODEL = os.environ.get("POCKETMIND_LOCAL_LLM_MODEL", "local-model")
 MODEL_IDS = [v.strip() for v in os.environ.get("POCKETMIND_MODEL_IDS", "").split(",") if v.strip()]
+try:
+    MODEL_MAP = json.loads(os.environ.get("POCKETMIND_LOCAL_MODEL_MAP_JSON", "{}"))
+    if not isinstance(MODEL_MAP, dict):
+        MODEL_MAP = {}
+except (ValueError, TypeError):
+    MODEL_MAP = {}
 BACKEND = os.environ.get("POCKETMIND_BACKEND", "cuda")
 GPU_SETTING = os.environ.get("POCKETMIND_GPU_AVAILABLE", "auto").lower()
 GPU_MEMORY_OVERRIDE_MB = int(os.environ.get("POCKETMIND_GPU_MEMORY_MB", "0") or 0)
@@ -209,7 +215,7 @@ def call_local_model(payload: dict[str, Any], model_id: str) -> str:
     if not isinstance(messages, list) or not messages:
         raise RuntimeError("Task has no chat messages.")
     request_body = {
-        "model": LOCAL_LLM_MODEL or model_id,
+        "model": MODEL_MAP.get(model_id, LOCAL_LLM_MODEL or model_id),
         "messages": messages,
         "temperature": float(payload.get("temperature", 0.6)),
         "max_tokens": min(MAX_TOKENS, int(payload.get("max_tokens", MAX_TOKENS))),
