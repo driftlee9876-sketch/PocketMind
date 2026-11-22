@@ -162,7 +162,14 @@ function PocketMindChatGPTScreen() {
   const [modelStoreOpen, setModelStoreOpen] = useState(false);
   const [pluginStoreOpen, setPluginStoreOpen] = useState(false);
   const [quickPlusOpen, setQuickPlusOpen] = useState(false);
-  const [pcWorkerOpen, setPcWorkerOpen] = useState(false);\n  const [connectedAppsOpen, setConnectedAppsOpen] = useState(false);\n  const [androidWorkerOpen, setAndroidWorkerOpen] = useState(false);\n  const [androidWorkerRunning, setAndroidWorkerRunning] = useState(false);\n  const [workerEnrollmentToken, setWorkerEnrollmentToken] = useState('');\n  const [workerModelIds, setWorkerModelIds] = useState<string[]>([]);\n  const [workerUseGpu, setWorkerUseGpu] = useState(false);\n  const [configuredIntegrationIds, setConfiguredIntegrationIds] = useState<string[]>([]);
+  const [pcWorkerOpen, setPcWorkerOpen] = useState(false);
+  const [connectedAppsOpen, setConnectedAppsOpen] = useState(false);
+  const [androidWorkerOpen, setAndroidWorkerOpen] = useState(false);
+  const [androidWorkerRunning, setAndroidWorkerRunning] = useState(false);
+  const [workerEnrollmentToken, setWorkerEnrollmentToken] = useState('');
+  const [workerModelIds, setWorkerModelIds] = useState<string[]>([]);
+  const [workerUseGpu, setWorkerUseGpu] = useState(false);
+  const [configuredIntegrationIds, setConfiguredIntegrationIds] = useState<string[]>([]);
   const [coordinatorWorkers, setCoordinatorWorkers] = useState<CoordinatorWorker[]>([]);
   const [workerDiscoveryMessage, setWorkerDiscoveryMessage] = useState('아직 검색하지 않았습니다.');
 
