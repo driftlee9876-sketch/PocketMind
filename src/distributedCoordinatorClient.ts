@@ -86,7 +86,14 @@ async function coordinatorFetch<T>(
 
 export async function isCoordinatorEndpoint(baseUrlValue: string): Promise<boolean> {
   const baseUrl = normalizeBaseUrl(baseUrlValue);
-  if (!/^https?:\\/\\//i.test(baseUrl)) return false;
+  const normalized = baseUrl.toLowerCase();
+  const secureUrl = normalized.startsWith('https://');
+  const trustedLocalHttp =
+    normalized.startsWith('http://localhost') ||
+    normalized.startsWith('http://127.0.0.1') ||
+    normalized.startsWith('http://10.') ||
+    normalized.startsWith('http://192.168.');
+  if (!secureUrl && !trustedLocalHttp) return false;
   try {
     const response = await fetch(`${baseUrl}/v1/health`);
     if (!response.ok) return false;
