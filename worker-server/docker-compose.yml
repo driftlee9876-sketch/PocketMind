@@ -1,0 +1,23 @@
+services:
+  pocketmind-coordinator:
+    build: .
+    container_name: pocketmind-coordinator
+    restart: unless-stopped
+    ports:
+      # Bind to localhost and put an HTTPS reverse proxy in front of it.
+      - "127.0.0.1:8787:8787"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8787"
+      POCKETMIND_API_TOKEN: ${POCKETMIND_API_TOKEN:?Set a strong API token in your environment}
+      POCKETMIND_ENROLLMENT_TOKEN: ${POCKETMIND_ENROLLMENT_TOKEN:?Set a different strong enrollment token}
+      POCKETMIND_DATA_FILE: "/app/data/pocketmind-state.json"
+      POCKETMIND_LEASE_MS: "90000"
+      POCKETMIND_HEARTBEAT_TIMEOUT_MS: "60000"
+      POCKETMIND_ALLOWED_ORIGINS: ${POCKETMIND_ALLOWED_ORIGINS:-}
+      POCKETMIND_INTEGRATION_WEBHOOKS_JSON: ${POCKETMIND_INTEGRATION_WEBHOOKS_JSON:-{}}
+    volumes:
+      - pocketmind-state:/app/data
+
+volumes:
+  pocketmind-state:
