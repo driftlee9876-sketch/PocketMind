@@ -19,7 +19,7 @@ This roadmap follows the product direction: all planned capabilities, a simple G
 - [x] Search conversation titles and previews.
 - [x] Pin important conversations in the sidebar.
 - [x] Add safe conversation rename and delete actions.
-- [ ] Add message copy, retry, and edit/resend actions.
+- [x] Add message copy, retry, edit/resend, and generation stop actions.
 - [ ] Add robust export/import and backup/restore.
 
 ### 2. On-device model experience
@@ -40,6 +40,7 @@ This roadmap follows the product direction: all planned capabilities, a simple G
 ### 4. Connected apps and automation
 - [x] Provide a catalog and approval UI for write actions.
 - [ ] Add per-provider setup validation and connection test.
+- [x] Add searchable connection status, setup filters, refresh feedback, and official setup links.
 - [ ] Add action history and clear retry/error states.
 - [ ] Enable only integrations with a verified trusted adapter and official credentials.
 

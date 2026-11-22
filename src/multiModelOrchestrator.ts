@@ -40,6 +40,10 @@ export interface InferenceCallbacks {
   onStepComplete?: (step: PipelineStepResult) => void;
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('사용자가 생성을 중지했습니다.');
+}
+
 const SAFE_DEFAULT_MODELS: AIModelSpec[] = [
   {
     id: 'qwen2.5-0.5b-abliterated',
@@ -304,6 +308,7 @@ class MultiModelOrchestratorEngine {
     systemPrompt: string,
     userPrompt: string,
     onToken?: (partial: string) => void,
+    signal?: AbortSignal,
   ): Promise<string> {
     const endpoint = `${remoteConfig.serverUrl.replace(/\/$/, '')}/v1/chat/completions`;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -311,6 +316,7 @@ class MultiModelOrchestratorEngine {
 
     const res = await fetch(endpoint, {
       method: 'POST',
+      signal,
       headers,
       body: JSON.stringify({
         model: model.filename,
@@ -337,7 +343,9 @@ class MultiModelOrchestratorEngine {
     userPrompt: string,
     remoteConfig: RemotePCConfig,
     callbacks?: InferenceCallbacks,
+    signal?: AbortSignal,
   ): Promise<{ output: string; location: 'on-device' | 'pc-worker'; durationMs: number }> {
+    throwIfAborted(signal);
     const startTime = Date.now();
     // Explicit remote enablement opts any model tier into the shared Worker queue.
     // Higher tiers additionally require a GPU-capable Worker below.
@@ -346,7 +354,7 @@ class MultiModelOrchestratorEngine {
     if (preferPC) {
       let coordinatorAvailable = false;
       try {
-        coordinatorAvailable = await isCoordinatorEndpoint(remoteConfig.serverUrl);
+        coordinatorAvailable = await isCoordinatorEndpoint(remoteConfig.serverUrl, signal);
         if (coordinatorAvailable) {
           callbacks?.onStatusUpdate?.(`🌐 Worker 네트워크에서 [${model.shortName}] 지원 기기를 찾는 중...`);
           const distributed = await runDistributedInference({
@@ -367,6 +375,7 @@ class MultiModelOrchestratorEngine {
                 : undefined,
             timeoutMs: 10 * 60 * 1000,
             onStatus: callbacks?.onStatusUpdate,
+            signal,
           });
           callbacks?.onTokenStream?.(distributed.output);
           return { output: distributed.output, location: 'pc-worker', durationMs: Date.now() - startTime };
@@ -379,6 +388,7 @@ class MultiModelOrchestratorEngine {
           systemPrompt,
           userPrompt,
           callbacks?.onTokenStream,
+          signal,
         );
         return { output: pcOut, location: 'pc-worker', durationMs: Date.now() - startTime };
       } catch (error) {
@@ -389,7 +399,9 @@ class MultiModelOrchestratorEngine {
       }
     }
 
+    throwIfAborted(signal);
     await this.ensureModelLoaded(model, callbacks?.onStatusUpdate);
+    throwIfAborted(signal);
     let accumulated = '';
     const result = await this.activeContext.completion(
       {
@@ -403,13 +415,14 @@ class MultiModelOrchestratorEngine {
         stop: ['</s>', '<|im_end|>', '<|eot_id|>', '<|end_of_text|>'],
       },
       (data: { token?: string }) => {
-        if (data?.token) {
+        if (data?.token && !signal?.aborted) {
           accumulated += data.token;
           callbacks?.onTokenStream?.(accumulated);
         }
       },
     );
 
+    throwIfAborted(signal);
     const finalStr = (result?.text || accumulated || '').trim();
     return { output: finalStr, location: 'on-device', durationMs: Date.now() - startTime };
   }
@@ -422,6 +435,7 @@ class MultiModelOrchestratorEngine {
     enabledPluginIds?: string[];
     remotePC: RemotePCConfig;
     callbacks?: InferenceCallbacks;
+    signal?: AbortSignal;
   }): Promise<OrchestratorResponse> {
     const {
       userPrompt,
@@ -431,7 +445,10 @@ class MultiModelOrchestratorEngine {
       enabledPluginIds,
       remotePC,
       callbacks,
+      signal,
     } = params;
+
+    throwIfAborted(signal);
 
     const catalog = getSafeCatalog();
     const { cleanPrompt, requestedModelIds } = this.parseExplicitDirectives(userPrompt);
@@ -536,6 +553,7 @@ class MultiModelOrchestratorEngine {
 
     let previousStageOutput = '';
     for (let i = 0; i < pipelinePlan.length; i++) {
+      throwIfAborted(signal);
       const stage = pipelinePlan[i];
       const isLast = i === pipelinePlan.length - 1;
       callbacks?.onStatusUpdate?.(
@@ -550,7 +568,7 @@ class MultiModelOrchestratorEngine {
       const res = await this.runSingleStage(stage.model, stage.sysPrompt, stageInput, remotePC, {
         onStatusUpdate: callbacks?.onStatusUpdate,
         onTokenStream: isLast ? callbacks?.onTokenStream : undefined,
-      });
+      }, signal);
 
       const stepRecord: PipelineStepResult = {
         stepIndex: i + 1,
@@ -581,6 +599,14 @@ class MultiModelOrchestratorEngine {
       } catch {}
       this.activeContext = null;
       this.loadedModelId = null;
+    }
+  }
+
+  public async cancelActive(): Promise<void> {
+    if (this.activeContext && typeof this.activeContext.stopCompletion === 'function') {
+      try {
+        await this.activeContext.stopCompletion();
+      } catch {}
     }
   }
 }

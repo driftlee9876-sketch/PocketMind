@@ -45,6 +45,7 @@ export interface DistributedInferenceRequest {
   minimumGpuMemoryMb?: number;
   timeoutMs?: number;
   onStatus?: (message: string) => void;
+  signal?: AbortSignal;
 }
 
 export class CoordinatorUnavailableError extends Error {
@@ -56,6 +57,21 @@ export class CoordinatorUnavailableError extends Error {
 
 function normalizeBaseUrl(value: string): string {
   return value.trim().replace(/\/+$/, '');
+}
+
+function waitForPoll(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new Error('사용자가 생성을 중지했습니다.'));
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('사용자가 생성을 중지했습니다.'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 async function coordinatorFetch<T>(
@@ -85,7 +101,10 @@ async function coordinatorFetch<T>(
   return body as T;
 }
 
-export async function isCoordinatorEndpoint(baseUrlValue: string): Promise<boolean> {
+export async function isCoordinatorEndpoint(
+  baseUrlValue: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
   const baseUrl = normalizeBaseUrl(baseUrlValue);
   const normalized = baseUrl.toLowerCase();
   const secureUrl = normalized.startsWith('https://');
@@ -96,7 +115,7 @@ export async function isCoordinatorEndpoint(baseUrlValue: string): Promise<boole
     normalized.startsWith('http://192.168.');
   if (!secureUrl && !trustedLocalHttp) return false;
   try {
-    const response = await fetch(`${baseUrl}/v1/health`);
+    const response = await fetch(`${baseUrl}/v1/health`, { signal });
     if (!response.ok) return false;
     const data = await response.json();
     return data?.service === 'pocketmind-worker-coordinator' && data?.status === 'ok';
@@ -136,7 +155,7 @@ export async function runDistributedInference(
   if (!request.apiToken || request.apiToken.length < 24) {
     throw new Error('Coordinator API token is missing or invalid.');
   }
-  if (!(await isCoordinatorEndpoint(baseUrl))) {
+  if (!(await isCoordinatorEndpoint(baseUrl, request.signal))) {
     throw new CoordinatorUnavailableError('PocketMind coordinator endpoint is not available.');
   }
 
@@ -146,6 +165,7 @@ export async function runDistributedInference(
     '/v1/tasks',
     {
       method: 'POST',
+      signal: request.signal,
       body: JSON.stringify({
         modelId: request.modelId,
         payload: {
@@ -169,8 +189,10 @@ export async function runDistributedInference(
   let lastState = '';
   try {
     while (Date.now() - started < timeoutMs) {
+      if (request.signal?.aborted) throw new Error('사용자가 생성을 중지했습니다.');
       const task = await coordinatorFetch<CoordinatorTaskResult>(
         baseUrl, request.apiToken, `/v1/tasks/${encodeURIComponent(created.taskId)}`,
+        { signal: request.signal },
       );
       if (task.status !== lastState) {
         lastState = task.status;
@@ -188,7 +210,7 @@ export async function runDistributedInference(
       if (task.status === 'failed' || task.status === 'cancelled') {
         throw new Error(task.lastError || `Distributed task ${task.status}`);
       }
-      await new Promise<void>((resolve) => setTimeout(() => resolve(), 2000));
+      await waitForPoll(2000, request.signal);
     }
     throw new Error('Distributed task timed out after 10 minutes.');
   } catch (error) {

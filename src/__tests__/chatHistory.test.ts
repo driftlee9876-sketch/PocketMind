@@ -1,6 +1,8 @@
 import {
   normalizeSessionTitle,
+  prepareAnswerRegeneration,
   removeSessionById,
+  replaceUserMessageAndTrim,
   renameSessionById,
 } from '../chatHistory';
 
@@ -25,5 +27,27 @@ describe('chat history helpers', () => {
   test('removes only the selected session', () => {
     expect(removeSessionById(sessions, 'one')).toEqual([sessions[1]]);
     expect(removeSessionById(sessions, 'missing')).toEqual(sessions);
+  });
+
+  test('edits a user message and removes the obsolete branch', () => {
+    const messages = [
+      { id: 'u1', role: 'user' as const, text: '기존 질문' },
+      { id: 'a1', role: 'assistant' as const, text: '기존 답변' },
+      { id: 'u2', role: 'user' as const, text: '후속 질문' },
+    ];
+    expect(replaceUserMessageAndTrim(messages, 'u1', '  수정한 질문  ')).toEqual([
+      { id: 'u1', role: 'user', text: '수정한 질문' },
+    ]);
+  });
+
+  test('prepares regeneration from the user prompt before an answer', () => {
+    const messages = [
+      { id: 'u1', role: 'user' as const, text: '질문' },
+      { id: 'a1', role: 'assistant' as const, text: '답변' },
+    ];
+    expect(prepareAnswerRegeneration(messages, 'a1')).toEqual({
+      messages: [messages[0]],
+      prompt: '질문',
+    });
   });
 });
