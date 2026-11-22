@@ -96,9 +96,17 @@ export async function runAndroidWorkerTask(): Promise<void> {
     if (!config?.enabled) return;
 
     const baseUrl = config.coordinatorUrl.trim().replace(/\/+$/, '');
-    if (!/^https:\\/\\//i.test(baseUrl) && !/^http:\\/\\/(localhost|127\\.0\\.1|10\\.|192\\.168\\.)/i.test(baseUrl)) {
+    const normalizedUrl = baseUrl.toLowerCase();
+    const secureUrl = normalizedUrl.startsWith('https://');
+    const trustedLocalHttp =
+      normalizedUrl.startsWith('http://localhost') ||
+      normalizedUrl.startsWith('http://127.0.0.1') ||
+      normalizedUrl.startsWith('http://10.') ||
+      normalizedUrl.startsWith('http://192.168.');
+    if (!secureUrl && !trustedLocalHttp) {
       throw new Error('Worker coordinator must use HTTPS unless it is on a trusted local network.');
     }
+
     if (!Array.isArray(config.modelIds) || config.modelIds.length === 0) {
       throw new Error('Select at least one installed model before enabling this Worker.');
     }
