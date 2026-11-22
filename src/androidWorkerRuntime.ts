@@ -1,5 +1,4 @@
 import { NativeModules } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AI_MODEL_CATALOG } from './aiModelsAndPlugins';
 
 const WORKER_TOKEN_KEY = 'pocketmind.android.worker-token';
@@ -43,7 +42,7 @@ async function requestJson(
 
 async function getWorkerToken(config: WorkerConfig): Promise<string> {
   const baseUrl = config.coordinatorUrl.trim().replace(/\\/+$/, '');
-  let token = await AsyncStorage.getItem(WORKER_TOKEN_KEY);
+  let token = await NativeModules.PocketMindWorker.getSecret(WORKER_TOKEN_KEY);
   if (token) {
     try {
       await requestJson(baseUrl, '/v1/workers/heartbeat', token, {
@@ -56,7 +55,7 @@ async function getWorkerToken(config: WorkerConfig): Promise<string> {
       return token;
     } catch (error: any) {
       if (!String(error?.message || '').includes('401')) throw error;
-      await AsyncStorage.removeItem(WORKER_TOKEN_KEY);
+      await NativeModules.PocketMindWorker.removeSecret(WORKER_TOKEN_KEY);
       token = null;
     }
   }
@@ -83,7 +82,7 @@ async function getWorkerToken(config: WorkerConfig): Promise<string> {
   if (typeof enrolled.workerToken !== 'string' || enrolled.workerToken.length < 32) {
     throw new Error('Coordinator did not issue a worker token.');
   }
-  await AsyncStorage.setItem(WORKER_TOKEN_KEY, enrolled.workerToken);
+  await NativeModules.PocketMindWorker.setSecret(WORKER_TOKEN_KEY, enrolled.workerToken);
   return enrolled.workerToken;
 }
 
