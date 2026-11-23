@@ -64,7 +64,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y glslc ninja-build
-          sdkmanager "ndk;27.1.12297006"
+          if [ ! -d "$ANDROID_HOME/ndk/27.1.12297006" ]; then
+            sdk_manager=$(find "$ANDROID_HOME" -type f -path '*/bin/sdkmanager' | sort -V | tail -1)
+            "$sdk_manager" "ndk;27.1.12297006"
+          fi
           ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.1.12297006" bash workers/android-gpu/build.sh
 
       - name: Generate PocketMind Android Launcher Icons
