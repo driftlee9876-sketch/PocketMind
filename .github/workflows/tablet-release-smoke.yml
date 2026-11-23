@@ -1,0 +1,57 @@
+name: Galaxy Tab release APK smoke
+on:
+  push:
+    branches: [test/tablet-apk-bf01b96]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  tablet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      POCKETMIND_API_TOKEN: emulator-only-api-token-for-fixtures
+      POCKETMIND_ENROLLMENT_TOKEN: emulator-only-enrollment-for-fixtures
+      POCKETMIND_PUBLIC_BASE_URL: https://coordinator.example.invalid
+      POCKETMIND_TOKEN_ENCRYPTION_KEY: emulator-only-encryption-secret-for-fixtures
+      GOOGLE_OAUTH_CLIENT_ID: emulator.apps.googleusercontent.com
+      GOOGLE_OAUTH_CLIENT_SECRET: emulator-only-client
+      HOST: 127.0.0.1
+      PORT: 18770
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: PocketMind-GalaxyTab-APK
+          run-id: 45180768385
+          github-token: ${{ github.token }}
+          path: release
+      - name: Prepare isolated test services
+        run: |
+          sudo chmod a+rw /dev/kvm
+          python -m pip install uiautomator2==3.2.10
+          mkdir evidence
+          POCKETMIND_DATA_FILE="$RUNNER_TEMP/tablet-state.json" node --require ./tests/tablet/google-fixture.cjs worker-server/server.js > evidence/coordinator.log 2>&1 &
+          for attempt in {1..15}; do curl -fsS http://127.0.0.1:18770/v1/health && break; sleep 1; done
+          python tests/tablet/seed.py
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_c
+          ram-size: 4096M
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: |
+            adb shell getprop ro.product.cpu.abilist
+            adb install -r release/app-release.apk
+            adb reverse tcp:18770 tcp:18770
+            python tests/tablet/smoke.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tablet-test-evidence
+          path: evidence/
+          retention-days: 7
