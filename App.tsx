@@ -941,10 +941,13 @@ function PocketMindChatGPTScreen() {
 
   const openIntegrationSetup = async (url: string) => {
     try {
-      if (!(await Linking.canOpenURL(url))) throw new Error('지원되지 않는 주소입니다.');
-      await Linking.openURL(url);
+      const target = url.trim();
+      if (!/^https:\/\//i.test(target)) throw new Error('안전하지 않은 설정 주소입니다.');
+      // Android 11+ may report false from canOpenURL for normal HTTPS links when
+      // browser package visibility is restricted even though openURL succeeds.
+      await Linking.openURL(target);
     } catch (error: any) {
-      Alert.alert('설정 페이지를 열 수 없음', error?.message || '주소를 확인하세요.');
+      Alert.alert('공식 설정 문서를 열 수 없음', error?.message || '브라우저와 주소를 확인하세요.');
     }
   };
 
