@@ -79,9 +79,9 @@ Provider client secrets and refresh tokens belong in the trusted adapter's encry
 
 This contract is provider-neutral: any ID in the mobile connected-app catalog can use it. API-key services should expose the same signed connect/status/disconnect interface from their trusted adapter rather than sending the key to the mobile app.
 
-### Built-in Gmail OAuth
+### Built-in Google Workspace OAuth
 
-Gmail can run without a separate webhook adapter. Create a Google OAuth **Web application** client, enable the Gmail API, and set its exact authorized redirect URI to:
+Gmail, Calendar, Drive, Docs, Sheets, Contacts, and Tasks can run without separate webhook adapters. Create one Google OAuth **Web application** client, enable the Gmail, Calendar, Drive, Docs, Sheets, People, and Tasks APIs, and set its exact authorized redirect URI to:
 
 ```text
 https://YOUR-COORDINATOR.example/v1/oauth/google/callback
@@ -96,6 +96,6 @@ GOOGLE_OAUTH_CLIENT_ID=<Google OAuth web client ID>
 GOOGLE_OAUTH_CLIENT_SECRET=<Google OAuth web client secret>
 ```
 
-When all four values are valid, `google-gmail` appears as a one-tap connector automatically. PocketMind opens Google's official consent page and returns through its Android deep link after the callback. Refresh and access tokens are encrypted at rest with AES-256-GCM in the Coordinator state file; neither token is returned to the app. The built-in adapter supports message search/read, draft creation, and sending. Draft and send requests remain behind PocketMind's approval flow.
+When all four values are valid, the seven Google integrations appear as one-tap connectors automatically. PocketMind requests only the scopes needed by the selected app, opens Google's official consent page, and returns through its Android deep link after the callback. Refresh and access tokens are encrypted at rest with AES-256-GCM in the Coordinator state file; neither token is returned to the app. Read actions run directly, while create/update/share/delete/send actions remain behind PocketMind's approval flow.
 
-Use a persistent disk for `POCKETMIND_DATA_FILE`. Changing `POCKETMIND_TOKEN_ENCRYPTION_KEY` makes existing stored OAuth tokens unreadable and requires reconnecting Gmail.
+Use a persistent disk for `POCKETMIND_DATA_FILE`. Changing `POCKETMIND_TOKEN_ENCRYPTION_KEY` makes existing stored OAuth tokens unreadable and requires reconnecting Google apps.

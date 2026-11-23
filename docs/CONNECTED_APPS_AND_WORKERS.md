@@ -97,7 +97,7 @@ For Pickle-style one-tap account connection, configure `POCKETMIND_INTEGRATION_C
 
 The same one-tap contract works for every catalog ID; adding a provider does not require a new APK once its trusted adapter is installed on the Coordinator. Services that use API keys or signed credentials instead of OAuth still use the same connect/status/disconnect contract so the app can show an accurate account state without receiving the secret.
 
-Gmail additionally has a built-in Coordinator adapter. With `POCKETMIND_PUBLIC_BASE_URL`, `POCKETMIND_TOKEN_ENCRYPTION_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, and `GOOGLE_OAUTH_CLIENT_SECRET` configured, the app can open Google's official consent screen directly without n8n/Make/Zapier. Register `/v1/oauth/google/callback` under the public Coordinator URL as the Google Web OAuth client's exact redirect URI. Provider tokens are encrypted in the Coordinator state file and never sent to the APK. Use persistent server storage and keep the encryption key stable.
+Gmail, Google Calendar, Drive, Docs, Sheets, Contacts, and Tasks additionally have built-in Coordinator adapters. With `POCKETMIND_PUBLIC_BASE_URL`, `POCKETMIND_TOKEN_ENCRYPTION_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, and `GOOGLE_OAUTH_CLIENT_SECRET` configured, the app can open Google's official consent screen directly without n8n/Make/Zapier. The same Google Web OAuth client is reused, while every app asks only for its own scopes. Register `/v1/oauth/google/callback` under the public Coordinator URL as the exact redirect URI, and enable the Gmail, Calendar, Drive, Docs, Sheets, People, and Tasks APIs. Provider tokens are encrypted in the Coordinator state file and never sent to the APK. Use persistent server storage and keep the encryption key stable.
 
 ## API overview
 

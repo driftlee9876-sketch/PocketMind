@@ -159,7 +159,7 @@ test('coordinator authenticates, enrolls workers, leases tasks and validates res
   assert.equal(unconfiguredAction.status, 409, 'unconfigured connectors must not execute');
 });
 
-test('built-in Gmail OAuth exposes a secure one-tap authorization flow', { timeout: 10_000 }, async (t) => {
+test('built-in Google OAuth exposes secure one-tap authorization flows', { timeout: 10_000 }, async (t) => {
   const port = await freePort();
   const apiToken = 'gmail-api-token-' + 'd'.repeat(40);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pocketmind-gmail-test-'));
@@ -199,13 +199,12 @@ test('built-in Gmail OAuth exposes a secure one-tap authorization flow', { timeo
 
   const listResponse = await authenticated('/v1/integrations');
   assert.equal(listResponse.status, 200);
-  assert.deepEqual((await listResponse.json()).integrations, [{
-    id: 'google-gmail',
-    configured: true,
-    connectable: true,
-    connected: false,
-    mode: 'oauth',
-  }]);
+  const integrations = (await listResponse.json()).integrations;
+  assert.deepEqual(integrations.map(item => item.id), [
+    'google-gmail', 'google-calendar', 'google-drive', 'google-docs',
+    'google-sheets', 'google-contacts', 'google-tasks',
+  ]);
+  assert.ok(integrations.every(item => item.configured && item.connectable && !item.connected && item.mode === 'oauth'));
 
   const connectResponse = await authenticated('/v1/integrations/google-gmail/connect', 'POST');
   assert.equal(connectResponse.status, 200);
@@ -218,7 +217,13 @@ test('built-in Gmail OAuth exposes a secure one-tap authorization flow', { timeo
   assert.ok(authorizationUrl.searchParams.get('state'));
   assert.match(authorizationUrl.searchParams.get('scope'), /gmail\.send/);
 
+  const sheetsResponse = await authenticated('/v1/integrations/google-sheets/connect', 'POST');
+  assert.equal(sheetsResponse.status, 200);
+  const sheetsUrl = new URL((await sheetsResponse.json()).authorizationUrl);
+  assert.equal(sheetsUrl.searchParams.get('redirect_uri'), 'https://pocketmind.example/v1/oauth/google/callback');
+  assert.match(sheetsUrl.searchParams.get('scope'), /spreadsheets/);
+
   const invalidCallback = await fetch(baseUrl + '/v1/oauth/google/callback?state=invalid&code=unused');
   assert.equal(invalidCallback.status, 400);
-  assert.match(await invalidCallback.text(), /Gmail 연결 실패/);
+  assert.match(await invalidCallback.text(), /Google 연결 실패/);
 });

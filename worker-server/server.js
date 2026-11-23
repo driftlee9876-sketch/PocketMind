@@ -32,15 +32,37 @@ const PUBLIC_BASE_URL = (process.env.POCKETMIND_PUBLIC_BASE_URL || '').replace(/
 const TOKEN_ENCRYPTION_SECRET = process.env.POCKETMIND_TOKEN_ENCRYPTION_KEY || '';
 const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || '';
 const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || '';
-const GOOGLE_GMAIL_ID = 'google-gmail';
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
-const GOOGLE_GMAIL_SCOPES = [
-  'openid',
-  'email',
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.compose',
-  'https://www.googleapis.com/auth/gmail.send',
-];
+const GOOGLE_INTEGRATIONS = {
+  'google-gmail': {
+    label: 'Gmail',
+    scopes: ['gmail.readonly', 'gmail.compose', 'gmail.send'],
+  },
+  'google-calendar': {
+    label: 'Google Calendar',
+    scopes: ['calendar.readonly', 'calendar.events'],
+  },
+  'google-drive': {
+    label: 'Google Drive',
+    scopes: ['drive.readonly', 'drive.file'],
+  },
+  'google-docs': {
+    label: 'Google Docs',
+    scopes: ['documents.readonly', 'documents', 'drive.metadata.readonly', 'drive.file'],
+  },
+  'google-sheets': {
+    label: 'Google Sheets',
+    scopes: ['spreadsheets.readonly', 'spreadsheets', 'drive.file'],
+  },
+  'google-contacts': {
+    label: 'Google Contacts',
+    scopes: ['contacts.readonly', 'contacts'],
+  },
+  'google-tasks': {
+    label: 'Google Tasks',
+    scopes: ['tasks.readonly', 'tasks'],
+  },
+};
 let CONNECTOR_WEBHOOKS = {};
 let CONNECTOR_DEFINITIONS = {};
 
@@ -109,12 +131,12 @@ function validPublicBaseUrl() {
   }
 }
 
-const BUILTIN_GMAIL_ENABLED = Boolean(
+const BUILTIN_GOOGLE_ENABLED = Boolean(
   GOOGLE_OAUTH_CLIENT_ID && GOOGLE_OAUTH_CLIENT_SECRET &&
   TOKEN_ENCRYPTION_SECRET.length >= 32 && validPublicBaseUrl()
 );
-if ((GOOGLE_OAUTH_CLIENT_ID || GOOGLE_OAUTH_CLIENT_SECRET || TOKEN_ENCRYPTION_SECRET) && !BUILTIN_GMAIL_ENABLED) {
-  console.error('Built-in Gmail OAuth requires GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, POCKETMIND_TOKEN_ENCRYPTION_KEY (32+ chars), and an HTTPS POCKETMIND_PUBLIC_BASE_URL.');
+if ((GOOGLE_OAUTH_CLIENT_ID || GOOGLE_OAUTH_CLIENT_SECRET || TOKEN_ENCRYPTION_SECRET) && !BUILTIN_GOOGLE_ENABLED) {
+  console.error('Built-in Google OAuth requires GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, POCKETMIND_TOKEN_ENCRYPTION_KEY (32+ chars), and an HTTPS POCKETMIND_PUBLIC_BASE_URL.');
 }
 
 const state = { workers: {}, tasks: {}, actions: {}, oauthConnections: {}, oauthStates: {} };
@@ -307,19 +329,21 @@ function decryptSecret(value) {
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 }
 
-function gmailRedirectUri() {
+function googleRedirectUri() {
   return `${PUBLIC_BASE_URL}/v1/oauth/google/callback`;
 }
 
-function gmailAuthorizationUrl() {
+function googleAuthorizationUrl(integrationId) {
+  const integration = GOOGLE_INTEGRATIONS[integrationId];
+  if (!integration) throw Object.assign(new Error('Built-in Google integration is not supported.'), { status: 404 });
   const nonce = crypto.randomBytes(32).toString('base64url');
-  state.oauthStates[nonce] = { integrationId: GOOGLE_GMAIL_ID, expiresAt: Date.now() + OAUTH_STATE_TTL_MS };
+  state.oauthStates[nonce] = { integrationId, expiresAt: Date.now() + OAUTH_STATE_TTL_MS };
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   url.search = new URLSearchParams({
     client_id: GOOGLE_OAUTH_CLIENT_ID,
-    redirect_uri: gmailRedirectUri(),
+    redirect_uri: googleRedirectUri(),
     response_type: 'code',
-    scope: GOOGLE_GMAIL_SCOPES.join(' '),
+    scope: ['openid', 'email', ...integration.scopes.map(scope => `https://www.googleapis.com/auth/${scope}`)].join(' '),
     access_type: 'offline',
     prompt: 'consent',
     include_granted_scopes: 'true',
@@ -343,9 +367,10 @@ async function googleTokenRequest(parameters) {
   return data;
 }
 
-async function gmailAccessToken() {
-  const connection = state.oauthConnections[GOOGLE_GMAIL_ID];
-  if (!connection?.refreshToken) throw Object.assign(new Error('Gmail account is not connected.'), { status: 409 });
+async function googleAccessToken(integrationId) {
+  const connection = state.oauthConnections[integrationId];
+  const label = GOOGLE_INTEGRATIONS[integrationId]?.label || 'Google account';
+  if (!connection?.refreshToken) throw Object.assign(new Error(`${label} is not connected.`), { status: 409 });
   if (connection.accessToken && Number(connection.accessTokenExpiresAt || 0) > Date.now() + 60_000) {
     return decryptSecret(connection.accessToken);
   }
@@ -362,11 +387,11 @@ async function gmailAccessToken() {
   return data.access_token;
 }
 
-async function gmailApi(pathname, options = {}) {
-  const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me${pathname}`, {
+async function googleApi(integrationId, url, options = {}) {
+  const response = await fetch(url, {
     ...options,
     headers: {
-      Authorization: `Bearer ${await gmailAccessToken()}`,
+      Authorization: `Bearer ${await googleAccessToken(integrationId)}`,
       Accept: 'application/json',
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       ...(options.headers || {}),
@@ -376,10 +401,14 @@ async function gmailApi(pathname, options = {}) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = data?.error?.message || `Gmail API returned HTTP ${response.status}.`;
+    const message = data?.error?.message || `Google API returned HTTP ${response.status}.`;
     throw Object.assign(new Error(message), { status: response.status === 401 ? 409 : 502 });
   }
   return data;
+}
+
+function gmailApi(pathname, options = {}) {
+  return googleApi('google-gmail', `https://gmail.googleapis.com/gmail/v1/users/me${pathname}`, options);
 }
 
 function html(res, status, title, message, redirectUrl) {
@@ -394,23 +423,24 @@ async function handleGoogleCallback(url, res) {
   const pending = state.oauthStates[nonce];
   delete state.oauthStates[nonce];
   await persist();
-  if (!pending || pending.integrationId !== GOOGLE_GMAIL_ID || pending.expiresAt < Date.now()) {
-    return html(res, 400, 'Gmail 연결 실패', '로그인 요청이 만료되었거나 유효하지 않습니다. PocketMind에서 다시 연결해 주세요.');
+  const integration = pending && GOOGLE_INTEGRATIONS[pending.integrationId];
+  if (!pending || !integration || pending.expiresAt < Date.now()) {
+    return html(res, 400, 'Google 연결 실패', '로그인 요청이 만료되었거나 유효하지 않습니다. PocketMind에서 다시 연결해 주세요.');
   }
-  if (url.searchParams.get('error')) return html(res, 400, 'Gmail 연결 취소', 'Google 로그인이 완료되지 않았습니다.');
+  if (url.searchParams.get('error')) return html(res, 400, `${integration.label} 연결 취소`, 'Google 로그인이 완료되지 않았습니다.');
   const code = url.searchParams.get('code');
-  if (!code) return html(res, 400, 'Gmail 연결 실패', 'Google 인증 코드가 없습니다.');
+  if (!code) return html(res, 400, `${integration.label} 연결 실패`, 'Google 인증 코드가 없습니다.');
   const token = await googleTokenRequest({
     code,
     client_id: GOOGLE_OAUTH_CLIENT_ID,
     client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
-    redirect_uri: gmailRedirectUri(),
+    redirect_uri: googleRedirectUri(),
     grant_type: 'authorization_code',
   });
   if (typeof token.refresh_token !== 'string') {
-    return html(res, 409, 'Gmail 연결 실패', 'Google이 새로고침 토큰을 보내지 않았습니다. 계정 접근 권한을 해제한 뒤 다시 연결해 주세요.');
+    return html(res, 409, `${integration.label} 연결 실패`, 'Google이 새로고침 토큰을 보내지 않았습니다. 계정 접근 권한을 해제한 뒤 다시 연결해 주세요.');
   }
-  state.oauthConnections[GOOGLE_GMAIL_ID] = {
+  state.oauthConnections[pending.integrationId] = {
     refreshToken: encryptSecret(token.refresh_token),
     accessToken: encryptSecret(token.access_token),
     accessTokenExpiresAt: Date.now() + Math.max(60, Number(token.expires_in || 3600)) * 1000,
@@ -419,12 +449,12 @@ async function handleGoogleCallback(url, res) {
     updatedAt: Date.now(),
   };
   try {
-    const profile = await gmailApi('/profile');
-    state.oauthConnections[GOOGLE_GMAIL_ID].accountLabel = typeof profile.emailAddress === 'string' ? profile.emailAddress.slice(0, 120) : null;
+    const profile = await googleApi(pending.integrationId, 'https://openidconnect.googleapis.com/v1/userinfo');
+    state.oauthConnections[pending.integrationId].accountLabel = typeof profile.email === 'string' ? profile.email.slice(0, 120) : null;
   } catch {}
   await persist();
-  const returnUrl = 'pocketmind://integrations/callback?integrationId=google-gmail&status=connected';
-  return html(res, 200, 'Gmail 연결 완료', 'PocketMind에서 Gmail을 사용할 수 있습니다.', returnUrl);
+  const returnUrl = `pocketmind://integrations/callback?integrationId=${encodeURIComponent(pending.integrationId)}&status=connected`;
+  return html(res, 200, `${integration.label} 연결 완료`, `PocketMind에서 ${integration.label}을 사용할 수 있습니다.`, returnUrl);
 }
 
 function connectorHeaders(payload) {
@@ -457,14 +487,14 @@ async function callConnector(url, payload, timeoutMs = 15_000) {
 }
 
 async function connectorStatus(id) {
-  if (id === GOOGLE_GMAIL_ID && BUILTIN_GMAIL_ENABLED) {
+  if (GOOGLE_INTEGRATIONS[id] && BUILTIN_GOOGLE_ENABLED) {
     const connection = state.oauthConnections[id];
     if (!connection?.refreshToken) return { id, configured: true, connectable: true, connected: false, mode: 'oauth' };
     try {
-      await gmailAccessToken();
+      await googleAccessToken(id);
       return { id, configured: true, connectable: true, connected: true, mode: 'oauth', accountLabel: connection.accountLabel || null };
     } catch (error) {
-      return { id, configured: true, connectable: true, connected: false, mode: 'oauth', statusError: String(error.message || 'Could not verify Gmail connection.').slice(0, 300) };
+      return { id, configured: true, connectable: true, connected: false, mode: 'oauth', statusError: String(error.message || 'Could not verify Google connection.').slice(0, 300) };
     }
   }
   const definition = CONNECTOR_DEFINITIONS[id];
@@ -551,17 +581,168 @@ async function dispatchBuiltinGmailAction(action) {
   throw Object.assign(new Error('Unsupported Gmail action.'), { status: 400 });
 }
 
+function inputField(input, prompt, key, labels = []) {
+  const direct = input?.[key];
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  return fieldFromPrompt(prompt, labels);
+}
+
+function requiredField(input, prompt, key, labels, message) {
+  const value = inputField(input, prompt, key, labels);
+  if (!value) throw Object.assign(new Error(message), { status: 400 });
+  return value;
+}
+
+function googleDateTime(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw Object.assign(new Error('날짜와 시간은 ISO 형식으로 입력해 주세요. 예: 2026-11-24T14:00:00+09:00'), { status: 400 });
+  return parsed.toISOString();
+}
+
+function shareGoogleFile(action, idKey, idLabels) {
+  const input = action.input || {};
+  const prompt = promptValue(input);
+  const fileId = requiredField(input, prompt, idKey, idLabels, '공유할 파일 ID가 필요합니다.');
+  const emailAddress = requiredField(input, prompt, 'email', ['이메일', 'email'], '공유받을 이메일 주소가 필요합니다.');
+  return googleApi(action.integrationId, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?sendNotificationEmail=true`, { method: 'POST', body: JSON.stringify({ type: 'user', role: input.role === 'writer' ? 'writer' : 'reader', emailAddress }) });
+}
+
+async function dispatchBuiltinGoogleAction(action) {
+  if (action.integrationId === 'google-gmail') return dispatchBuiltinGmailAction(action);
+  const input = action.input || {};
+  const prompt = promptValue(input);
+
+  if (action.integrationId === 'google-calendar') {
+    if (action.action === 'list_events') {
+      const timeMin = inputField(input, prompt, 'timeMin', ['시작 시각', '시작 시간', 'timeMin']) || new Date().toISOString();
+      const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
+      url.search = new URLSearchParams({ maxResults: '20', singleEvents: 'true', orderBy: 'startTime', timeMin: googleDateTime(timeMin) }).toString();
+      return googleApi(action.integrationId, url.toString());
+    }
+    if (action.action === 'create_event') {
+      const summary = requiredField(input, prompt, 'summary', ['제목', '일정 제목', 'summary'], '일정 제목이 필요합니다.');
+      const start = googleDateTime(requiredField(input, prompt, 'start', ['시작', '시작 시간', 'start'], '일정 시작 시간이 필요합니다.'));
+      const end = googleDateTime(requiredField(input, prompt, 'end', ['종료', '종료 시간', 'end'], '일정 종료 시간이 필요합니다.'));
+      return googleApi(action.integrationId, 'https://www.googleapis.com/calendar/v3/calendars/primary/events', { method: 'POST', body: JSON.stringify({ summary, description: input.description || '', start: { dateTime: start }, end: { dateTime: end } }) });
+    }
+    if (action.action === 'update_event') {
+      const eventId = requiredField(input, prompt, 'eventId', ['일정 ID', 'event id'], '수정할 일정 ID가 필요합니다.');
+      const body = {};
+      if (input.summary) body.summary = String(input.summary);
+      if (input.description) body.description = String(input.description);
+      if (input.start) body.start = { dateTime: googleDateTime(input.start) };
+      if (input.end) body.end = { dateTime: googleDateTime(input.end) };
+      if (!Object.keys(body).length) throw Object.assign(new Error('수정할 제목, 설명, 시작 또는 종료 시간이 필요합니다.'), { status: 400 });
+      return googleApi(action.integrationId, `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`, { method: 'PATCH', body: JSON.stringify(body) });
+    }
+  }
+
+  if (action.integrationId === 'google-drive') {
+    if (action.action === 'search_files') {
+      const query = inputField(input, prompt, 'query', ['검색어', 'query']) || prompt;
+      const q = query ? `name contains '${query.replaceAll("'", "\\'")}' and trashed = false` : 'trashed = false';
+      return googleApi(action.integrationId, `https://www.googleapis.com/drive/v3/files?pageSize=20&orderBy=modifiedTime%20desc&fields=files(id,name,mimeType,modifiedTime,webViewLink,size)&q=${encodeURIComponent(q)}`);
+    }
+    if (action.action === 'get_file') {
+      const fileId = requiredField(input, prompt, 'fileId', ['파일 ID', 'file id'], '읽을 파일 ID가 필요합니다.');
+      return googleApi(action.integrationId, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,modifiedTime,webViewLink,size,description`);
+    }
+    if (action.action === 'upload_file') {
+      const name = requiredField(input, prompt, 'name', ['파일 이름', 'name'], '파일 이름이 필요합니다.');
+      const content = requiredField(input, prompt, 'content', ['내용', '본문', 'content'], '업로드할 텍스트 내용이 필요합니다.');
+      const boundary = `pocketmind_${crypto.randomBytes(12).toString('hex')}`;
+      const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ name, mimeType: 'text/plain' })}\r\n--${boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${content}\r\n--${boundary}--`;
+      return googleApi(action.integrationId, 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink', { method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body });
+    }
+    if (action.action === 'delete_file') {
+      const fileId = requiredField(input, prompt, 'fileId', ['파일 ID', 'file id'], '삭제할 파일 ID가 필요합니다.');
+      return googleApi(action.integrationId, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
+    }
+  }
+
+  if (action.integrationId === 'google-docs') {
+    if (action.action === 'search_documents') {
+      const query = inputField(input, prompt, 'query', ['검색어', 'query']) || prompt;
+      const suffix = query ? ` and name contains '${query.replaceAll("'", "\\'")}'` : '';
+      const q = `mimeType = 'application/vnd.google-apps.document' and trashed = false${suffix}`;
+      return googleApi(action.integrationId, `https://www.googleapis.com/drive/v3/files?pageSize=20&fields=files(id,name,modifiedTime,webViewLink)&q=${encodeURIComponent(q)}`);
+    }
+    if (action.action === 'get_document') {
+      const documentId = requiredField(input, prompt, 'documentId', ['문서 ID', 'document id'], '문서 ID가 필요합니다.');
+      return googleApi(action.integrationId, `https://docs.googleapis.com/v1/documents/${encodeURIComponent(documentId)}`);
+    }
+    if (action.action === 'create_document') {
+      const title = requiredField(input, prompt, 'title', ['문서 제목', '제목', 'title'], '문서 제목이 필요합니다.');
+      const created = await googleApi(action.integrationId, 'https://docs.googleapis.com/v1/documents', { method: 'POST', body: JSON.stringify({ title }) });
+      const content = inputField(input, prompt, 'content', ['본문', '내용', 'content']);
+      if (content) await googleApi(action.integrationId, `https://docs.googleapis.com/v1/documents/${encodeURIComponent(created.documentId)}:batchUpdate`, { method: 'POST', body: JSON.stringify({ requests: [{ insertText: { location: { index: 1 }, text: content } }] }) });
+      return created;
+    }
+    if (action.action === 'share_document') return shareGoogleFile(action, 'documentId', ['문서 ID', 'document id']);
+  }
+
+  if (action.integrationId === 'google-sheets') {
+    const spreadsheetId = requiredField(input, prompt, 'spreadsheetId', ['스프레드시트 ID', '시트 ID', 'spreadsheet id'], '스프레드시트 ID가 필요합니다.');
+    if (action.action === 'get_values') {
+      const range = inputField(input, prompt, 'range', ['범위', 'range']) || 'A1:Z100';
+      return googleApi(action.integrationId, `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`);
+    }
+    if (action.action === 'update_values') {
+      const range = requiredField(input, prompt, 'range', ['범위', 'range'], '수정할 셀 범위가 필요합니다.');
+      const values = Array.isArray(input.values) ? input.values : null;
+      if (!values) throw Object.assign(new Error('values는 2차원 배열이어야 합니다.'), { status: 400 });
+      return googleApi(action.integrationId, `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, { method: 'PUT', body: JSON.stringify({ range, majorDimension: 'ROWS', values }) });
+    }
+    if (action.action === 'share_spreadsheet') return shareGoogleFile(action, 'spreadsheetId', ['스프레드시트 ID', '시트 ID', 'spreadsheet id']);
+  }
+
+  if (action.integrationId === 'google-contacts') {
+    if (action.action === 'search_contacts') {
+      const query = inputField(input, prompt, 'query', ['검색어', 'query']) || prompt;
+      const data = await googleApi(action.integrationId, 'https://people.googleapis.com/v1/people/me/connections?pageSize=100&personFields=names,emailAddresses,phoneNumbers');
+      const needle = query.toLowerCase();
+      return { connections: (data.connections || []).filter(person => !needle || JSON.stringify(person).toLowerCase().includes(needle)).slice(0, 20) };
+    }
+    if (action.action === 'create_contact') {
+      const name = requiredField(input, prompt, 'name', ['이름', 'name'], '연락처 이름이 필요합니다.');
+      const email = inputField(input, prompt, 'email', ['이메일', 'email']);
+      const phone = inputField(input, prompt, 'phone', ['전화번호', 'phone']);
+      return googleApi(action.integrationId, 'https://people.googleapis.com/v1/people:createContact', { method: 'POST', body: JSON.stringify({ names: [{ givenName: name }], ...(email ? { emailAddresses: [{ value: email }] } : {}), ...(phone ? { phoneNumbers: [{ value: phone }] } : {}) }) });
+    }
+    if (action.action === 'update_contact') {
+      const resourceName = requiredField(input, prompt, 'resourceName', ['연락처 ID', 'resource name'], '연락처 resourceName이 필요합니다.');
+      const etag = requiredField(input, prompt, 'etag', ['etag'], '연락처 etag가 필요합니다.');
+      const name = requiredField(input, prompt, 'name', ['이름', 'name'], '새 연락처 이름이 필요합니다.');
+      return googleApi(action.integrationId, `https://people.googleapis.com/v1/${resourceName}:updateContact?updatePersonFields=names`, { method: 'PATCH', body: JSON.stringify({ etag, names: [{ givenName: name }] }) });
+    }
+  }
+
+  if (action.integrationId === 'google-tasks') {
+    const taskListId = inputField(input, prompt, 'taskListId', ['작업 목록 ID', 'task list id']) || '@default';
+    if (action.action === 'list_tasks') return googleApi(action.integrationId, `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(taskListId)}/tasks?maxResults=50&showCompleted=true`);
+    if (action.action === 'create_task') {
+      const title = requiredField(input, prompt, 'title', ['작업 제목', '제목', 'title'], '작업 제목이 필요합니다.');
+      return googleApi(action.integrationId, `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(taskListId)}/tasks`, { method: 'POST', body: JSON.stringify({ title, notes: input.notes || '' }) });
+    }
+    if (action.action === 'complete_task') {
+      const taskId = requiredField(input, prompt, 'taskId', ['작업 ID', 'task id'], '완료할 작업 ID가 필요합니다.');
+      return googleApi(action.integrationId, `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(taskListId)}/tasks/${encodeURIComponent(taskId)}`, { method: 'PATCH', body: JSON.stringify({ status: 'completed', completed: new Date().toISOString() }) });
+    }
+  }
+  throw Object.assign(new Error('지원하지 않는 Google 앱 동작입니다.'), { status: 400 });
+}
+
 async function dispatchIntegrationAction(action) {
-  if (action.integrationId === GOOGLE_GMAIL_ID && BUILTIN_GMAIL_ENABLED) {
+  if (GOOGLE_INTEGRATIONS[action.integrationId] && BUILTIN_GOOGLE_ENABLED) {
     try {
-      const result = await dispatchBuiltinGmailAction(action);
+      const result = await dispatchBuiltinGoogleAction(action);
       action.status = 'completed';
       action.result = JSON.stringify(result).slice(0, 20_000);
       action.lastError = null;
       action.updatedAt = Date.now();
     } catch (error) {
       action.status = 'failed';
-      action.lastError = String(error.message || 'Gmail request failed').slice(0, 500);
+      action.lastError = String(error.message || 'Google request failed').slice(0, 500);
       action.updatedAt = Date.now();
     }
     await persist();
@@ -760,7 +941,7 @@ async function handle(req, res) {
   }
 
   if (req.method === 'GET' && url.pathname === '/v1/oauth/google/callback') {
-    if (!BUILTIN_GMAIL_ENABLED) return html(res, 503, 'Gmail 연결 불가', '서버의 Gmail OAuth 설정이 완료되지 않았습니다.');
+    if (!BUILTIN_GOOGLE_ENABLED) return html(res, 503, 'Google 연결 불가', '서버의 Google OAuth 설정이 완료되지 않았습니다.');
     return handleGoogleCallback(url, res);
   }
 
@@ -894,7 +1075,7 @@ async function handle(req, res) {
     const ids = [...new Set([
       ...Object.keys(CONNECTOR_WEBHOOKS),
       ...Object.keys(CONNECTOR_DEFINITIONS),
-      ...(BUILTIN_GMAIL_ENABLED ? [GOOGLE_GMAIL_ID] : []),
+      ...(BUILTIN_GOOGLE_ENABLED ? Object.keys(GOOGLE_INTEGRATIONS) : []),
     ])];
     const integrations = await Promise.all(ids.map(connectorStatus));
     return json(res, 200, {
@@ -907,19 +1088,19 @@ async function handle(req, res) {
     if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
     const integrationId = parts[2];
     const definition = CONNECTOR_DEFINITIONS[integrationId];
-    const builtinGmail = integrationId === GOOGLE_GMAIL_ID && BUILTIN_GMAIL_ENABLED;
-    if (!definition && !builtinGmail) return json(res, 404, { error: 'One-tap connector is not configured' });
+    const builtinGoogle = Boolean(GOOGLE_INTEGRATIONS[integrationId] && BUILTIN_GOOGLE_ENABLED);
+    if (!definition && !builtinGoogle) return json(res, 404, { error: 'One-tap connector is not configured' });
     await readBody(req);
 
     if (parts[3] === 'status') return json(res, 200, await connectorStatus(integrationId));
 
-    if (builtinGmail) {
+    if (builtinGoogle) {
       if (parts[3] === 'connect') {
-        const authorizationUrl = gmailAuthorizationUrl();
+        const authorizationUrl = googleAuthorizationUrl(integrationId);
         await persist();
         return json(res, 200, { integrationId, authorizationUrl });
       }
-      const connection = state.oauthConnections[GOOGLE_GMAIL_ID];
+      const connection = state.oauthConnections[integrationId];
       if (connection?.refreshToken) {
         const token = decryptSecret(connection.refreshToken);
         fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, {
@@ -929,7 +1110,7 @@ async function handle(req, res) {
           signal: AbortSignal.timeout(8_000),
         }).catch(() => {});
       }
-      delete state.oauthConnections[GOOGLE_GMAIL_ID];
+      delete state.oauthConnections[integrationId];
       await persist();
       return json(res, 200, await connectorStatus(integrationId));
     }
@@ -974,7 +1155,7 @@ async function handle(req, res) {
     if (!allowedRisk || allowedRisk !== body.risk) {
       return json(res, 400, { error: 'Unknown integration action or incorrect risk level' });
     }
-    const builtinConfigured = body.integrationId === GOOGLE_GMAIL_ID && BUILTIN_GMAIL_ENABLED;
+    const builtinConfigured = Boolean(GOOGLE_INTEGRATIONS[body.integrationId] && BUILTIN_GOOGLE_ENABLED);
     if (!CONNECTOR_WEBHOOKS[body.integrationId] && !builtinConfigured) {
       return json(res, 409, { error: 'Integration is not configured on the coordinator' });
     }
