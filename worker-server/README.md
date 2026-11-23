@@ -99,3 +99,11 @@ GOOGLE_OAUTH_CLIENT_SECRET=<Google OAuth web client secret>
 When all four values are valid, the seven Google integrations appear as one-tap connectors automatically. PocketMind requests only the scopes needed by the selected app, opens Google's official consent page, and returns through its Android deep link after the callback. Refresh and access tokens are encrypted at rest with AES-256-GCM in the Coordinator state file; neither token is returned to the app. Read actions run directly, while create/update/share/delete/send actions remain behind PocketMind's approval flow.
 
 Use a persistent disk for `POCKETMIND_DATA_FILE`. Changing `POCKETMIND_TOKEN_ENCRYPTION_KEY` makes existing stored OAuth tokens unreadable and requires reconnecting Google apps.
+
+### One broker for multiple connected apps
+
+An existing adapter can serve any of the 53 catalog IDs through a single HTTPS endpoint. Set `POCKETMIND_INTEGRATION_HUB_URL` and use the existing webhook signing secret. Dedicated per-app adapters and the built-in Google providers take precedence. The hub owns provider registrations, account consent, and credentials.
+
+The coordinator posts the signed event `pocketmind.integration.catalog` and expects a JSON object such as `{"integrations":[{"id":"slack","connectable":true,"connected":false,"actions":["list_channels","send_message"]}]}`. Return only genuinely implemented actions. The same endpoint handles the existing signed connect, disconnect and action events. A connect response supplies an HTTPS `authorizationUrl`. Following consent, a new catalog request must report the actual account status. Writes still require confirmation in PocketMind before dispatch. An unavailable hub does not disable separate adapters.
+
+The built-in YouTube connector supports video search and private playlist creation after the project's YouTube Data API and consent scopes are enabled.

@@ -40,6 +40,7 @@ import {
 import {
   AI_MODEL_CATALOG,
   AI_PLUGIN_CATALOG,
+  runAutonomousPlugins,
   PluginCategory,
   PluginExecutionOutput,
 } from './src/aiModelsAndPlugins';
@@ -47,11 +48,15 @@ import { CONNECTED_APP_CATALOG } from './src/connectedAppsCatalog';
 import {
   beginIntegrationConnection,
   disconnectIntegration,
-  getIntegrationConnections,
+  getIntegrationCatalog,
+  chatIntegrationRequest,
+  isIntegrationUsable,
   submitIntegrationAction,
   approveIntegrationAction,
   rejectIntegrationAction,
 } from './src/integrationActions';
+import { IntegrationInputSheet } from './src/IntegrationInputSheet';
+import type { ActionSelection } from './src/IntegrationInputSheet';
 import type { IntegrationConnection } from './src/integrationActions';
 import { discoverCoordinatorWorkers } from './src/distributedCoordinatorClient';
 import { stopAndroidWorkerService } from './src/androidWorkerRuntime';
@@ -67,6 +72,8 @@ import {
 import { ChatSettingsSheet } from './src/ChatSettingsSheet';
 import { defaultChatPreferences, enterSubmits, restoreChatPreferences } from './src/chatPreferences';
 import type { ChatPreferences } from './src/chatPreferences';
+import { pairWiredHost, runWiredInference } from './src/wiredInference';
+import type { WiredSession } from './src/wiredInference';
 import type { CoordinatorWorker } from './src/distributedCoordinatorClient';
 import {
   beginChatGPTPlanLogin,
@@ -401,6 +408,56 @@ function PocketMindChatGPTScreen() {
   const [drawerToolsOpen, setDrawerToolsOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [chatGPTSettingsOpen, setChatGPTSettingsOpen] = useState(false);
+  const [wiredSession, setWiredSession] = useState<WiredSession | null>(null);
+  const [wiredOpen, setWiredOpen] = useState(false);
+  const [pairCode, setPairCode] = useState('');
+  const [pairIssue, setPairIssue] = useState('');
+  const [pairBusy, setPairBusy] = useState(false);
+  const [gpuCode, setGpuCode] = useState('');
+  const [gpuStarting, setGpuStarting] = useState(false);
+  useEffect(() => {
+    if (!wiredOpen || Platform.OS !== 'android') return;
+    let current = true;
+    const refresh = () => NativeModules.PocketMindWorker?.usbGpuPeerStatus?.()
+      ?.then((code: string) => { if (current) setGpuCode(code); }).catch(() => {});
+    refresh();
+    const timer = setInterval(refresh, 2000);
+    return () => { current = false; clearInterval(timer); };
+  }, [wiredOpen]);
+  const toggleGpuPeer = async () => {
+    setGpuStarting(true); setPairIssue('');
+    try {
+      if (gpuCode) { await NativeModules.PocketMindWorker.stopUsbGpuPeer(); setGpuCode(''); }
+      else setGpuCode(await NativeModules.PocketMindWorker.startUsbGpuPeer());
+    } catch (error: any) { setPairIssue(error?.message || '이 기기의 GPU를 시작하지 못했어요.'); }
+    finally { setGpuStarting(false); }
+  };
+  const pairRequest = useRef<AbortController | null>(null);
+  function closePairing() {
+    pairRequest.current?.abort();
+    pairRequest.current = null;
+    setPairBusy(false); setPairCode(''); setPairIssue(''); setWiredOpen(false);
+  }
+  async function connectWired() {
+    if (pairRequest.current) return;
+    const controller = new AbortController();
+    pairRequest.current = controller;
+    setPairBusy(true); setPairIssue('');
+    const timer = setTimeout(() => controller.abort(), 12_000);
+    try {
+      const session = await pairWiredHost(pairCode.trim(), controller.signal);
+      if (pairRequest.current !== controller) return;
+      setWiredSession(session);
+      closePairing();
+    } catch (error: any) {
+      if (pairRequest.current !== controller) return;
+      setPairIssue(controller.signal.aborted || error?.message === 'Network request failed'
+        ? 'USB 케이블과 PC의 PocketMind 실행기를 확인하고 다시 시도하세요.' : error?.message || '연결 실패');
+    } finally {
+      clearTimeout(timer);
+      if (pairRequest.current === controller) { pairRequest.current = null; setPairBusy(false); }
+    }
+  }
   const [modelStoreOpen, setModelStoreOpen] = useState(false);
   const [pluginStoreOpen, setPluginStoreOpen] = useState(false);
   const [quickPlusOpen, setQuickPlusOpen] = useState(false);
@@ -415,7 +472,10 @@ function PocketMindChatGPTScreen() {
   const [integrationConnections, setIntegrationConnections] = useState<IntegrationConnection[]>([]);
   const [connectingIntegrationId, setConnectingIntegrationId] = useState<string | null>(null);
   const [integrationSearch, setIntegrationSearch] = useState('');
-  const [integrationFilter, setIntegrationFilter] = useState<'all' | 'connected' | 'setup'>('all');
+  const [actionSelection, setActionSelection] = useState<ActionSelection | null>(null);
+  const integrationRefresh = useRef(0);
+  const initialIntegrationUrlChecked = useRef(false);
+  const [integrationFilter, setIntegrationFilter] = useState<'all' | 'ready' | 'connected' | 'setup'>('all');
   const [integrationStatus, setIntegrationStatus] = useState<'idle' | 'checking' | 'ready' | 'error'>('idle');
   const [integrationStatusMessage, setIntegrationStatusMessage] = useState('연결 상태를 확인하지 않았습니다.');
   const [integrationCheckedAt, setIntegrationCheckedAt] = useState<string>('');
@@ -615,8 +675,8 @@ function PocketMindChatGPTScreen() {
         if (mounted) {
           setRemotePC((previous) => ({
             ...previous,
-            serverUrl: savedUrl || '',
-            apiKey: typeof savedToken === 'string' ? savedToken : '',
+            serverUrl: savedUrl ?? 'https://pocketmind-coordinator.onrender.com',
+            apiKey: savedUrl && typeof savedToken === 'string' ? savedToken : '',
           }));
         }
       } catch (error) {
@@ -831,6 +891,7 @@ function PocketMindChatGPTScreen() {
   }, []);
 
   const ensureGenerationAvailable = useCallback((prompt: string): boolean => {
+    if (wiredSession) return true;
     if (useChatGPTPlan) {
       if (chatGPTStatus.connected && chatGPTModelId) return true;
       Alert.alert('ChatGPT 연결 필요', 'ChatGPT 계정에 연결하고 사용 가능한 모델을 선택하세요.', [
@@ -850,7 +911,7 @@ function PocketMindChatGPTScreen() {
       return false;
     }
     return true;
-  }, [installedModelIds.length, remotePC.enabled, remotePC.serverUrl, useChatGPTPlan, chatGPTStatus.connected, chatGPTModelId]);
+  }, [installedModelIds.length, remotePC.enabled, remotePC.serverUrl, useChatGPTPlan, chatGPTStatus.connected, chatGPTModelId, wiredSession]);
 
   const runAssistantGeneration = useCallback(async (prompt: string, context: ChatMessage[]) => {
     if (!prompt.trim() || generationAbortRef.current || isGenerating || !ensureGenerationAvailable(prompt)) return;
@@ -863,21 +924,28 @@ function PocketMindChatGPTScreen() {
     setStreamingText('');
 
     try {
-      if (useChatGPTPlan) {
-        setLiveStatus('ChatGPT 플랜으로 응답 생성 중...');
-        const result = await chatWithChatGPTPlan(
-          chatGPTModelId,
-          context.filter(message => !message.issue && !message.id.startsWith('err-') &&
-            (message.role === 'user' || !message.pipelineSteps?.length))
-            .map(message => ({ role: message.role, content: message.text })),
-          prompt,
-          partial => { if (!controller.signal.aborted) setStreamingText(partial); },
-        );
+      if (useChatGPTPlan || wiredSession) {
+        const plugins = await runAutonomousPlugins(prompt, enabledPluginIds);
+        if (controller.signal.aborted) return;
+        if (plugins.length && /^\/[a-z0-9-]+(?:\s|$)/i.test(prompt)) {
+          updateActiveSessionMessages(previous => [...previous, {
+            id: `a-${Date.now()}`, role: 'assistant', text: '', timestamp: formatNowTime(), source: 'PocketMind 도구', pluginOutputs: plugins,
+          }]);
+          return;
+        }
+        const history = context.filter(message => message.text && !message.issue && !message.id.startsWith('err-') &&
+          (message.role === 'user' || !message.pipelineSteps?.length)).map(message => ({ role: message.role, content: message.text }));
+        setLiveStatus(wiredSession ? '유선 GPU에서 답변을 생성하고 있어요…' : 'ChatGPT에서 답변을 생성하고 있어요…');
+        const result = wiredSession
+          ? { text: await runWiredInference(wiredSession, history, prompt, controller.signal), issue: undefined, code: undefined }
+          : await chatWithChatGPTPlan(chatGPTModelId, history, prompt, partial => {
+            if (!controller.signal.aborted) setStreamingText(partial);
+          });
         if (controller.signal.aborted) return;
         updateActiveSessionMessages(previous => [...previous, {
           id: `a-${Date.now()}`, role: 'assistant', text: result.text, timestamp: formatNowTime(),
-          source: chatGPTModels.find(model => model.id === chatGPTModelId)?.name || chatGPTModelId,
-          issue: result.issue, issueCode: result.code,
+          source: wiredSession ? `USB · ${wiredSession.model}` : chatGPTModels.find(model => model.id === chatGPTModelId)?.name || chatGPTModelId,
+          issue: result.issue, issueCode: result.code, pluginOutputs: plugins,
         }]);
         return;
       }
@@ -915,7 +983,7 @@ function PocketMindChatGPTScreen() {
         id: `err-${Date.now()}`,
         role: 'assistant',
         text: '', issue: error?.message || '요청을 처리하지 못했어요. 다시 시도해 주세요.',
-        source: useChatGPTPlan ? chatGPTModelId : 'PocketMind',
+        source: wiredSession ? '유선 GPU' : useChatGPTPlan ? chatGPTModelId : 'PocketMind',
         timestamp: formatNowTime(),
       };
       updateActiveSessionMessages((previous) => [...previous, errMsg]);
@@ -934,6 +1002,7 @@ function PocketMindChatGPTScreen() {
     installedModelIds,
     isGenerating,
     activeSession.id,
+    wiredSession,
     chatGPTModels,
     chatGPTModelId,
     useChatGPTPlan,
@@ -944,7 +1013,25 @@ function PocketMindChatGPTScreen() {
 
   const handleSendMessage = async (overridePrompt?: string) => {
     const trimmed = (overridePrompt !== undefined ? overridePrompt : inputText).trim();
-    if (!trimmed || generationAbortRef.current || isGenerating || !ensureGenerationAvailable(trimmed)) return;
+    if (!trimmed || generationAbortRef.current || isGenerating) return;
+    const request = chatIntegrationRequest(trimmed);
+    if (request) {
+      const app = CONNECTED_APP_CATALOG.find(item => item.id === request.id)!;
+      setIntegrationSearch(app.name);
+      setIntegrationFilter('all');
+      setConnectedAppsOpen(true);
+      const connections = await refreshConnectedApps();
+      const connection = connections?.find(item => item.id === app.id);
+      if (request.action === 'connect' && connection?.connectable && !connection.connected) {
+        await handleConnectIntegration(app);
+      } else if (request.action === 'compose' && connection && isIntegrationUsable(connection) &&
+        (!connection.actions || connection.actions.includes('send_message'))) {
+        setConnectedAppsOpen(false);
+        setActionSelection({ app, action: app.actions.find(item => item.id === 'send_message')!, prompt: trimmed });
+      }
+      return;
+    }
+    if (!ensureGenerationAvailable(trimmed)) return;
 
     const userMsg: ChatMessage = {
       id: `u-${Date.now()}`,
@@ -1030,6 +1117,7 @@ function PocketMindChatGPTScreen() {
   }, [androidWorkerOpen, remotePC.serverUrl, remotePC.apiKey]);
 
   const refreshConnectedApps = useCallback(async () => {
+    const refreshId = ++integrationRefresh.current;
     if (!remotePC.serverUrl.trim() || (remotePC.apiKey || '').trim().length < 24) {
       setConfiguredIntegrationIds([]);
       setIntegrationConnections([]);
@@ -1040,21 +1128,25 @@ function PocketMindChatGPTScreen() {
     setIntegrationStatus('checking');
     setIntegrationStatusMessage('Coordinator에서 연결 상태를 확인하고 있습니다...');
     try {
-      const connections = await getIntegrationConnections(remotePC.serverUrl, (remotePC.apiKey || ''));
+      const catalog = await getIntegrationCatalog(remotePC.serverUrl, (remotePC.apiKey || ''));
+      if (refreshId !== integrationRefresh.current) return;
+      const connections = catalog.integrations;
       const ids = connections
-        .filter((connection) => connection.connectable ? connection.connected : connection.configured)
+        .filter(isIntegrationUsable)
         .map((connection) => connection.id);
       const available = connections.filter((connection) => connection.connectable && !connection.connected).length;
       setIntegrationConnections(connections);
       setConfiguredIntegrationIds(ids);
       setIntegrationStatus('ready');
       setIntegrationStatusMessage(
-        connections.length > 0
+        catalog.hubUnavailable ? '공통 어댑터 응답을 기다리고 있어요. 아래에 확인된 앱만 표시합니다.' : connections.length > 0
           ? `${ids.length}개 연결됨${available ? ` · ${available}개 원클릭 연결 가능` : ''}`
           : 'Coordinator는 연결됐지만 설치된 연결 어댑터가 없습니다.',
       );
       setIntegrationCheckedAt(formatNowTime());
+      return connections;
     } catch (error: any) {
+      if (refreshId !== integrationRefresh.current) return;
       setConfiguredIntegrationIds([]);
       setIntegrationConnections([]);
       setIntegrationStatus('error');
@@ -1063,6 +1155,8 @@ function PocketMindChatGPTScreen() {
   }, [remotePC.apiKey, remotePC.serverUrl]);
 
   const openConnectedApps = async () => {
+    setIntegrationSearch('');
+    setIntegrationFilter('all');
     setConnectedAppsOpen(true);
     await refreshConnectedApps();
   };
@@ -1128,11 +1222,15 @@ function PocketMindChatGPTScreen() {
 
   useEffect(() => {
     const handleUrl = ({ url }: { url: string }) => {
-      if (!url.startsWith('pocketmind://integrations/callback')) return;
+      if (!/^pocketmind:\/\/integrations\/callback(?:\?|$)/.test(url)) return;
       setConnectedAppsOpen(true);
       setConnectingIntegrationId(null);
       refreshConnectedApps().then(() => showToast('계정 연결 상태를 확인했습니다.'));
     };
+    if (connectionSettingsReady && !initialIntegrationUrlChecked.current) {
+      initialIntegrationUrlChecked.current = true;
+      Linking.getInitialURL().then(url => { if (url) handleUrl({ url }); }).catch(() => {});
+    }
     const linkSubscription = Linking.addEventListener('url', handleUrl);
     const appStateSubscription = AppState.addEventListener('change', (state) => {
       if (state === 'active' && connectingIntegrationId) {
@@ -1143,11 +1241,13 @@ function PocketMindChatGPTScreen() {
       linkSubscription.remove();
       appStateSubscription.remove();
     };
-  }, [connectingIntegrationId, refreshConnectedApps, showToast]);
+  }, [connectingIntegrationId, refreshConnectedApps, showToast, connectionSettingsReady]);
 
   const handleConnectedAppAction = async (
     app: (typeof CONNECTED_APP_CATALOG)[number],
     action: (typeof CONNECTED_APP_CATALOG)[number]['actions'][number],
+    input: Record<string, unknown>,
+    preview: string,
   ) => {
     if (!remotePC.serverUrl.trim() || (remotePC.apiKey || '').trim().length < 24) {
       Alert.alert('Coordinator 설정 필요', '분산 Worker 설정에서 Coordinator 주소와 API 토큰을 먼저 입력하세요.');
@@ -1160,21 +1260,12 @@ function PocketMindChatGPTScreen() {
       );
       return;
     }
-    const prompt = inputText.trim() || messages.slice(-4).map((message) => `${message.role}: ${message.text}`).join('\n');
-    if (!prompt.trim()) {
-      Alert.alert('요청 내용 필요', '채팅에 작업 내용을 입력하거나 먼저 요청을 보내 주세요.');
-      return;
-    }
     try {
-      const submitted = await submitIntegrationAction(remotePC.serverUrl, (remotePC.apiKey || ''), app.id, action.id, {
-        prompt,
-        conversation: messages.slice(-6).map((message) => ({ role: message.role, content: message.text })),
-        requestedAt: new Date().toISOString(),
-      });
+      const submitted = await submitIntegrationAction(remotePC.serverUrl, remotePC.apiKey || '', app.id, action.id, input);
       if (submitted.status === 'awaiting_approval') {
         Alert.alert(
           `${app.name} 작업 승인`,
-          `“${action.label}” 작업을 실행하려고 합니다. 실제 외부 앱에서 변경이 발생할 수 있습니다. 계속할까요?`,
+          `${action.label}\n\n${preview.slice(0, 800)}${preview.length > 800 ? "…" : ""}`,
           [
             {
               text: '거절',
@@ -1264,7 +1355,7 @@ function PocketMindChatGPTScreen() {
 
   const activeModelSpec =
     safeCatalog.find((m) => m.id === primaryModelId) || safeCatalog[0];
-  const activeModelLabel = useChatGPTPlan
+  const activeModelLabel = wiredSession ? wiredSession.model : useChatGPTPlan
     ? (chatGPTModels.find(model => model.id === chatGPTModelId)?.name || 'ChatGPT 연결 필요')
     : (activeModelSpec?.shortName || '모델 선택');
 
@@ -1292,13 +1383,14 @@ function PocketMindChatGPTScreen() {
     const query = integrationSearch.trim().toLocaleLowerCase();
     return CONNECTED_APP_CATALOG.filter((app) => {
       const connected = configuredIntegrationSet.has(app.id);
-      const matchesFilter = integrationFilter === 'all' ||
-        (integrationFilter === 'connected' ? connected : !connected);
+      const ready = integrationConnectionMap.get(app.id)?.connectable === true && !connected;
+      const matchesFilter = integrationFilter === 'all' || (integrationFilter === 'ready' ? ready :
+        integrationFilter === 'connected' ? connected : !ready && !connected);
       const matchesQuery = !query || [app.name, app.category, app.description, app.id]
         .some((value) => value.toLocaleLowerCase().includes(query));
       return matchesFilter && matchesQuery;
     });
-  }, [configuredIntegrationSet, integrationFilter, integrationSearch]);
+  }, [configuredIntegrationSet, integrationConnectionMap, integrationFilter, integrationSearch]);
 
   const renderChatMessage = useCallback(({ item }: { item: ChatMessage }) => (
     <ChatMessageCard
@@ -1322,6 +1414,11 @@ function PocketMindChatGPTScreen() {
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar hidden />
+      {actionSelection && <IntegrationInputSheet selection={actionSelection} onCancel={() => setActionSelection(null)}
+        onSubmit={(input, preview) => {
+          setActionSelection(null);
+          handleConnectedAppAction(actionSelection.app, actionSelection.action, input, preview);
+        }} />}
       <ChatSettingsSheet visible={settingsOpen} values={preferences} onChange={savePreferences} onClose={() => setSettingsOpen(false)} />
 
       {/* ================= ChatGPT 상단 헤더 ================= */}
@@ -1772,8 +1869,9 @@ function PocketMindChatGPTScreen() {
               {chatGPTStatus.connected ? chatGPTModels.map(model => (
                 <TouchableOpacity
                   key={model.id}
-                  style={[styles.pickerRow, styles.cloudPickerRow, useChatGPTPlan && chatGPTModelId === model.id && styles.pickerRowSelected]}
+                  style={[styles.pickerRow, styles.cloudPickerRow, !wiredSession && useChatGPTPlan && chatGPTModelId === model.id && styles.pickerRowSelected]}
                   onPress={() => {
+                    setWiredSession(null);
                     setChatGPTModelId(model.id);
                     setUseChatGPTPlan(true);
                     setModelPickerOpen(false);
@@ -1783,7 +1881,7 @@ function PocketMindChatGPTScreen() {
                     <Text style={styles.pickerModelName}>{model.name}</Text>
                     <Text style={styles.pickerModelMeta}>내 ChatGPT 플랜 · 온라인 사용</Text>
                   </View>
-                  <Text style={styles.pickerCheck}>{useChatGPTPlan && chatGPTModelId === model.id ? '✓' : ''}</Text>
+                  <Text style={styles.pickerCheck}>{!wiredSession && useChatGPTPlan && chatGPTModelId === model.id ? '✓' : ''}</Text>
                 </TouchableOpacity>
               )) : (
                 <TouchableOpacity style={[styles.pickerRow, styles.cloudPickerRow]} onPress={() => {
@@ -1801,15 +1899,23 @@ function PocketMindChatGPTScreen() {
                 <Text style={styles.modelSectionTitle}>기기 및 Worker</Text>
                 <Text style={styles.modelSectionHint}>설치 모델</Text>
               </View>
+              {Platform.OS === 'android' && <TouchableOpacity accessibilityRole="button"
+                style={[styles.pickerRow, wiredSession && styles.pickerRowSelected]}
+                onPress={() => { setModelPickerOpen(false); setWiredOpen(true); }}>
+                <View style={{ flex: 1 }}><Text style={styles.pickerModelName}>유선 GPU 연결</Text>
+                  <Text style={styles.pickerModelMeta}>{wiredSession ? `${wiredSession.model} · ${wiredSession.device}` : 'USB로 연결한 Windows PC의 GGUF 모델'}</Text>
+                </View><Text style={styles.modelRowArrow}>›</Text>
+              </TouchableOpacity>}
               {safeCatalog.map((m) => {
                 const isInstalled = installedModelIds.includes(m.id);
-                const isSelected = !useChatGPTPlan && primaryModelId === m.id;
+                const isSelected = !wiredSession && !useChatGPTPlan && primaryModelId === m.id;
                 return (
                   <TouchableOpacity
                     key={m.id}
                     style={[styles.pickerRow, isSelected && styles.pickerRowSelected]}
                     onPress={() => {
                       if (isInstalled || remotePC.enabled) {
+                        setWiredSession(null);
                         setPrimaryModelId(m.id);
                         setUseChatGPTPlan(false);
                         setModelPickerOpen(false);
@@ -1868,6 +1974,35 @@ function PocketMindChatGPTScreen() {
         </View>
       </Modal>
 
+      <Modal visible={wiredOpen} transparent animationType="slide" onRequestClose={closePairing}>
+        <View style={styles.bottomSheetOverlay}><View style={styles.bottomSheetCard}>
+          <View style={styles.sheetHeader}><Text style={styles.sheetTitle}>유선 GPU 연결</Text>
+            <TouchableOpacity accessibilityLabel="닫기" onPress={closePairing}><Text style={styles.sheetClose}>✕</Text></TouchableOpacity>
+          </View>
+          <ScrollView keyboardShouldPersistTaps="handled">
+          <Text style={styles.inputFieldLabel}>모델을 나눠 실행하기 · 실험 기능</Text>
+          <Text style={styles.pluginCardDesc}>{gpuCode ? `PC에 입력할 태블릿 GPU 제공 코드  ${gpuCode}` : '이 태블릿의 GPU도 사용하려면 먼저 GPU 제공을 켜고 코드를 Windows 실행기에 입력하세요. 앱을 화면에서 벗어나면 제공이 끝나요.'}</Text>
+          <TouchableOpacity disabled={gpuStarting} style={styles.sheetSecondaryBtn} onPress={toggleGpuPeer}>
+            <Text style={styles.sheetSecondaryBtnText}>{gpuStarting ? 'GPU 확인 중…' : gpuCode ? '태블릿 GPU 제공 중지' : '태블릿 GPU 제공 시작'}</Text>
+          </TouchableOpacity>
+          <Text style={styles.inputFieldLabel}>PC 모델로 대화</Text>
+          {Boolean(pairIssue) && <Text style={styles.replyIssueText}>{pairIssue}</Text>}
+          {wiredSession ? <>
+            <Text style={styles.pluginCardDesc}>{wiredSession.model} · {wiredSession.device}</Text>
+            <TouchableOpacity style={styles.sheetSecondaryBtn} onPress={() => { setWiredSession(null); closePairing(); }}>
+              <Text style={styles.sheetSecondaryBtnText}>이 기기에서 연결 해제</Text>
+            </TouchableOpacity>
+          </> : <>
+            <Text style={styles.pluginCardDesc}>Windows에서 PocketMind Wired를 열고 데이터 케이블로 연결하세요. USB 디버깅을 허용한 뒤 PC에 표시된 코드를 입력하세요.</Text>
+            <TextInput accessibilityLabel="8자리 연결 코드" keyboardType="number-pad" maxLength={8} value={pairCode}
+              onChangeText={v => setPairCode(v.replace(/[^0-9]/g, ''))} placeholder="8자리 연결 코드" placeholderTextColor="#A5ABA7" style={styles.modalInput} />
+            <TouchableOpacity style={styles.sheetPrimaryBtn} disabled={pairBusy || pairCode.length !== 8} onPress={connectWired}>
+              <Text style={styles.sheetPrimaryBtnText}>{pairBusy ? '기기 확인 중…' : '연결하고 모델 선택'}</Text>
+            </TouchableOpacity>
+          </>}
+          </ScrollView>
+        </View></View>
+      </Modal>
       <Modal visible={chatGPTSettingsOpen} transparent animationType="slide">
         <View style={styles.bottomSheetOverlay}>
           <View style={styles.bottomSheetCard}>
@@ -2158,7 +2293,8 @@ function PocketMindChatGPTScreen() {
           <View style={styles.integrationFilterRow}>
             {([
               ['all', '전체'],
-              ['connected', '연결됨'],
+              ['ready', '바로 연결'],
+              ['connected', '사용 가능'],
               ['setup', '설정 필요'],
             ] as const).map(([value, label]) => (
               <TouchableOpacity
@@ -2185,11 +2321,11 @@ function PocketMindChatGPTScreen() {
               const connectable = connection?.connectable === true;
               const connecting = connectingIntegrationId === app.id;
               const statusLabel = configured
-                ? '연결됨'
+                ? (connection?.mode === 'webhook' ? '웹훅 설정됨' : '계정 연결됨')
                 : connectable
                   ? '연결 가능'
                   : connection?.configured
-                    ? '웹훅 준비됨'
+                    ? '설정 확인 필요'
                     : '어댑터 필요';
               return (
                 <View key={app.id} style={styles.pluginCard}>
@@ -2216,7 +2352,7 @@ function PocketMindChatGPTScreen() {
                     <TouchableOpacity
                       style={[styles.integrationConnectButton, connecting && styles.integrationActionDisabled]}
                       onPress={() => handleConnectIntegration(app)}
-                      disabled={connecting}
+                      disabled={connectingIntegrationId !== null}
                     >
                       <Text style={styles.integrationConnectButtonText}>
                         {connecting ? '로그인 확인 중…' : `${app.name} 원클릭 연결`}
@@ -2231,7 +2367,7 @@ function PocketMindChatGPTScreen() {
                       <Text style={styles.integrationDisconnectButtonText}>연결 해제</Text>
                     </TouchableOpacity>
                   ) : null}
-                  {app.actions.map((action) => (
+                  {configured && app.actions.filter(action => !connection?.actions || connection.actions.includes(action.id)).map((action) => (
                     <TouchableOpacity
                       key={action.id}
                       style={[
@@ -2239,7 +2375,7 @@ function PocketMindChatGPTScreen() {
                         { alignSelf: 'stretch', marginTop: 8 },
                         !configured && styles.integrationActionDisabled,
                       ]}
-                      onPress={() => handleConnectedAppAction(app, action)}
+                      onPress={() => { setConnectedAppsOpen(false); setActionSelection({ app, action, prompt: inputText }); }}
                       disabled={!configured}
                     >
                       <Text style={styles.pluginRunBtnText}>
@@ -2247,11 +2383,11 @@ function PocketMindChatGPTScreen() {
                       </Text>
                     </TouchableOpacity>
                   ))}
-                  {!connectable ? <TouchableOpacity
+                  {!connectable && !configured ? <TouchableOpacity
                     style={styles.integrationSetupLink}
                     onPress={() => openIntegrationSetup(app.officialSetupUrl)}
                   >
-                    <Text style={styles.integrationSetupLinkText}>연결 어댑터 설정 안내 ↗</Text>
+                    <Text style={styles.integrationSetupLinkText}>공식 개발 문서 ↗</Text>
                   </TouchableOpacity> : null}
                 </View>
               );

@@ -32,6 +32,8 @@ const PUBLIC_BASE_URL = (process.env.POCKETMIND_PUBLIC_BASE_URL || '').replace(/
 const TOKEN_ENCRYPTION_SECRET = process.env.POCKETMIND_TOKEN_ENCRYPTION_KEY || '';
 const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || '';
 const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || '';
+const HUB_URL = process.env.POCKETMIND_INTEGRATION_HUB_URL || '';
+const { parseHubCatalog } = require('./integration-hub');
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const GOOGLE_INTEGRATIONS = {
   'google-gmail': {
@@ -62,6 +64,7 @@ const GOOGLE_INTEGRATIONS = {
     label: 'Google Tasks',
     scopes: ['tasks.readonly', 'tasks'],
   },
+  youtube: { label: 'YouTube', scopes: ['youtube.force-ssl'], actions: ['search_videos', 'create_playlist'] },
 };
 let CONNECTOR_WEBHOOKS = {};
 let CONNECTOR_DEFINITIONS = {};
@@ -117,7 +120,11 @@ if (API_TOKEN.length < 24 || ENROLLMENT_TOKEN.length < 24) {
   process.exit(1);
 }
 
-if ((Object.keys(CONNECTOR_WEBHOOKS).length > 0 || Object.keys(CONNECTOR_DEFINITIONS).length > 0) && WEBHOOK_SIGNING_SECRET.length < 32) {
+if (HUB_URL && !isSecureConnectorUrl(HUB_URL)) {
+  console.error('POCKETMIND_INTEGRATION_HUB_URL must be an HTTPS endpoint.');
+  process.exit(1);
+}
+if ((HUB_URL || Object.keys(CONNECTOR_WEBHOOKS).length > 0 || Object.keys(CONNECTOR_DEFINITIONS).length > 0) && WEBHOOK_SIGNING_SECRET.length < 32) {
   console.error('Configured integration webhooks require POCKETMIND_WEBHOOK_SIGNING_SECRET (at least 32 characters).');
   process.exit(1);
 }
@@ -486,13 +493,34 @@ async function callConnector(url, payload, timeoutMs = 15_000) {
   return data;
 }
 
+function builtinGoogle(id) {
+  return Boolean(BUILTIN_GOOGLE_ENABLED && Object.hasOwn(GOOGLE_INTEGRATIONS, id) &&
+    (id !== 'youtube' || (!CONNECTOR_DEFINITIONS[id] && !CONNECTOR_WEBHOOKS[id])));
+}
+
+function canUseHub(id) {
+  return HUB_URL && Object.hasOwn(INTEGRATION_ACTION_RISKS, id) && !builtinGoogle(id) &&
+    !CONNECTOR_WEBHOOKS[id] && !CONNECTOR_DEFINITIONS[id];
+}
+
+async function hubCatalog() {
+  if (!HUB_URL) return new Map();
+  const result = await callConnector(HUB_URL, { event: 'pocketmind.integration.catalog', requestedAt: Date.now() }, 5000);
+  return parseHubCatalog(result, INTEGRATION_ACTION_RISKS);
+}
+
 async function connectorStatus(id) {
-  if (GOOGLE_INTEGRATIONS[id] && BUILTIN_GOOGLE_ENABLED) {
+  if (canUseHub(id)) {
+    const status = (await hubCatalog()).get(id);
+    if (status) return status;
+  }
+  if (builtinGoogle(id)) {
+    const actions = GOOGLE_INTEGRATIONS[id].actions;
     const connection = state.oauthConnections[id];
-    if (!connection?.refreshToken) return { id, configured: true, connectable: true, connected: false, mode: 'oauth' };
+    if (!connection?.refreshToken) return { id, configured: true, connectable: true, connected: false, mode: 'oauth', actions };
     try {
       await googleAccessToken(id);
-      return { id, configured: true, connectable: true, connected: true, mode: 'oauth', accountLabel: connection.accountLabel || null };
+      return { id, configured: true, connectable: true, connected: true, mode: 'oauth', accountLabel: connection.accountLabel || null, actions };
     } catch (error) {
       return { id, configured: true, connectable: true, connected: false, mode: 'oauth', statusError: String(error.message || 'Could not verify Google connection.').slice(0, 300) };
     }
@@ -507,8 +535,8 @@ async function connectorStatus(id) {
       mode: 'webhook',
     };
   }
-  if (!definition.statusUrl) {
-    return { id, configured: true, connectable: true, connected: false, mode: 'oauth', statusError: 'Status endpoint is missing.' };
+  if (!definition.statusUrl || !definition.actionUrl) {
+    return { id, configured: true, connectable: false, connected: false, mode: 'oauth', statusError: '연결 상태 또는 실행 어댑터 설정이 필요합니다.' };
   }
   try {
     const result = await callConnector(definition.statusUrl, {
@@ -611,6 +639,20 @@ async function dispatchBuiltinGoogleAction(action) {
   if (action.integrationId === 'google-gmail') return dispatchBuiltinGmailAction(action);
   const input = action.input || {};
   const prompt = promptValue(input);
+
+  if (action.integrationId === 'youtube') {
+    if (action.action === 'search_videos') {
+      const query = new URLSearchParams({ part: 'snippet', type: 'video', maxResults: '10', q: input.query || prompt });
+      return googleApi('youtube', 'https://www.googleapis.com/youtube/v3/search?' + query);
+    }
+    if (action.action === 'create_playlist') {
+      const title = inputField(input, prompt, 'title', ['제목', 'title']) || prompt;
+      if (!title.trim()) throw new Error('재생목록 제목을 입력하세요.');
+      return googleApi('youtube', 'https://www.googleapis.com/youtube/v3/playlists?part=snippet,status', {
+        method: 'POST', body: JSON.stringify({ snippet: { title }, status: { privacyStatus: 'private' } }),
+      });
+    }
+  }
 
   if (action.integrationId === 'google-calendar') {
     if (action.action === 'list_events') {
@@ -733,7 +775,7 @@ async function dispatchBuiltinGoogleAction(action) {
 }
 
 async function dispatchIntegrationAction(action) {
-  if (GOOGLE_INTEGRATIONS[action.integrationId] && BUILTIN_GOOGLE_ENABLED) {
+  if (builtinGoogle(action.integrationId)) {
     try {
       const result = await dispatchBuiltinGoogleAction(action);
       action.status = 'completed';
@@ -748,7 +790,7 @@ async function dispatchIntegrationAction(action) {
     await persist();
     return;
   }
-  const target = CONNECTOR_WEBHOOKS[action.integrationId];
+  const target = action.viaHub ? HUB_URL : CONNECTOR_WEBHOOKS[action.integrationId];
   if (!target) {
     action.status = 'not_configured';
     action.lastError = 'Integration webhook is not configured on the coordinator.';
@@ -757,6 +799,10 @@ async function dispatchIntegrationAction(action) {
     return;
   }
   try {
+    if (action.viaHub) {
+      const available = (await hubCatalog()).get(action.integrationId);
+      if (!available?.connected || !available.actions.includes(action.action)) throw new Error('앱 연결 또는 작업 권한이 변경되었습니다.');
+    }
     const webhookPayload = JSON.stringify({
       event: 'pocketmind.integration.action',
       actionId: action.actionId,
@@ -1078,23 +1124,30 @@ async function handle(req, res) {
       ...(BUILTIN_GOOGLE_ENABLED ? Object.keys(GOOGLE_INTEGRATIONS) : []),
     ])];
     const integrations = await Promise.all(ids.map(connectorStatus));
-    return json(res, 200, {
-      integrations,
-    });
+    let hubUnavailable = false;
+    if (HUB_URL) {
+      try {
+        for (const [id, status] of await hubCatalog()) {
+          if (canUseHub(id)) integrations.push(status);
+        }
+      } catch { hubUnavailable = true; }
+    }
+    return json(res, 200, { integrations, hubUnavailable });
   }
 
   if (req.method === 'POST' && parts.length === 4 && parts[0] === 'v1' &&
       parts[1] === 'integrations' && ['connect', 'status', 'disconnect'].includes(parts[3])) {
     if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
     const integrationId = parts[2];
-    const definition = CONNECTOR_DEFINITIONS[integrationId];
-    const builtinGoogle = Boolean(GOOGLE_INTEGRATIONS[integrationId] && BUILTIN_GOOGLE_ENABLED);
-    if (!definition && !builtinGoogle) return json(res, 404, { error: 'One-tap connector is not configured' });
+    const shared = canUseHub(integrationId) && (await hubCatalog()).get(integrationId);
+    const definition = shared ? { connectUrl: HUB_URL, statusUrl: HUB_URL, actionUrl: HUB_URL, disconnectUrl: HUB_URL } : CONNECTOR_DEFINITIONS[integrationId];
+    const google = builtinGoogle(integrationId);
+    if (!definition && !google) return json(res, 404, { error: 'One-tap connector is not configured' });
     await readBody(req);
 
     if (parts[3] === 'status') return json(res, 200, await connectorStatus(integrationId));
 
-    if (builtinGoogle) {
+    if (google) {
       if (parts[3] === 'connect') {
         const authorizationUrl = googleAuthorizationUrl(integrationId);
         await persist();
@@ -1116,7 +1169,7 @@ async function handle(req, res) {
     }
 
     if (parts[3] === 'connect') {
-      if (!definition.connectUrl || !definition.statusUrl) {
+      if (!definition.connectUrl || !definition.statusUrl || !definition.actionUrl) {
         return json(res, 409, { error: 'Connector connect/status endpoints are incomplete' });
       }
       const result = await callConnector(definition.connectUrl, {
@@ -1155,16 +1208,19 @@ async function handle(req, res) {
     if (!allowedRisk || allowedRisk !== body.risk) {
       return json(res, 400, { error: 'Unknown integration action or incorrect risk level' });
     }
-    const builtinConfigured = Boolean(GOOGLE_INTEGRATIONS[body.integrationId] && BUILTIN_GOOGLE_ENABLED);
-    if (!CONNECTOR_WEBHOOKS[body.integrationId] && !builtinConfigured) {
+    const google = builtinGoogle(body.integrationId);
+    const viaHub = Boolean(canUseHub(body.integrationId));
+    if (!viaHub && !CONNECTOR_WEBHOOKS[body.integrationId] && !google) {
       return json(res, 409, { error: 'Integration is not configured on the coordinator' });
     }
-    if (builtinConfigured || CONNECTOR_DEFINITIONS[body.integrationId]?.connectUrl) {
+    if (google || viaHub || CONNECTOR_DEFINITIONS[body.integrationId]?.connectUrl) {
       const connection = await connectorStatus(body.integrationId);
       if (!connection.connected) return json(res, 409, { error: 'Integration account is not connected' });
+      if (connection.actions && !connection.actions.includes(body.action)) return json(res, 409, { error: 'Action unavailable on this adapter' });
     }
     const action = {
       actionId: crypto.randomUUID(),
+      viaHub,
       integrationId: body.integrationId,
       action: body.action,
       risk: body.risk,

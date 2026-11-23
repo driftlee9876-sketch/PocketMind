@@ -28,3 +28,13 @@ Set `POCKETMIND_MODEL_IDS` only to model IDs that are genuinely loaded/available
 The worker enrolls once, saves a per-worker token under `%APPDATA%\PocketMind\worker.json`, sends heartbeats, claims compatible jobs, invokes the local `/v1/chat/completions` endpoint, validates non-empty output, and reports success/failure. Delete that file and re-enroll if you need to rotate its token.
 
 Keep the model server bound to localhost. Do not expose the local inference server to the network. Put the coordinator behind HTTPS and keep enrollment/API tokens secret.
+
+## PocketMind Wired
+
+The Windows Actions artifact contains `PocketMind-Wired.exe`. On a Windows host select Android Platform Tools' `adb.exe`, a GPU-enabled `llama-server.exe`, and a local GGUF. Connect one Android device with a data cable and authorize USB debugging. The host only uses the chosen USB device and loopback services.
+
+For PC-only inference, click **USB 연결 시작**. On Android choose **모델 선택 → 유선 GPU 연결**, then enter the eight-digit code displayed on Windows. It expires in five minutes and is single-use. **새 연결 코드** issues another code for the same running model. Close the host to release the model, credentials, and USB forwards.
+
+For experimental layer splitting, first press **태블릿 GPU 제공 시작** on the Android device. Enter its separate eight-digit GPU code in **태블릿 GPU 제공 코드** on Windows. Use a Windows llama.cpp build with GPU and RPC enabled, compatible with revision `a8f8294c45076538f4509754e4c79fc51a1a486b`. The bundled arm64 peer requires Vulkan, Android 9 or later, a visible app, USB debugging, and at least 20% battery. The app stops the peer on leaving the foreground, USB removal, or severe thermal status. No model download is required on the tablet. The launcher checks real layer offload and nonzero model buffers on each selected device before enabling chat. Performance depends on model size, drivers and cable speed.
+
+The optional tunnel field accepts previously established private loopback RPC forwards. Each endpoint must belong to a trusted GPU peer. A passive cable cannot provide a network transport. The Android peer uses an abstract Unix socket restricted to the Android shell UID and does not listen on IP.

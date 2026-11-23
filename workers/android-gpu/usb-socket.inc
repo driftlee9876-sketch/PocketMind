@@ -1,0 +1,44 @@
+// Compiled only into the opt-in Android GPU peer, with the pinned ggml transport.
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
+#include <sys/un.h>
+#include <unistd.h>
+
+socket_ptr socket_t::accept() {
+    for (;;) {
+        int fd = ::accept4(pimpl->fd, nullptr, nullptr, SOCK_CLOEXEC);
+        if (fd < 0) return nullptr;
+        struct ucred peer {};
+        socklen_t length = sizeof(peer);
+        // adbd opens the forwarded socket under Android's shell UID on production devices.
+        if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &length) == 0 &&
+            (peer.uid == 2000 || peer.uid == 0)) {
+            return socket_ptr(new socket_t(std::make_unique<impl>(fd)));
+        }
+        ::close(fd);
+    }
+}
+
+socket_ptr socket_t::create_server(const char * host, int port) {
+    const char * name = std::getenv("POCKETMIND_USB_SOCKET");
+    if (!name || std::strncmp(name, "pocketmind_gpu_", 15) != 0 ||
+        std::strlen(name) != 23 || std::strspn(name + 15, "0123456789") != 8 ||
+        std::strcmp(host, "127.0.0.1") != 0 || port != 50052) return nullptr;
+    int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return nullptr;
+    sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    std::memcpy(addr.sun_path + 1, name, std::strlen(name));
+    socklen_t size = offsetof(sockaddr_un, sun_path) + 1 + std::strlen(name);
+    if (::bind(fd, reinterpret_cast<const sockaddr *>(&addr), size) < 0 || ::listen(fd, 4) < 0) {
+        ::close(fd);
+        return nullptr;
+    }
+    std::fputs("POCKETMIND_USB_READY\n", stdout);
+    std::fflush(stdout);
+    return socket_ptr(new socket_t(std::make_unique<impl>(fd)));
+}
+
+// This binary only serves an already paired ADB host.
+socket_ptr socket_t::connect(const char *, int) { return nullptr; }

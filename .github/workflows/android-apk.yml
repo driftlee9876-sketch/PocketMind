@@ -9,7 +9,7 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 65
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,6 +31,41 @@ jobs:
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
+
+      - name: Cache pinned Android GPU peer
+        id: gpu-cache
+        uses: actions/cache@v4
+        with:
+          path: android/app/build/wired
+          key: android-usb-gpu-a8f8294c45-${{ hashFiles('workers/android-gpu/*', '.github/workflows/android-apk.yml') }}
+      - uses: actions/checkout@v4
+        if: steps.gpu-cache.outputs.cache-hit != 'true'
+        with:
+          repository: ggml-org/llama.cpp
+          ref: a8f8294c45076538f4509754e4c79fc51a1a486b
+          path: build/pocketmind-llama
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: steps.gpu-cache.outputs.cache-hit != 'true'
+        with:
+          repository: KhronosGroup/Vulkan-Headers
+          ref: d277a0a3cda9c682708c93279f0c72cd6b0ae3f3
+          path: build/pocketmind-vulkan
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: steps.gpu-cache.outputs.cache-hit != 'true'
+        with:
+          repository: KhronosGroup/SPIRV-Headers
+          ref: fb1379425b16e58dcbdda7be0f8604a7f5cdce78
+          path: build/pocketmind-spirv
+          persist-credentials: false
+      - name: Build Vulkan GPU peer for trusted USB connections
+        if: steps.gpu-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y glslc ninja-build
+          sdkmanager "ndk;27.1.12297006"
+          ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.1.12297006" bash workers/android-gpu/build.sh
 
       - name: Generate PocketMind Android Launcher Icons
         run: |
@@ -129,6 +164,17 @@ jobs:
             -x lint \
             --no-daemon \
             --max-workers=2
+
+      - name: Verify the arm64 GPU peer in the signed APK
+        run: |
+          python3 - <<'PYTHON'
+          from zipfile import ZipFile
+          with ZipFile('android/app/build/outputs/apk/release/app-release.apk') as apk:
+              with apk.open('lib/arm64-v8a/libpocketmind_usb_gpu.so') as peer:
+                  header = peer.read(20)
+                  assert header[:4] == bytes.fromhex('7f454c46') and int.from_bytes(header[18:20], 'little') == 183
+              assert apk.getinfo('assets/licenses/llama.cpp.txt').file_size > 0
+          PYTHON
 
       - name: Upload PocketMind APK
         uses: actions/upload-artifact@v4

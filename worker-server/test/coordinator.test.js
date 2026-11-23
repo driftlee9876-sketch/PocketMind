@@ -83,10 +83,10 @@ test('coordinator authenticates, enrolls workers, leases tasks and validates res
   assert.deepEqual(integrations, [{
     id: 'google-gmail',
     configured: true,
-    connectable: true,
+    connectable: false,
     connected: false,
     mode: 'oauth',
-    statusError: 'Status endpoint is missing.',
+    statusError: '연결 상태 또는 실행 어댑터 설정이 필요합니다.',
   }]);
 
   const incompleteConnect = await request('POST', '/v1/integrations/google-gmail/connect', {}, apiToken);
@@ -202,7 +202,7 @@ test('built-in Google OAuth exposes secure one-tap authorization flows', { timeo
   const integrations = (await listResponse.json()).integrations;
   assert.deepEqual(integrations.map(item => item.id), [
     'google-gmail', 'google-calendar', 'google-drive', 'google-docs',
-    'google-sheets', 'google-contacts', 'google-tasks',
+    'google-sheets', 'google-contacts', 'google-tasks', 'youtube',
   ]);
   assert.ok(integrations.every(item => item.configured && item.connectable && !item.connected && item.mode === 'oauth'));
 
@@ -226,4 +226,55 @@ test('built-in Google OAuth exposes secure one-tap authorization flows', { timeo
   const invalidCallback = await fetch(baseUrl + '/v1/oauth/google/callback?state=invalid&code=unused');
   assert.equal(invalidCallback.status, 400);
   assert.match(await invalidCallback.text(), /Google 연결 실패/);
+});
+
+test('one hub connects a provider and executes only supported, approved actions', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pocketmind-hub-'));
+  const preload = path.join(directory, 'hub.cjs');
+  fs.writeFileSync(preload, `
+    const {createHmac} = require('node:crypto');
+    const original = fetch;
+    let connected = false;
+    global.fetch = async (url, init) => {
+      if (url !== 'https://hub.example/api') return original(url, init);
+      const signature = 'sha256=' + createHmac('sha256', process.env.POCKETMIND_WEBHOOK_SIGNING_SECRET).update(init.body).digest('hex');
+      if (signature !== init.headers['X-PocketMind-Signature']) return Response.json({}, {status: 403});
+      const event = JSON.parse(init.body);
+      if (event.event.endsWith('.catalog')) return Response.json({integrations: [
+        {id:'slack', connectable:true, connected, actions:['list_channels','send_message','unknown']},
+        {id:'not-in-catalog', connectable:true, connected:true, actions:['delete']},
+      ]});
+      if (event.event.endsWith('.connect')) { connected = true; return Response.json({authorizationUrl:'https://provider.example/consent'}); }
+      if (event.event.endsWith('.disconnect')) { connected = false; return Response.json({}); }
+      return Response.json({approved:Boolean(event.approvedAt), action:event.action});
+    };`);
+  const port = await freePort();
+  const token = 'test-hub-control-' + 'x'.repeat(30);
+  const child = spawn(process.execPath, ['--require', preload, path.join(__dirname, '..', 'server.js')], {
+    env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), POCKETMIND_API_TOKEN: token,
+      POCKETMIND_ENROLLMENT_TOKEN: 'enroll-' + 'y'.repeat(32), POCKETMIND_WEBHOOK_SIGNING_SECRET: 'z'.repeat(40),
+      POCKETMIND_INTEGRATION_HUB_URL: 'https://hub.example/api', POCKETMIND_DATA_FILE: path.join(directory, 'state.json') },
+    stdio: 'ignore',
+  });
+  t.after(() => { child.kill(); fs.rmSync(directory, {recursive:true, force:true}); });
+  const base = 'http://127.0.0.1:' + port;
+  await waitForHealth(base, child, () => '');
+  const call = async (path, body) => {
+    const res = await fetch(base + '/v1/integrations' + path, { method: body ? 'POST' : 'GET',
+      headers: {Authorization:'Bearer ' + token, 'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined });
+    return [res.status, await res.json()];
+  };
+  const [, catalog] = await call('');
+  assert.deepEqual(catalog.integrations.map(item => item.id), ['slack']);
+  assert.deepEqual(catalog.integrations[0].actions, ['list_channels', 'send_message']);
+  const write = {integrationId:'slack', action:'send_message', risk:'sensitive', input:{text:'consent test'}};
+  assert.equal((await call('/actions', write))[0], 409);
+  assert.equal((await call('/slack/connect', {}))[1].authorizationUrl, 'https://provider.example/consent');
+  assert.equal((await call('/actions', {...write, action:'search_messages', risk:'read'}))[0], 409);
+  const [, pending] = await call('/actions', write);
+  assert.equal(pending.status, 'awaiting_approval');
+  const [, approved] = await call('/actions/' + pending.actionId + '/approve', {});
+  assert.equal(approved.status, 'completed');
+  assert.equal(JSON.parse(approved.result).approved, true);
+  assert.equal((await call('/slack/disconnect', {}))[1].connected, false);
 });

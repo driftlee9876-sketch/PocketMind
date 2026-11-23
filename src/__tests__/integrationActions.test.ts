@@ -2,10 +2,20 @@ import {
   beginIntegrationConnection,
   disconnectIntegration,
   getIntegrationConnections,
+  isIntegrationUsable,
+  chatIntegrationRequest,
 } from '../integrationActions';
 
 describe('integration connection client', () => {
   afterEach(() => jest.restoreAllMocks());
+
+  it('routes connection and explicit mail requests without executing an unapproved write', () => {
+    expect(chatIntegrationRequest('지메일 연결해줘')).toEqual({ id: 'google-gmail', action: 'connect' });
+    expect(chatIntegrationRequest('/connect Google Drive')).toEqual({ id: 'google-drive', action: 'connect' });
+    expect(chatIntegrationRequest('name@example.org 으로 메일 보내줘')).toEqual({ id: 'google-gmail', action: 'compose' });
+    expect(chatIntegrationRequest('이메일을 보내는 방법 설명해줘')).toBeNull();
+    expect(isIntegrationUsable({ mode: 'oauth', configured: true, connected: false })).toBe(false);
+  });
 
   it('reads verified OAuth connection state from the coordinator', async () => {
     const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue({

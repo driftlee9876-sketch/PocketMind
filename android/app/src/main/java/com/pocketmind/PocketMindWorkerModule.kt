@@ -33,6 +33,15 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
 
   private val keyAlias = "PocketMindWorkerAesKey"
   private val chatGPTPlan by lazy { ChatGPTPlanClient(context, ::encryptSecret, ::decryptSecret) }
+  private val usbGpuPeer = UsbGpuPeer(context)
+  @ReactMethod fun startUsbGpuPeer(promise: Promise) = usbGpuPeer.start(promise)
+  @ReactMethod fun stopUsbGpuPeer(promise: Promise) { usbGpuPeer.stop(); promise.resolve(true) }
+  @ReactMethod fun usbGpuPeerStatus(promise: Promise) { promise.resolve(usbGpuPeer.status()) }
+  private val wiredHttp = WiredHttp()
+  @ReactMethod fun wiredRequest(id: String, action: String, token: String, body: String, promise: Promise) =
+    wiredHttp.request(id, action, token, body, promise)
+  @ReactMethod fun cancelWiredRequest(id: String) = wiredHttp.cancel(id)
+  override fun invalidate() { wiredHttp.close(); usbGpuPeer.release(); super.invalidate() }
   @Volatile private var previousCpuSample: Pair<Long, Long>? = null
 
   private fun readCpuUsagePercent(): Double? {
