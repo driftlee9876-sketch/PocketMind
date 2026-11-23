@@ -158,3 +158,67 @@ test('coordinator authenticates, enrolls workers, leases tasks and validates res
   }, apiToken);
   assert.equal(unconfiguredAction.status, 409, 'unconfigured connectors must not execute');
 });
+
+test('built-in Gmail OAuth exposes a secure one-tap authorization flow', { timeout: 10_000 }, async (t) => {
+  const port = await freePort();
+  const apiToken = 'gmail-api-token-' + 'd'.repeat(40);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pocketmind-gmail-test-'));
+  const serverPath = path.join(__dirname, '..', 'server.js');
+  const child = spawn(process.execPath, [serverPath], {
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      POCKETMIND_API_TOKEN: apiToken,
+      POCKETMIND_ENROLLMENT_TOKEN: 'gmail-enrollment-token-' + 'e'.repeat(40),
+      POCKETMIND_DATA_FILE: path.join(directory, 'state.json'),
+      POCKETMIND_INTEGRATION_WEBHOOKS_JSON: '{}',
+      POCKETMIND_INTEGRATION_CONNECTORS_JSON: '{}',
+      POCKETMIND_PUBLIC_BASE_URL: 'https://pocketmind.example',
+      POCKETMIND_TOKEN_ENCRYPTION_KEY: 'gmail-token-encryption-' + 'f'.repeat(40),
+      GOOGLE_OAUTH_CLIENT_ID: 'test-client.apps.googleusercontent.com',
+      GOOGLE_OAUTH_CLIENT_SECRET: 'test-client-secret',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let childOutput = '';
+  child.stdout.on('data', (chunk) => { childOutput += chunk.toString(); });
+  child.stderr.on('data', (chunk) => { childOutput += chunk.toString(); });
+  t.after(() => {
+    child.kill('SIGTERM');
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  const baseUrl = 'http://127.0.0.1:' + port;
+  await waitForHealth(baseUrl, child, () => childOutput.slice(-4000));
+  const authenticated = (pathName, method = 'GET') => fetch(baseUrl + pathName, {
+    method,
+    headers: { Authorization: 'Bearer ' + apiToken, 'Content-Type': 'application/json' },
+    body: method === 'POST' ? '{}' : undefined,
+  });
+
+  const listResponse = await authenticated('/v1/integrations');
+  assert.equal(listResponse.status, 200);
+  assert.deepEqual((await listResponse.json()).integrations, [{
+    id: 'google-gmail',
+    configured: true,
+    connectable: true,
+    connected: false,
+    mode: 'oauth',
+  }]);
+
+  const connectResponse = await authenticated('/v1/integrations/google-gmail/connect', 'POST');
+  assert.equal(connectResponse.status, 200);
+  const connect = await connectResponse.json();
+  const authorizationUrl = new URL(connect.authorizationUrl);
+  assert.equal(authorizationUrl.origin, 'https://accounts.google.com');
+  assert.equal(authorizationUrl.searchParams.get('client_id'), 'test-client.apps.googleusercontent.com');
+  assert.equal(authorizationUrl.searchParams.get('redirect_uri'), 'https://pocketmind.example/v1/oauth/google/callback');
+  assert.equal(authorizationUrl.searchParams.get('access_type'), 'offline');
+  assert.ok(authorizationUrl.searchParams.get('state'));
+  assert.match(authorizationUrl.searchParams.get('scope'), /gmail\.send/);
+
+  const invalidCallback = await fetch(baseUrl + '/v1/oauth/google/callback?state=invalid&code=unused');
+  assert.equal(invalidCallback.status, 400);
+  assert.match(await invalidCallback.text(), /Gmail 연결 실패/);
+});

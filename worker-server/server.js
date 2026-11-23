@@ -28,6 +28,19 @@ const MAX_ACTIVE_WORKERS = 1000;
 const MAX_STORED_RECORDS = 10_000;
 const HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const ALLOWED_ORIGINS = new Set((process.env.POCKETMIND_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean));
+const PUBLIC_BASE_URL = (process.env.POCKETMIND_PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+const TOKEN_ENCRYPTION_SECRET = process.env.POCKETMIND_TOKEN_ENCRYPTION_KEY || '';
+const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || '';
+const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || '';
+const GOOGLE_GMAIL_ID = 'google-gmail';
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const GOOGLE_GMAIL_SCOPES = [
+  'openid',
+  'email',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.compose',
+  'https://www.googleapis.com/auth/gmail.send',
+];
 let CONNECTOR_WEBHOOKS = {};
 let CONNECTOR_DEFINITIONS = {};
 
@@ -87,7 +100,24 @@ if ((Object.keys(CONNECTOR_WEBHOOKS).length > 0 || Object.keys(CONNECTOR_DEFINIT
   process.exit(1);
 }
 
-const state = { workers: {}, tasks: {}, actions: {} };
+function validPublicBaseUrl() {
+  try {
+    const parsed = new URL(PUBLIC_BASE_URL);
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
+  } catch {
+    return false;
+  }
+}
+
+const BUILTIN_GMAIL_ENABLED = Boolean(
+  GOOGLE_OAUTH_CLIENT_ID && GOOGLE_OAUTH_CLIENT_SECRET &&
+  TOKEN_ENCRYPTION_SECRET.length >= 32 && validPublicBaseUrl()
+);
+if ((GOOGLE_OAUTH_CLIENT_ID || GOOGLE_OAUTH_CLIENT_SECRET || TOKEN_ENCRYPTION_SECRET) && !BUILTIN_GMAIL_ENABLED) {
+  console.error('Built-in Gmail OAuth requires GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, POCKETMIND_TOKEN_ENCRYPTION_KEY (32+ chars), and an HTTPS POCKETMIND_PUBLIC_BASE_URL.');
+}
+
+const state = { workers: {}, tasks: {}, actions: {}, oauthConnections: {}, oauthStates: {} };
 let saveChain = Promise.resolve();
 const requestCounts = new Map();
 
@@ -248,10 +278,153 @@ async function load() {
       state.workers = raw.workers || {};
       state.tasks = raw.tasks || {};
       state.actions = raw.actions || {};
+      state.oauthConnections = raw.oauthConnections || {};
+      state.oauthStates = raw.oauthStates || {};
     }
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
+}
+
+function encryptionKey() {
+  return crypto.createHash('sha256').update(TOKEN_ENCRYPTION_SECRET).digest();
+}
+
+function encryptSecret(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', encryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  return [iv, cipher.getAuthTag(), encrypted].map(part => part.toString('base64url')).join('.');
+}
+
+function decryptSecret(value) {
+  const parts = String(value || '').split('.');
+  if (parts.length !== 3) throw new Error('Stored OAuth token is invalid.');
+  const [iv, tag, encrypted] = parts.map(part => Buffer.from(part, 'base64url'));
+  if (iv.length !== 12 || tag.length !== 16 || encrypted.length === 0) throw new Error('Stored OAuth token is invalid.');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', encryptionKey(), iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+}
+
+function gmailRedirectUri() {
+  return `${PUBLIC_BASE_URL}/v1/oauth/google/callback`;
+}
+
+function gmailAuthorizationUrl() {
+  const nonce = crypto.randomBytes(32).toString('base64url');
+  state.oauthStates[nonce] = { integrationId: GOOGLE_GMAIL_ID, expiresAt: Date.now() + OAUTH_STATE_TTL_MS };
+  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  url.search = new URLSearchParams({
+    client_id: GOOGLE_OAUTH_CLIENT_ID,
+    redirect_uri: gmailRedirectUri(),
+    response_type: 'code',
+    scope: GOOGLE_GMAIL_SCOPES.join(' '),
+    access_type: 'offline',
+    prompt: 'consent',
+    include_granted_scopes: 'true',
+    state: nonce,
+  }).toString();
+  return url.toString();
+}
+
+async function googleTokenRequest(parameters) {
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(parameters),
+    redirect: 'error',
+    signal: AbortSignal.timeout(15_000),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || typeof data.access_token !== 'string') {
+    throw Object.assign(new Error(typeof data.error_description === 'string' ? data.error_description : 'Google token exchange failed.'), { status: 502 });
+  }
+  return data;
+}
+
+async function gmailAccessToken() {
+  const connection = state.oauthConnections[GOOGLE_GMAIL_ID];
+  if (!connection?.refreshToken) throw Object.assign(new Error('Gmail account is not connected.'), { status: 409 });
+  if (connection.accessToken && Number(connection.accessTokenExpiresAt || 0) > Date.now() + 60_000) {
+    return decryptSecret(connection.accessToken);
+  }
+  const data = await googleTokenRequest({
+    client_id: GOOGLE_OAUTH_CLIENT_ID,
+    client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
+    refresh_token: decryptSecret(connection.refreshToken),
+    grant_type: 'refresh_token',
+  });
+  connection.accessToken = encryptSecret(data.access_token);
+  connection.accessTokenExpiresAt = Date.now() + Math.max(60, Number(data.expires_in || 3600)) * 1000;
+  connection.updatedAt = Date.now();
+  await persist();
+  return data.access_token;
+}
+
+async function gmailApi(pathname, options = {}) {
+  const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me${pathname}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${await gmailAccessToken()}`,
+      Accept: 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.headers || {}),
+    },
+    redirect: 'error',
+    signal: AbortSignal.timeout(20_000),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = data?.error?.message || `Gmail API returned HTTP ${response.status}.`;
+    throw Object.assign(new Error(message), { status: response.status === 401 ? 409 : 502 });
+  }
+  return data;
+}
+
+function html(res, status, title, message, redirectUrl) {
+  const escaped = value => String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+  const body = `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escaped(title)}</title><body style="font-family:sans-serif;background:#111;color:#fff;padding:32px"><h1>${escaped(title)}</h1><p>${escaped(message)}</p>${redirectUrl ? `<p><a style="color:#67d5bd" href="${escaped(redirectUrl)}">PocketMind로 돌아가기</a></p><script>location.href=${JSON.stringify(redirectUrl)}</script>` : ''}</body></html>`;
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+  res.end(body);
+}
+
+async function handleGoogleCallback(url, res) {
+  const nonce = url.searchParams.get('state') || '';
+  const pending = state.oauthStates[nonce];
+  delete state.oauthStates[nonce];
+  await persist();
+  if (!pending || pending.integrationId !== GOOGLE_GMAIL_ID || pending.expiresAt < Date.now()) {
+    return html(res, 400, 'Gmail 연결 실패', '로그인 요청이 만료되었거나 유효하지 않습니다. PocketMind에서 다시 연결해 주세요.');
+  }
+  if (url.searchParams.get('error')) return html(res, 400, 'Gmail 연결 취소', 'Google 로그인이 완료되지 않았습니다.');
+  const code = url.searchParams.get('code');
+  if (!code) return html(res, 400, 'Gmail 연결 실패', 'Google 인증 코드가 없습니다.');
+  const token = await googleTokenRequest({
+    code,
+    client_id: GOOGLE_OAUTH_CLIENT_ID,
+    client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
+    redirect_uri: gmailRedirectUri(),
+    grant_type: 'authorization_code',
+  });
+  if (typeof token.refresh_token !== 'string') {
+    return html(res, 409, 'Gmail 연결 실패', 'Google이 새로고침 토큰을 보내지 않았습니다. 계정 접근 권한을 해제한 뒤 다시 연결해 주세요.');
+  }
+  state.oauthConnections[GOOGLE_GMAIL_ID] = {
+    refreshToken: encryptSecret(token.refresh_token),
+    accessToken: encryptSecret(token.access_token),
+    accessTokenExpiresAt: Date.now() + Math.max(60, Number(token.expires_in || 3600)) * 1000,
+    accountLabel: null,
+    connectedAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  try {
+    const profile = await gmailApi('/profile');
+    state.oauthConnections[GOOGLE_GMAIL_ID].accountLabel = typeof profile.emailAddress === 'string' ? profile.emailAddress.slice(0, 120) : null;
+  } catch {}
+  await persist();
+  const returnUrl = 'pocketmind://integrations/callback?integrationId=google-gmail&status=connected';
+  return html(res, 200, 'Gmail 연결 완료', 'PocketMind에서 Gmail을 사용할 수 있습니다.', returnUrl);
 }
 
 function connectorHeaders(payload) {
@@ -284,6 +457,16 @@ async function callConnector(url, payload, timeoutMs = 15_000) {
 }
 
 async function connectorStatus(id) {
+  if (id === GOOGLE_GMAIL_ID && BUILTIN_GMAIL_ENABLED) {
+    const connection = state.oauthConnections[id];
+    if (!connection?.refreshToken) return { id, configured: true, connectable: true, connected: false, mode: 'oauth' };
+    try {
+      await gmailAccessToken();
+      return { id, configured: true, connectable: true, connected: true, mode: 'oauth', accountLabel: connection.accountLabel || null };
+    } catch (error) {
+      return { id, configured: true, connectable: true, connected: false, mode: 'oauth', statusError: String(error.message || 'Could not verify Gmail connection.').slice(0, 300) };
+    }
+  }
   const definition = CONNECTOR_DEFINITIONS[id];
   if (!definition?.connectUrl) {
     return {
@@ -323,7 +506,67 @@ async function connectorStatus(id) {
   }
 }
 
+function promptValue(input) {
+  return typeof input?.prompt === 'string' ? input.prompt.trim() : '';
+}
+
+function fieldFromPrompt(prompt, names) {
+  for (const name of names) {
+    const match = prompt.match(new RegExp(`(?:^|\\n)\\s*${name}\\s*[:：]\\s*(.+)`, 'i'));
+    if (match) return match[1].trim();
+  }
+  return '';
+}
+
+function gmailRawMessage(input) {
+  const prompt = promptValue(input);
+  const to = typeof input.to === 'string' ? input.to.trim() : fieldFromPrompt(prompt, ['수신자', '받는 사람', 'to']);
+  const subject = typeof input.subject === 'string' ? input.subject.trim() : fieldFromPrompt(prompt, ['제목', 'subject']);
+  const body = typeof input.body === 'string' ? input.body.trim() : fieldFromPrompt(prompt, ['본문', '내용', 'body']);
+  if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to) || !subject || !body) {
+    throw Object.assign(new Error('수신자·제목·본문이 필요합니다. 예: 수신자: user@example.com / 제목: 안녕하세요 / 본문: ...'), { status: 400 });
+  }
+  const message = [`To: ${to}`, `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', '', body].join('\r\n');
+  return Buffer.from(message).toString('base64url');
+}
+
+async function dispatchBuiltinGmailAction(action) {
+  const prompt = promptValue(action.input);
+  if (action.action === 'search_messages') {
+    const query = typeof action.input.query === 'string' ? action.input.query.trim() : (prompt || 'newer_than:7d');
+    const list = await gmailApi(`/messages?maxResults=10&q=${encodeURIComponent(query)}`);
+    const items = await Promise.all((list.messages || []).slice(0, 10).map(item => gmailApi(`/messages/${encodeURIComponent(item.id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`)));
+    return items.map(item => {
+      const headers = Object.fromEntries((item.payload?.headers || []).map(header => [String(header.name).toLowerCase(), header.value]));
+      return { id: item.id, threadId: item.threadId, from: headers.from || '', subject: headers.subject || '(제목 없음)', date: headers.date || '', snippet: item.snippet || '' };
+    });
+  }
+  if (action.action === 'get_message') {
+    const messageId = typeof action.input.messageId === 'string' ? action.input.messageId.trim() : fieldFromPrompt(prompt, ['메시지 ID', 'message id']);
+    if (!/^[A-Za-z0-9_-]{5,200}$/.test(messageId)) throw Object.assign(new Error('읽을 Gmail 메시지 ID가 필요합니다.'), { status: 400 });
+    return gmailApi(`/messages/${encodeURIComponent(messageId)}?format=full`);
+  }
+  if (action.action === 'create_draft') return gmailApi('/drafts', { method: 'POST', body: JSON.stringify({ message: { raw: gmailRawMessage(action.input) } }) });
+  if (action.action === 'send_message') return gmailApi('/messages/send', { method: 'POST', body: JSON.stringify({ raw: gmailRawMessage(action.input) }) });
+  throw Object.assign(new Error('Unsupported Gmail action.'), { status: 400 });
+}
+
 async function dispatchIntegrationAction(action) {
+  if (action.integrationId === GOOGLE_GMAIL_ID && BUILTIN_GMAIL_ENABLED) {
+    try {
+      const result = await dispatchBuiltinGmailAction(action);
+      action.status = 'completed';
+      action.result = JSON.stringify(result).slice(0, 20_000);
+      action.lastError = null;
+      action.updatedAt = Date.now();
+    } catch (error) {
+      action.status = 'failed';
+      action.lastError = String(error.message || 'Gmail request failed').slice(0, 500);
+      action.updatedAt = Date.now();
+    }
+    await persist();
+    return;
+  }
   const target = CONNECTOR_WEBHOOKS[action.integrationId];
   if (!target) {
     action.status = 'not_configured';
@@ -516,6 +759,11 @@ async function handle(req, res) {
     return json(res, 200, { status: 'ok', service: 'pocketmind-worker-coordinator', version: 1, now: Date.now() });
   }
 
+  if (req.method === 'GET' && url.pathname === '/v1/oauth/google/callback') {
+    if (!BUILTIN_GMAIL_ENABLED) return html(res, 503, 'Gmail 연결 불가', '서버의 Gmail OAuth 설정이 완료되지 않았습니다.');
+    return handleGoogleCallback(url, res);
+  }
+
   const recoveryChanged = recoverExpiredLeases();
   if (recoveryChanged) await persist();
 
@@ -643,7 +891,11 @@ async function handle(req, res) {
 
   if (req.method === 'GET' && url.pathname === '/v1/integrations') {
     if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
-    const ids = [...new Set([...Object.keys(CONNECTOR_WEBHOOKS), ...Object.keys(CONNECTOR_DEFINITIONS)])];
+    const ids = [...new Set([
+      ...Object.keys(CONNECTOR_WEBHOOKS),
+      ...Object.keys(CONNECTOR_DEFINITIONS),
+      ...(BUILTIN_GMAIL_ENABLED ? [GOOGLE_GMAIL_ID] : []),
+    ])];
     const integrations = await Promise.all(ids.map(connectorStatus));
     return json(res, 200, {
       integrations,
@@ -655,10 +907,32 @@ async function handle(req, res) {
     if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
     const integrationId = parts[2];
     const definition = CONNECTOR_DEFINITIONS[integrationId];
-    if (!definition) return json(res, 404, { error: 'One-tap connector is not configured' });
+    const builtinGmail = integrationId === GOOGLE_GMAIL_ID && BUILTIN_GMAIL_ENABLED;
+    if (!definition && !builtinGmail) return json(res, 404, { error: 'One-tap connector is not configured' });
     await readBody(req);
 
     if (parts[3] === 'status') return json(res, 200, await connectorStatus(integrationId));
+
+    if (builtinGmail) {
+      if (parts[3] === 'connect') {
+        const authorizationUrl = gmailAuthorizationUrl();
+        await persist();
+        return json(res, 200, { integrationId, authorizationUrl });
+      }
+      const connection = state.oauthConnections[GOOGLE_GMAIL_ID];
+      if (connection?.refreshToken) {
+        const token = decryptSecret(connection.refreshToken);
+        fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          redirect: 'error',
+          signal: AbortSignal.timeout(8_000),
+        }).catch(() => {});
+      }
+      delete state.oauthConnections[GOOGLE_GMAIL_ID];
+      await persist();
+      return json(res, 200, await connectorStatus(integrationId));
+    }
 
     if (parts[3] === 'connect') {
       if (!definition.connectUrl || !definition.statusUrl) {
@@ -700,10 +974,11 @@ async function handle(req, res) {
     if (!allowedRisk || allowedRisk !== body.risk) {
       return json(res, 400, { error: 'Unknown integration action or incorrect risk level' });
     }
-    if (!CONNECTOR_WEBHOOKS[body.integrationId]) {
+    const builtinConfigured = body.integrationId === GOOGLE_GMAIL_ID && BUILTIN_GMAIL_ENABLED;
+    if (!CONNECTOR_WEBHOOKS[body.integrationId] && !builtinConfigured) {
       return json(res, 409, { error: 'Integration is not configured on the coordinator' });
     }
-    if (CONNECTOR_DEFINITIONS[body.integrationId]?.connectUrl) {
+    if (builtinConfigured || CONNECTOR_DEFINITIONS[body.integrationId]?.connectUrl) {
       const connection = await connectorStatus(body.integrationId);
       if (!connection.connected) return json(res, 409, { error: 'Integration account is not connected' });
     }
