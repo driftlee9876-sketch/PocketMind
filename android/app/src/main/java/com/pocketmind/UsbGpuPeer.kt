@@ -51,8 +51,16 @@ internal class UsbGpuPeer(private val context: ReactApplicationContext) : Lifecy
           check(child == null) { "GPU 준비 중이에요." }
           check(context.lifecycleState == com.facebook.react.common.LifecycleState.RESUMED) { "앱을 화면에 열어 주세요." }
           check(Build.VERSION.SDK_INT >= 28 && conditionsAllow()) { "Android 9 이상, 배터리 20% 이상, 안전한 온도에서 사용할 수 있어요." }
-          val usb = context.registerReceiver(null, IntentFilter(usbAction))
-          check(if (tablet) cableAddresses(context).isNotEmpty() else usb?.getBooleanExtra("connected", false) == true && usb.getBooleanExtra("adb", false)) { "데이터 케이블을 연결하고 USB 디버깅을 켜 주세요." }
+          if (tablet) {
+            check(cableAddresses(context).isNotEmpty()) {
+              "USB 테더링 또는 유선 이더넷을 연결한 뒤 다시 눌러 주세요."
+            }
+          } else {
+            val usb = context.registerReceiver(null, IntentFilter(usbAction))
+            check(usb?.getBooleanExtra("connected", false) == true && usb.getBooleanExtra("adb", false)) {
+              "데이터 케이블을 연결하고 USB 디버깅을 켜 주세요."
+            }
+          }
           val binary = File(context.applicationInfo.nativeLibraryDir, "libpocketmind_usb_gpu.so")
           check(binary.canExecute()) { "유선 GPU가 포함된 arm64 APK가 필요해요." }
           val builder = ProcessBuilder(binary.absolutePath, "--device", "Vulkan0").redirectErrorStream(true)
