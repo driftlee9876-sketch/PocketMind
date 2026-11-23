@@ -1281,11 +1281,14 @@ function PocketMindChatGPTScreen() {
         <TouchableOpacity
           style={styles.modelPillBtn}
           onPress={() => setModelPickerOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel={`모델 선택, 현재 ${activeModelLabel}`}
         >
-          <Text style={styles.modelPillBrand}>PocketMind</Text>
-          <Text style={styles.modelPillName} numberOfLines={1}>
-            {activeModelLabel} ▾
-          </Text>
+          <View style={styles.modelPillContent}>
+            <Text style={styles.modelPillBrand}>PocketMind</Text>
+            <Text style={styles.modelPillName} numberOfLines={1}>{activeModelLabel}</Text>
+          </View>
+          <Text style={styles.modelPillChevron}>⌄</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.iconBtn} onPress={handleNewChat}>
@@ -1677,20 +1680,26 @@ function PocketMindChatGPTScreen() {
       {/* ================= 상단 모델 빠른 전환 팝업 ================= */}
       <Modal visible={modelPickerOpen} transparent animationType="slide">
         <View style={styles.bottomSheetOverlay}>
-          <View style={styles.bottomSheetCard}>
+          <View style={[styles.bottomSheetCard, styles.modelPickerSheet]}>
             <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>활성 AI 모델 선택</Text>
+              <View>
+                <Text style={styles.sheetTitle}>모델 선택</Text>
+                <Text style={styles.sheetSubtitle}>대화에 사용할 모델을 고르세요</Text>
+              </View>
               <TouchableOpacity onPress={() => setModelPickerOpen(false)}>
                 <Text style={styles.sheetClose}>✕</Text>
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={{ maxHeight: 360 }}>
-              <Text style={styles.inputFieldLabel}>ChatGPT 계정 · 기기에서 모델 실행 안 함</Text>
+            <ScrollView style={styles.modelPickerList} contentContainerStyle={styles.modelPickerListContent}>
+              <View style={styles.modelSectionHeading}>
+                <Text style={styles.modelSectionTitle}>클라우드</Text>
+                <Text style={styles.modelSectionHint}>기기 용량 사용 안 함</Text>
+              </View>
               {chatGPTStatus.connected ? chatGPTModels.map(model => (
                 <TouchableOpacity
                   key={model.id}
-                  style={[styles.pickerRow, useChatGPTPlan && chatGPTModelId === model.id && styles.pickerRowSelected]}
+                  style={[styles.pickerRow, styles.cloudPickerRow, useChatGPTPlan && chatGPTModelId === model.id && styles.pickerRowSelected]}
                   onPress={() => {
                     setChatGPTModelId(model.id);
                     setUseChatGPTPlan(true);
@@ -1699,19 +1708,26 @@ function PocketMindChatGPTScreen() {
                 >
                   <View style={{ flex: 1 }}>
                     <Text style={styles.pickerModelName}>{model.name}</Text>
-                    <Text style={styles.pickerModelMeta}>내 ChatGPT 플랜 사용 · 다운로드 불필요</Text>
+                    <Text style={styles.pickerModelMeta}>내 ChatGPT 플랜 · 온라인 사용</Text>
                   </View>
                   <Text style={styles.pickerCheck}>{useChatGPTPlan && chatGPTModelId === model.id ? '✓' : ''}</Text>
                 </TouchableOpacity>
               )) : (
-                <TouchableOpacity style={styles.pickerRow} onPress={() => {
+                <TouchableOpacity style={[styles.pickerRow, styles.cloudPickerRow]} onPress={() => {
                   setModelPickerOpen(false);
                   setChatGPTSettingsOpen(true);
                 }}>
-                  <Text style={styles.pickerModelName}>ChatGPT 계정 연결하기</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.pickerModelName}>ChatGPT 연결</Text>
+                    <Text style={styles.pickerModelMeta}>계정으로 로그인하고 모델 사용하기</Text>
+                  </View>
+                  <Text style={styles.modelRowArrow}>›</Text>
                 </TouchableOpacity>
               )}
-              <Text style={styles.inputFieldLabel}>온디바이스·Worker 모델</Text>
+              <View style={styles.modelSectionHeading}>
+                <Text style={styles.modelSectionTitle}>기기 및 Worker</Text>
+                <Text style={styles.modelSectionHint}>설치 모델</Text>
+              </View>
               {safeCatalog.map((m) => {
                 const isInstalled = installedModelIds.includes(m.id);
                 const isSelected = !useChatGPTPlan && primaryModelId === m.id;
@@ -1754,25 +1770,27 @@ function PocketMindChatGPTScreen() {
               })}
             </ScrollView>
 
-            <TouchableOpacity
-              style={styles.integrationSecondaryButton}
+            <View style={styles.modelPickerActions}>
+              <TouchableOpacity
+              style={[styles.sheetSecondaryBtn, styles.modelActionBtn]}
               onPress={() => {
                 setModelPickerOpen(false);
                 setChatGPTSettingsOpen(true);
               }}
             >
-              <Text style={styles.integrationSecondaryButtonText}>ChatGPT 계정 관리</Text>
+              <Text style={styles.sheetSecondaryBtnText}>ChatGPT 계정</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.sheetPrimaryBtn}
+              style={[styles.sheetSecondaryBtn, styles.modelActionBtn]}
               onPress={() => {
                 setModelPickerOpen(false);
                 setModelStoreOpen(true);
               }}
             >
-              <Text style={styles.sheetPrimaryBtnText}>+ 모델 다운로드 관리 열기</Text>
+              <Text style={styles.sheetSecondaryBtnText}>모델 관리</Text>
             </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1781,16 +1799,28 @@ function PocketMindChatGPTScreen() {
         <View style={styles.bottomSheetOverlay}>
           <View style={styles.bottomSheetCard}>
             <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>ChatGPT 계정</Text>
+              <View>
+                <Text style={styles.sheetTitle}>ChatGPT 연결</Text>
+                <Text style={styles.sheetSubtitle}>PocketMind에서 내 플랜으로 대화</Text>
+              </View>
               <TouchableOpacity onPress={() => setChatGPTSettingsOpen(false)}>
                 <Text style={styles.sheetClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            <Text style={styles.pluginCardDesc}>
-              {chatGPTStatus.connected
-                ? `연결됨: ${chatGPTStatus.email || 'ChatGPT 계정'} · 내 ChatGPT 플랜 사용`
-                : chatGPTStatus.pending ? '브라우저에서 로그인 완료를 기다리는 중...' : chatGPTStatus.error || 'ChatGPT 계정으로 로그인하면 사용 가능한 모델을 불러옵니다.'}
-            </Text>
+            <View style={[styles.accountStatusCard, chatGPTStatus.connected && styles.accountStatusCardConnected]}>
+              <Text style={styles.accountStatusLabel}>
+                {chatGPTStatus.connected ? '● 연결됨' : chatGPTStatus.pending ? '● 연결 중' : '○ 연결 안 됨'}
+              </Text>
+              <Text style={styles.accountStatusTitle} numberOfLines={1}>
+                {chatGPTStatus.connected ? (chatGPTStatus.email || 'ChatGPT 계정') : 'ChatGPT 계정을 연결하세요'}
+              </Text>
+              <Text style={styles.accountStatusDescription}>
+                {chatGPTStatus.pending ? '브라우저에서 로그인을 마치면 이 화면이 갱신됩니다.'
+                  : chatGPTStatus.error || (chatGPTStatus.connected
+                    ? '계정에서 사용 가능한 모델을 위쪽 모델 메뉴에서 선택할 수 있어요.'
+                    : '기기에서 모델을 다운로드하지 않고 온라인으로 대화할 수 있어요.')}
+              </Text>
+            </View>
             {!chatGPTStatus.connected && !chatGPTStatus.pending && (
               <TouchableOpacity style={styles.sheetPrimaryBtn} onPress={async () => {
                 try {
@@ -1805,7 +1835,7 @@ function PocketMindChatGPTScreen() {
               </TouchableOpacity>
             )}
             {chatGPTStatus.connected && (
-              <TouchableOpacity style={styles.sheetPrimaryBtn} onPress={() => {
+              <TouchableOpacity style={styles.sheetSecondaryBtn} onPress={() => {
                 Alert.alert('연결 해제', '이 기기의 ChatGPT 로그인 정보를 지울까요?', [
                   { text: '취소', style: 'cancel' },
                   { text: '연결 해제', style: 'destructive', onPress: async () => {
@@ -1816,11 +1846,11 @@ function PocketMindChatGPTScreen() {
                   } },
                 ]);
               }}>
-                <Text style={styles.sheetPrimaryBtnText}>연결 해제</Text>
+                <Text style={styles.sheetDangerText}>연결 해제</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity style={styles.integrationSecondaryButton} onPress={refreshChatGPTPlan}>
-              <Text style={styles.integrationSecondaryButtonText}>연결 상태 새로고침</Text>
+            <TouchableOpacity style={styles.sheetTextBtn} onPress={refreshChatGPTPlan}>
+              <Text style={styles.sheetTextBtnText}>상태 새로고침</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -2468,22 +2498,35 @@ const styles = StyleSheet.create({
   modelPillBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#2F2F2F',
-    paddingHorizontal: 14,
+    backgroundColor: '#2B2B2B',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#454545',
+    paddingLeft: 14,
+    paddingRight: 10,
     paddingVertical: 7,
-    borderRadius: 18,
-    gap: 6,
-    maxWidth: 230,
+    borderRadius: 15,
+    gap: 12,
+    maxWidth: 280,
+    minWidth: 142,
+  },
+  modelPillContent: {
+    flexShrink: 1,
   },
   modelPillBrand: {
-    color: '#ECECEC',
-    fontSize: 15,
+    color: '#A9ABA9',
+    fontSize: 10,
     fontWeight: '700',
   },
   modelPillName: {
-    color: '#B4B4B4',
-    fontSize: 13,
-    fontWeight: '500',
+    color: '#F5F5F5',
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  modelPillChevron: {
+    color: '#B9BBB9',
+    fontSize: 18,
+    fontWeight: '600',
   },
 
   deviceMetricsBar: {
@@ -2943,6 +2986,34 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 22,
     padding: 20,
     paddingBottom: 30,
+    width: '100%',
+    maxWidth: 680,
+    alignSelf: 'center',
+  },
+  modelPickerSheet: {
+    maxHeight: '82%',
+  },
+  modelPickerList: {
+    flexGrow: 0,
+  },
+  modelPickerListContent: {
+    paddingBottom: 8,
+  },
+  modelSectionHeading: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    marginBottom: 10,
+  },
+  modelSectionTitle: {
+    color: '#F0F0F0',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  modelSectionHint: {
+    color: '#8F9390',
+    fontSize: 11,
   },
   sheetHeader: {
     flexDirection: 'row',
@@ -2952,8 +3023,13 @@ const styles = StyleSheet.create({
   },
   sheetTitle: {
     color: '#ECECEC',
-    fontSize: 17,
+    fontSize: 20,
     fontWeight: '700',
+  },
+  sheetSubtitle: {
+    color: '#9C9F9D',
+    fontSize: 12,
+    marginTop: 4,
   },
   sheetClose: {
     color: '#B4B4B4',
@@ -2964,15 +3040,27 @@ const styles = StyleSheet.create({
   pickerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    marginBottom: 6,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    marginBottom: 8,
     backgroundColor: '#282828',
+    borderWidth: 1,
+    borderColor: '#383838',
+    minHeight: 64,
   },
   pickerRowSelected: {
-    borderWidth: 1,
     borderColor: '#10A37F',
+    backgroundColor: '#1D302A',
+  },
+  cloudPickerRow: {
+    backgroundColor: '#24302C',
+    borderColor: '#315247',
+  },
+  modelRowArrow: {
+    color: '#76D6B6',
+    fontSize: 25,
+    marginLeft: 10,
   },
   pickerModelName: {
     color: '#ECECEC',
@@ -2980,9 +3068,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   pickerModelMeta: {
-    color: '#9B9B9B',
+    color: '#B4B7B5',
     fontSize: 12,
-    marginTop: 2,
+    marginTop: 4,
   },
   pickerCheck: {
     color: '#10A37F',
@@ -3022,6 +3110,75 @@ const styles = StyleSheet.create({
     color: '#000000',
     fontSize: 14,
     fontWeight: '700',
+  },
+  modelPickerActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+  sheetSecondaryBtn: {
+    backgroundColor: '#2D2D2D',
+    borderWidth: 1,
+    borderColor: '#454545',
+    borderRadius: 13,
+    minHeight: 46,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  modelActionBtn: {
+    flex: 1,
+  },
+  sheetSecondaryBtnText: {
+    color: '#E7E7E7',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  sheetDangerText: {
+    color: '#F5A1A1',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  sheetTextBtn: {
+    alignItems: 'center',
+    paddingVertical: 14,
+    marginTop: 6,
+  },
+  sheetTextBtnText: {
+    color: '#AAB2AE',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  accountStatusCard: {
+    backgroundColor: '#292929',
+    borderWidth: 1,
+    borderColor: '#3D3D3D',
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  accountStatusCardConnected: {
+    backgroundColor: '#1D302A',
+    borderColor: '#315D4D',
+  },
+  accountStatusLabel: {
+    color: '#72D4AE',
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  accountStatusTitle: {
+    color: '#F2F2F2',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  accountStatusDescription: {
+    color: '#B3B9B5',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 6,
   },
 
   // Quick Plus Sheet
