@@ -14,6 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.Inet4Address
+import java.net.InetAddress
 import java.util.ArrayDeque
 
 internal object WifiCore {
@@ -65,10 +66,18 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
             override fun onServiceResolved(service: NsdServiceInfo) { main.post {
                 if (browsing !== scan) return@post
                 resolving = false
-                val addr = service.host
                 val link = wifiAddress(context)
+                val resolved = if (Build.VERSION.SDK_INT >= 34) service.hostAddresses else listOfNotNull(service.host)
+                // Older resolvers can return only the IPv6 result of a dual-stack Bonjour service.
+                // Parse the announced IPv4 literal locally and still require the subnet and TLS pin.
+                val literal = service.attributes["ip"]?.toString(Charsets.US_ASCII)?.split('.')
+                val octets = literal?.mapNotNull { part ->
+                    part.takeIf { it.length in 1..3 && it.all { c -> c in '0'..'9' } }?.toIntOrNull()?.takeIf { it in 0..255 }?.toByte()
+                }
+                val advertised = if (literal?.size == 4 && octets?.size == 4) InetAddress.getByAddress(octets.toByteArray()) else null
+                val addr = (resolved + listOfNotNull(advertised)).filterIsInstance<Inet4Address>().firstOrNull { link?.sharesLink(it) == true }
                 val id = service.attributes["id"]?.toString(Charsets.US_ASCII).orEmpty()
-                if (info.serviceName in live && link != null && addr is Inet4Address && link.sharesLink(addr) &&
+                if (info.serviceName in live && addr != null &&
                     id.matches(Regex("[A-Za-z0-9_-]{43}")) && service.port in 1..65535) {
                     val platform = service.attributes["platform"]?.toString(Charsets.UTF_8)
                     found[info.serviceName] = JSONObject().put("ID",id).put("IP",addr.hostAddress).put("Port",service.port)
@@ -131,7 +140,7 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
                             .put("Endpoint",JSONObject().put("Local",link.ip.hostAddress).put("Prefix",link.prefix)))
                         val service=NsdServiceInfo().apply {
                             serviceName="PocketMind "+Build.MODEL.take(30);serviceType=type;port=r.getInt("port")
-                            setAttribute("id",r.getString("id"));setAttribute("platform","Android")
+                            setAttribute("id",r.getString("id"));setAttribute("platform","Android");setAttribute("ip",link.ip.hostAddress)
                             if (Build.VERSION.SDK_INT>=33) network=link.network
                         }
                         val cb=object:NsdManager.RegistrationListener{

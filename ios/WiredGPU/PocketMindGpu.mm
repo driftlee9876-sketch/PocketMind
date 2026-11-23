@@ -210,7 +210,7 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
       _wifiLink = link;
       _wifiService = [[NSNetService alloc] initWithDomain:@"local." type:@"_pmgpu._tcp." name:@"PocketMind iOS" port:[r[@"port"] intValue]];
       _wifiService.delegate = self;
-      [_wifiService setTXTRecordData:[NSNetService dataFromTXTRecordDictionary:@{@"id":[r[@"id"] dataUsingEncoding:NSUTF8StringEncoding],@"platform":[@"iOS" dataUsingEncoding:NSUTF8StringEncoding]}]];
+      [_wifiService setTXTRecordData:[NSNetService dataFromTXTRecordDictionary:@{@"id":[r[@"id"] dataUsingEncoding:NSUTF8StringEncoding],@"platform":[@"iOS" dataUsingEncoding:NSUTF8StringEncoding],@"ip":[link[@"Local"] dataUsingEncoding:NSASCIIStringEncoding]}]];
       [_wifiService publish];
     } else { _peer->stop(); }
   } else if ([op isEqual:@"stop"] || [op isEqual:@"forget"]) {

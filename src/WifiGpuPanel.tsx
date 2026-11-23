@@ -23,6 +23,8 @@ export function WifiGpuPanel(props:Props) {
   const preference=useRef<Preference|null>(null);
   const generation=useRef(0);
   const loading=useRef(false);
+  const offerEpoch=useRef(0);
+  const preparing=useRef(false);
   const nextTry=useRef(0);
   const failures=useRef(0);
   function remember(value:Preference|null) {
@@ -39,8 +41,8 @@ export function WifiGpuPanel(props:Props) {
         preference.current=value;setPref(value);current.current.onMode(true);
       }
     }).catch(()=>{});
-    const sub=AppState.addEventListener('change',s=>setForeground(s==='active'));
-    return ()=>{mounted=false;generation.current++;sub.remove();};
+    const sub=AppState.addEventListener('change',s=>{if(s==='background')offerEpoch.current++;setForeground(s==='active');});
+    return ()=>{mounted=false;generation.current++;offerEpoch.current++;sub.remove();};
   },[]);
   useEffect(()=>{
     if (!props.reset) return;
@@ -87,7 +89,21 @@ export function WifiGpuPanel(props:Props) {
     if(current.current.session?.wifi || loading.current){await native.stopTabletGpu();current.current.onSession(null);}
     await command(forget?'forget':'stop');if(Platform.OS==='android')await command('browse');setState(await command('status'));
   }
+  async function toggleOffer(){
+    if(preparing.current)return;
+    if(state.offering){await command('stop');if(Platform.OS==='android')await command('browse');return;}
+    const epoch=++offerEpoch.current;
+    preparing.current=true;setBusy('GPU 제공을 준비하는 중…');
+    try {
+      if(Platform.OS==='ios')await native.startUsbGpuPeer();else await native.prepareWifiPeer();
+      if(epoch!==offerEpoch.current || !current.current.visible){await native.stopUsbGpuPeer();return;}
+      await command('offer');
+      if(epoch!==offerEpoch.current || !current.current.visible)await command('stop');
+    }catch(e){await native.stopUsbGpuPeer();throw e;}
+    finally{preparing.current=false;setBusy('');}
+  }
   function close(){
+    offerEpoch.current++;
     if(!preference.current)command('stop').catch(()=>{});
     props.onClose();
   }
@@ -109,11 +125,7 @@ export function WifiGpuPanel(props:Props) {
         {!props.filename && <Text style={s.detail}>함께 실행할 GGUF를 주 기기에 설치하고 선택하세요.</Text>}
         {pref && button('자동 재연결 끄고 연결 해제',()=>action(()=>disconnect(false)))}
       </View>}
-      {(!pref && !props.session) && button(state.offering?'Wi-Fi GPU 제공 중지':'이 기기의 Wi-Fi GPU 제공',()=>action(async()=>{
-        if(state.offering){await command('stop');if(Platform.OS==='android')await command('browse');return;}
-        if(Platform.OS==='ios')await native.startUsbGpuPeer();else await native.prepareWifiPeer();
-        try{await command('offer');}catch(e){await native.stopUsbGpuPeer();throw e;}
-      }),!!busy||!!state.pending)}
+      {(!pref && !props.session) && button(state.offering?'Wi-Fi GPU 제공 중지':'이 기기의 Wi-Fi GPU 제공',()=>action(toggleOffer),!!busy||!!state.pending)}
       {state.trusted.length>0 && button('저장한 Wi-Fi 기기 모두 잊기',()=>action(()=>disconnect(true)))}
       {!!busy && <Text style={s.detail}>{busy}</Text>}
       {!!(error||state.issue) && <Text style={s.error}>{error||state.issue}</Text>}
