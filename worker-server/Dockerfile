@@ -7,7 +7,7 @@ ENV POCKETMIND_DATA_FILE=/app/data/pocketmind-state.json
 
 WORKDIR /app
 COPY package.json ./package.json
-COPY server.js integration-hub.js ./
+COPY server.js integration-hub.js direct-providers.js ./
 
 RUN addgroup -S pocketmind && adduser -S pocketmind -G pocketmind \
     && mkdir -p /app/data \

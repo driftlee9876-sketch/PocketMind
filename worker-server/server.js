@@ -34,6 +34,7 @@ const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || '';
 const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || '';
 const HUB_URL = process.env.POCKETMIND_INTEGRATION_HUB_URL || '';
 const { parseHubCatalog } = require('./integration-hub');
+const { directProviders } = require('./direct-providers');
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const GOOGLE_INTEGRATIONS = {
   'google-gmail': {
@@ -142,11 +143,20 @@ const BUILTIN_GOOGLE_ENABLED = Boolean(
   GOOGLE_OAUTH_CLIENT_ID && GOOGLE_OAUTH_CLIENT_SECRET &&
   TOKEN_ENCRYPTION_SECRET.length >= 32 && validPublicBaseUrl()
 );
-if ((GOOGLE_OAUTH_CLIENT_ID || GOOGLE_OAUTH_CLIENT_SECRET || TOKEN_ENCRYPTION_SECRET) && !BUILTIN_GOOGLE_ENABLED) {
+if ((GOOGLE_OAUTH_CLIENT_ID || GOOGLE_OAUTH_CLIENT_SECRET) && !BUILTIN_GOOGLE_ENABLED) {
   console.error('Built-in Google OAuth requires GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, POCKETMIND_TOKEN_ENCRYPTION_KEY (32+ chars), and an HTTPS POCKETMIND_PUBLIC_BASE_URL.');
 }
 
 const state = { workers: {}, tasks: {}, actions: {}, oauthConnections: {}, oauthStates: {} };
+const direct = directProviders({
+  env: process.env, baseUrl: validPublicBaseUrl() && TOKEN_ENCRYPTION_SECRET.length >= 32 ? PUBLIC_BASE_URL : null,
+  connections: () => state.oauthConnections, pending: () => state.oauthStates, persist,
+  encrypt: encryptSecret, decrypt: decryptSecret, ttl: OAUTH_STATE_TTL_MS,
+});
+// Prefer explicitly configured adapters over newly available built-in providers.
+function builtinDirect(id) {
+  return !CONNECTOR_WEBHOOKS[id] && !CONNECTOR_DEFINITIONS[id] && direct.supports(id);
+}
 let saveChain = Promise.resolve();
 const requestCounts = new Map();
 
@@ -499,7 +509,7 @@ function builtinGoogle(id) {
 }
 
 function canUseHub(id) {
-  return HUB_URL && Object.hasOwn(INTEGRATION_ACTION_RISKS, id) && !builtinGoogle(id) &&
+  return HUB_URL && Object.hasOwn(INTEGRATION_ACTION_RISKS, id) && !builtinGoogle(id) && !builtinDirect(id) &&
     !CONNECTOR_WEBHOOKS[id] && !CONNECTOR_DEFINITIONS[id];
 }
 
@@ -510,6 +520,7 @@ async function hubCatalog() {
 }
 
 async function connectorStatus(id) {
+  if (builtinDirect(id)) return direct.status(id);
   if (canUseHub(id)) {
     const status = (await hubCatalog()).get(id);
     if (status) return status;
@@ -775,16 +786,16 @@ async function dispatchBuiltinGoogleAction(action) {
 }
 
 async function dispatchIntegrationAction(action) {
-  if (builtinGoogle(action.integrationId)) {
+  if (builtinGoogle(action.integrationId) || builtinDirect(action.integrationId)) {
     try {
-      const result = await dispatchBuiltinGoogleAction(action);
+      const result = builtinDirect(action.integrationId) ? await direct.run(action) : await dispatchBuiltinGoogleAction(action);
       action.status = 'completed';
       action.result = JSON.stringify(result).slice(0, 20_000);
       action.lastError = null;
       action.updatedAt = Date.now();
     } catch (error) {
       action.status = 'failed';
-      action.lastError = String(error.message || 'Google request failed').slice(0, 500);
+      action.lastError = String(error.message || 'Provider request failed').slice(0, 500);
       action.updatedAt = Date.now();
     }
     await persist();
@@ -986,6 +997,16 @@ async function handle(req, res) {
     return json(res, 200, { status: 'ok', service: 'pocketmind-worker-coordinator', version: 1, now: Date.now() });
   }
 
+  if (req.method === 'GET' && parts.length === 4 && parts[0] === 'v1' && parts[1] === 'oauth' &&
+      ['microsoft', 'github'].includes(parts[2]) && parts[3] === 'callback') {
+    try {
+      const id = await direct.callback(parts[2], url);
+      return html(res, 200, '계정 연결 완료', 'PocketMind에서 연결한 앱을 사용할 수 있어요.',
+        'pocketmind://integrations/callback?integrationId=' + encodeURIComponent(id) + '&status=connected');
+    } catch (error) {
+      return html(res, error.status || 502, '계정 연결 실패', error.message || '잠시 후 다시 시도해 주세요.');
+    }
+  }
   if (req.method === 'GET' && url.pathname === '/v1/oauth/google/callback') {
     if (!BUILTIN_GOOGLE_ENABLED) return html(res, 503, 'Google 연결 불가', '서버의 Google OAuth 설정이 완료되지 않았습니다.');
     return handleGoogleCallback(url, res);
@@ -1122,6 +1143,7 @@ async function handle(req, res) {
       ...Object.keys(CONNECTOR_WEBHOOKS),
       ...Object.keys(CONNECTOR_DEFINITIONS),
       ...(BUILTIN_GOOGLE_ENABLED ? Object.keys(GOOGLE_INTEGRATIONS) : []),
+      ...direct.ids().filter(builtinDirect),
     ])];
     const integrations = await Promise.all(ids.map(connectorStatus));
     let hubUnavailable = false;
@@ -1142,11 +1164,17 @@ async function handle(req, res) {
     const shared = canUseHub(integrationId) && (await hubCatalog()).get(integrationId);
     const definition = shared ? { connectUrl: HUB_URL, statusUrl: HUB_URL, actionUrl: HUB_URL, disconnectUrl: HUB_URL } : CONNECTOR_DEFINITIONS[integrationId];
     const google = builtinGoogle(integrationId);
-    if (!definition && !google) return json(res, 404, { error: 'One-tap connector is not configured' });
+    const provider = builtinDirect(integrationId);
+    if (!definition && !google && !provider) return json(res, 404, { error: 'One-tap connector is not configured' });
     await readBody(req);
 
     if (parts[3] === 'status') return json(res, 200, await connectorStatus(integrationId));
 
+    if (provider) {
+      if (parts[3] === 'connect') return json(res, 200, {integrationId, authorizationUrl: await direct.start(integrationId)});
+      await direct.disconnect(integrationId);
+      return json(res, 200, await direct.status(integrationId));
+    }
     if (google) {
       if (parts[3] === 'connect') {
         const authorizationUrl = googleAuthorizationUrl(integrationId);
@@ -1210,10 +1238,11 @@ async function handle(req, res) {
     }
     const google = builtinGoogle(body.integrationId);
     const viaHub = Boolean(canUseHub(body.integrationId));
-    if (!viaHub && !CONNECTOR_WEBHOOKS[body.integrationId] && !google) {
+    const provider = builtinDirect(body.integrationId);
+    if (!viaHub && !CONNECTOR_WEBHOOKS[body.integrationId] && !google && !provider) {
       return json(res, 409, { error: 'Integration is not configured on the coordinator' });
     }
-    if (google || viaHub || CONNECTOR_DEFINITIONS[body.integrationId]?.connectUrl) {
+    if (google || provider || viaHub || CONNECTOR_DEFINITIONS[body.integrationId]?.connectUrl) {
       const connection = await connectorStatus(body.integrationId);
       if (!connection.connected) return json(res, 409, { error: 'Integration account is not connected' });
       if (connection.actions && !connection.actions.includes(body.action)) return json(res, 409, { error: 'Action unavailable on this adapter' });
@@ -1221,6 +1250,7 @@ async function handle(req, res) {
     const action = {
       actionId: crypto.randomUUID(),
       viaHub,
+      accountGeneration: provider ? state.oauthConnections[body.integrationId]?.generation : undefined,
       integrationId: body.integrationId,
       action: body.action,
       risk: body.risk,
