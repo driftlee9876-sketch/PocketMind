@@ -3,6 +3,35 @@
 #import <Security/Security.h>
 #import <PocketMindMetalPeer/PocketMindMetalPeer.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+extern "C" char *PMWifi(char *);
+extern "C" void PMWifiFree(char *);
+static NSDictionary *wifiCall(NSDictionary *request) {
+  NSData *encoded = [NSJSONSerialization dataWithJSONObject:request options:0 error:nil];
+  NSString *json = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding];
+  char *raw = PMWifi((char *)json.UTF8String);
+  NSData *data = [NSData dataWithBytes:raw length:strlen(raw)];
+  PMWifiFree(raw);
+  return [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+}
+static NSDictionary *wifiEndpoint() {
+  struct ifaddrs *list = nullptr;
+  if (getifaddrs(&list) != 0) return nil;
+  NSDictionary *result = nil;
+  for (auto *i = list; i; i = i->ifa_next) {
+    if (!i->ifa_addr || !i->ifa_netmask || i->ifa_addr->sa_family != AF_INET ||
+        strcmp(i->ifa_name, "en0") || !(i->ifa_flags & IFF_UP)) continue;
+    char address[INET_ADDRSTRLEN];
+    auto *ip = (struct sockaddr_in *)i->ifa_addr;
+    if (!inet_ntop(AF_INET, &ip->sin_addr, address, sizeof(address))) continue;
+    uint32_t mask = ntohl(((struct sockaddr_in *)i->ifa_netmask)->sin_addr.s_addr);
+    result = @{@"Local":@(address), @"Prefix":@(__builtin_popcount(mask))};
+    break;
+  }
+  freeifaddrs(list);
+  return result;
+}
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <unistd.h>
@@ -111,10 +140,13 @@ struct Peer {
 };
 }
 
-@interface PocketMindMetalPeerModule : NSObject <RCTBridgeModule>
+@interface PocketMindMetalPeerModule : NSObject <RCTBridgeModule, NSNetServiceDelegate>
 @end
 @implementation PocketMindMetalPeerModule {
   std::shared_ptr<Peer> _peer;
+  NSNetService *_wifiService;
+  NSDictionary *_wifiLink;
+  NSString *_wifiError;
 }
 RCT_EXPORT_MODULE(PocketMindMetalPeer)
 + (BOOL)requiresMainQueueSetup { return YES; }
@@ -123,22 +155,78 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
   if ((self = [super init])) {
     NSNotificationCenter *n = NSNotificationCenter.defaultCenter;
     [n addObserver:self selector:@selector(background:) name:UIApplicationWillResignActiveNotification object:nil];
+    [n addObserver:self selector:@selector(stopBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
     [n addObserver:self selector:@selector(checkHealth:) name:NSProcessInfoThermalStateDidChangeNotification object:nil];
     [n addObserver:self selector:@selector(checkHealth:) name:UIDeviceBatteryLevelDidChangeNotification object:nil];
   }
   return self;
 }
 - (void)background:(NSNotification *)notification {
+  if (!_wifiService && _peer) _peer->stop();
+}
+- (void)endWifi {
+  if (_wifiService) {
+    _wifiService.delegate = nil; [_wifiService stop]; _wifiService = nil;
+    wifiCall(@{@"Op":@"stop"});
+    if (_peer) _peer->stop();
+  }
+  _wifiLink = nil;
+}
+- (void)stopBackground:(NSNotification *)notification {
+  [self endWifi];
   if (_peer) _peer->stop();
+}
+- (void)netService:(NSNetService *)sender didNotPublish:(NSDictionary *)errorDict {
+  if (sender == _wifiService) {
+    _wifiError = @"설정에서 PocketMind의 로컬 네트워크 접근을 허용하고 다시 눌러 주세요.";
+    [self endWifi];
+  }
 }
 - (void)checkHealth:(NSNotification *)notification {
   float level = UIDevice.currentDevice.batteryLevel;
   if (NSProcessInfo.processInfo.thermalState >= NSProcessInfoThermalStateSerious || (level >= 0 && level < 0.20f))
-    [self background:notification];
+    [self stopBackground:notification];
 }
 - (void)dealloc {
   [NSNotificationCenter.defaultCenter removeObserver:self];
+  [self endWifi];
   if (_peer) _peer->stop();
+}
+RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  NSDictionary *q = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+  NSURL *folder = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"wifi-gpu"];
+  NSDictionary *r = wifiCall(@{@"Op":@"init", @"Dir":folder.path});
+  [folder setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+  if (r[@"error"]) {reject(@"WIFI_GPU",r[@"error"],nil); return;}
+  NSString *op = q[@"op"];
+  if ([op isEqual:@"offer"]) {
+    NSDictionary *link = wifiEndpoint();
+    if (!link || !_peer || _peer->closed.load() || _peer->paired.exchange(true)) {
+      reject(@"WIFI_GPU",@"Wi-Fi에 연결하고 GPU 제공을 다시 시작해 주세요.",nil);return;
+    }
+    r = wifiCall(@{@"Op":@"offer",@"Endpoint":link,@"Backend":@"ios",@"Value":@(_peer->token.c_str())});
+    if (!r[@"error"]) {
+      _wifiError = nil;
+      _wifiLink = link;
+      _wifiService = [[NSNetService alloc] initWithDomain:@"local." type:@"_pmgpu._tcp." name:@"PocketMind iOS" port:[r[@"port"] intValue]];
+      _wifiService.delegate = self;
+      [_wifiService setTXTRecordData:[NSNetService dataFromTXTRecordDictionary:@{@"id":[r[@"id"] dataUsingEncoding:NSUTF8StringEncoding],@"platform":[@"iOS" dataUsingEncoding:NSUTF8StringEncoding]}]];
+      [_wifiService publish];
+    } else { _peer->stop(); }
+  } else if ([op isEqual:@"stop"] || [op isEqual:@"forget"]) {
+    [self endWifi]; _wifiError = nil;
+    r = wifiCall(@{@"Op":op});
+  } else if ([op isEqual:@"vote"]) {
+    r = wifiCall(@{@"Op":op,@"Challenge":q[@"id"] ?: @"",@"Accept":q[@"accept"] ?: @NO});
+  } else if (_wifiService && (!_peer || _peer->closed.load() || ![_wifiLink isEqual:wifiEndpoint()])) {
+    [self endWifi]; _wifiError=@"Wi-Fi 또는 GPU 연결이 종료됐어요.";
+  }
+  if (r[@"error"]) {reject(@"WIFI_GPU",r[@"error"],nil);return;}
+  NSMutableDictionary *state=[wifiCall(@{@"Op":@"status"}) mutableCopy];
+  if (_wifiError) state[@"issue"]=_wifiError;
+  state[@"peers"]=@[];
+  NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:nil];
+  resolve([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]);
 }
 RCT_EXPORT_METHOD(startUsbGpuPeer:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   if (_peer && !_peer->closed.load()) { resolve(@(_peer->code.c_str())); return; }

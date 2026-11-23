@@ -8,8 +8,8 @@ Pod::Spec.new do |s|
   s.license = { :type => 'MIT', :file => 'LLAMA-LICENSE.txt' }
   s.ios.deployment_target = '15.1'
   s.source_files = 'PocketMindGpu.mm'
-  s.vendored_frameworks = 'PocketMindMetalPeer.xcframework'
+  s.vendored_frameworks = 'PocketMindMetalPeer.xcframework', 'PocketMindWifi.xcframework'
   s.resources = 'LLAMA-LICENSE.txt'
-  s.frameworks = 'UIKit', 'Security'
+  s.frameworks = 'UIKit', 'Security', 'CoreFoundation', 'SystemConfiguration'
   s.dependency 'React-Core'
 end

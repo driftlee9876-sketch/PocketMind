@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ feat/pocketmind-foundation ]
-    paths: [ 'ios/**', 'workers/ios-gpu/**', '.github/workflows/ios-wired.yml', 'App.tsx', 'src/**' ]
+    paths: [ 'ios/**', 'workers/ios-gpu/**', 'workers/wifi/**', '.github/workflows/ios-wired.yml', 'App.tsx', 'src/**' ]
 permissions:
   contents: read
 jobs:
@@ -37,6 +37,12 @@ jobs:
       - name: Build foreground Metal peer
         if: steps.metal.outputs.cache-hit != 'true'
         run: bash workers/ios-gpu/build.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache: false
+      - name: Build Wi-Fi pairing and transport
+        run: bash workers/wifi/build-native.sh ios
       - name: Install application dependencies
         run: |
           npm install --legacy-peer-deps

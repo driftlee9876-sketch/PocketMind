@@ -56,6 +56,7 @@ import {
   approveIntegrationAction,
   rejectIntegrationAction,
 } from './src/integrationActions';
+import { WifiGpuPanel } from './src/WifiGpuPanel';
 import { TabletGpuPanel } from './src/TabletGpuPanel';
 import { integrationReply } from './src/integrationPresentation';
 import { IntegrationInputSheet } from './src/IntegrationInputSheet';
@@ -438,6 +439,10 @@ function PocketMindChatGPTScreen() {
     }, 2000);
     return () => { mounted = false; clearInterval(timer); gpuPeer.stopTabletGpu().catch(() => {}); };
   }, [wiredSession]);
+  const [wifiOpen,setWifiOpen] = useState(false);
+  const [wifiMode,setWifiMode] = useState(false);
+  const [wifiReset,setWifiReset] = useState(0);
+  function leaveWifi() { if (wifiMode) {setWifiMode(false);setWifiReset(value => value+1);} }
   const [wiredOpen, setWiredOpen] = useState(false);
   const [pairCode, setPairCode] = useState('');
   const [pairIssue, setPairIssue] = useState('');
@@ -921,6 +926,10 @@ function PocketMindChatGPTScreen() {
 
   const ensureGenerationAvailable = useCallback((prompt: string): boolean => {
     if (wiredSession) return true;
+    if (wifiMode) {
+      Alert.alert('Wi-Fi GPU 연결 대기 중', '보조 기기의 GPU 제공 상태를 확인해 주세요.', [{text:'Wi-Fi GPU 열기',onPress:()=>setWifiOpen(true)}]);
+      return false;
+    }
     if (useChatGPTPlan) {
       if (chatGPTStatus.connected && chatGPTModelId) return true;
       Alert.alert('ChatGPT 연결 필요', 'ChatGPT 계정에 연결하고 사용 가능한 모델을 선택하세요.', [
@@ -940,7 +949,7 @@ function PocketMindChatGPTScreen() {
       return false;
     }
     return true;
-  }, [installedModelIds.length, remotePC.enabled, remotePC.serverUrl, useChatGPTPlan, chatGPTStatus.connected, chatGPTModelId, wiredSession]);
+  }, [installedModelIds.length, remotePC.enabled, remotePC.serverUrl, useChatGPTPlan, chatGPTStatus.connected, chatGPTModelId, wiredSession, wifiMode]);
 
   const runAssistantGeneration = useCallback(async (prompt: string, context: ChatMessage[]) => {
     if (!prompt.trim() || generationAbortRef.current || isGenerating || !ensureGenerationAvailable(prompt)) return;
@@ -964,7 +973,7 @@ function PocketMindChatGPTScreen() {
         }
         const history = context.filter(message => message.text && !message.integrationResult && !message.issue && !message.id.startsWith('err-') &&
           (message.role === 'user' || !message.pipelineSteps?.length)).map(message => ({ role: message.role, content: message.text }));
-        setLiveStatus(wiredSession ? '유선 GPU에서 답변을 생성하고 있어요…' : 'ChatGPT에서 답변을 생성하고 있어요…');
+        setLiveStatus(wiredSession ? '연결한 GPU에서 답변을 생성하고 있어요…' : 'ChatGPT에서 답변을 생성하고 있어요…');
         const result = wiredSession
           ? { text: await runWiredInference(wiredSession, history, prompt, controller.signal), issue: undefined, code: undefined }
           : await chatWithChatGPTPlan(chatGPTModelId, history, prompt, partial => {
@@ -973,7 +982,7 @@ function PocketMindChatGPTScreen() {
         if (controller.signal.aborted) return;
         updateActiveSessionMessages(previous => [...previous, {
           id: `a-${Date.now()}`, role: 'assistant', text: result.text, timestamp: formatNowTime(),
-          source: wiredSession ? `USB · ${wiredSession.model}` : chatGPTModels.find(model => model.id === chatGPTModelId)?.name || chatGPTModelId,
+          source: wiredSession ? `${wiredSession.wifi ? 'Wi-Fi' : 'USB'} · ${wiredSession.model}` : chatGPTModels.find(model => model.id === chatGPTModelId)?.name || chatGPTModelId,
           issue: result.issue, issueCode: result.code, pluginOutputs: plugins,
         }]);
         return;
@@ -1012,7 +1021,7 @@ function PocketMindChatGPTScreen() {
         id: `err-${Date.now()}`,
         role: 'assistant',
         text: '', issue: error?.message || '요청을 처리하지 못했어요. 다시 시도해 주세요.',
-        source: wiredSession ? '유선 GPU' : useChatGPTPlan ? chatGPTModelId : 'PocketMind',
+        source: wiredSession ? (wiredSession.wifi ? 'Wi-Fi GPU' : '유선 GPU') : useChatGPTPlan ? chatGPTModelId : 'PocketMind',
         timestamp: formatNowTime(),
       };
       updateActiveSessionMessages((previous) => [...previous, errMsg]);
@@ -1920,7 +1929,7 @@ function PocketMindChatGPTScreen() {
                   key={model.id}
                   style={[styles.pickerRow, styles.cloudPickerRow, !wiredSession && useChatGPTPlan && chatGPTModelId === model.id && styles.pickerRowSelected]}
                   onPress={() => {
-                    setWiredSession(null);
+                    leaveWifi(); setWiredSession(null);
                     setChatGPTModelId(model.id);
                     setUseChatGPTPlan(true);
                     setModelPickerOpen(false);
@@ -1948,9 +1957,14 @@ function PocketMindChatGPTScreen() {
                 <Text style={styles.modelSectionTitle}>기기 및 Worker</Text>
                 <Text style={styles.modelSectionHint}>설치 모델</Text>
               </View>
+              {(Platform.OS === 'android' || gpuPeer) && <TouchableOpacity accessibilityRole="button" style={styles.pickerRow}
+                onPress={()=>{setModelPickerOpen(false);setWifiOpen(true);}}>
+                <View style={{flex:1}}><Text style={styles.pickerModelName}>Wi-Fi GPU 연결</Text>
+                <Text style={styles.pickerModelMeta}>{wiredSession?.wifi ? wiredSession.device : '같은 Wi-Fi에서 승인한 기기와 연산'}</Text></View>
+                <Text style={styles.modelRowArrow}>›</Text></TouchableOpacity>}
               {(Platform.OS === 'android' || gpuPeer) && <TouchableOpacity accessibilityRole="button"
                 style={[styles.pickerRow, wiredSession && styles.pickerRowSelected]}
-                onPress={() => { setModelPickerOpen(false); setWiredOpen(true); }}>
+                onPress={() => { leaveWifi(); if(wiredSession?.wifi)setWiredSession(null); setModelPickerOpen(false); setWiredOpen(true); }}>
                 <View style={{ flex: 1 }}><Text style={styles.pickerModelName}>유선 GPU 연결</Text>
                   <Text style={styles.pickerModelMeta}>{wiredSession ? `${wiredSession.model} · ${wiredSession.device}` : Platform.OS === 'ios' ? 'Windows에 이 기기의 Metal GPU 제공' : 'Android 두 대 또는 Windows와 유선으로 GGUF 실행'}</Text>
                 </View><Text style={styles.modelRowArrow}>›</Text>
@@ -1964,7 +1978,7 @@ function PocketMindChatGPTScreen() {
                     style={[styles.pickerRow, isSelected && styles.pickerRowSelected]}
                     onPress={() => {
                       if (isInstalled || remotePC.enabled) {
-                        setWiredSession(null);
+                        leaveWifi(); setWiredSession(null);
                         setPrimaryModelId(m.id);
                         setUseChatGPTPlan(false);
                         setModelPickerOpen(false);
@@ -2023,6 +2037,8 @@ function PocketMindChatGPTScreen() {
         </View>
       </Modal>
 
+      <WifiGpuPanel visible={wifiOpen} reset={wifiReset} filename={installedModelIds.includes(primaryModelId) ? safeCatalog.find(m=>m.id===primaryModelId)?.filename : undefined}
+        session={wiredSession} onMode={setWifiMode} onSession={setWiredSession} onClose={()=>setWifiOpen(false)}/>
       <Modal visible={wiredOpen} transparent animationType="slide" onRequestClose={closePairing}>
         <View style={styles.bottomSheetOverlay}><View style={styles.bottomSheetCard}>
           <View style={styles.sheetHeader}><Text style={styles.sheetTitle}>유선 GPU 연결</Text>

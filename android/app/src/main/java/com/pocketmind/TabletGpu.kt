@@ -47,10 +47,10 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
         donor = false
     }
     fun status() = Arguments.createMap().apply { putString("invitation", offer); putBoolean("hosting", hostToken.isNotEmpty()) }
-    private fun monitor(session: TabletCable, link: CableAddress, live: () -> Boolean) {
+    private fun monitor(session: TabletCable, link: CableAddress, wifi: Boolean = false, live: () -> Boolean) {
         thread(isDaemon = true) {
             try {
-                while (!session.closed && safe() && link in cableAddresses(context) && live()) Thread.sleep(2000)
+                while (!session.closed && safe() && (if (wifi) wifiAddress(context) == link else link in cableAddresses(context)) && live()) Thread.sleep(2000)
             } finally { stopIf(session) }
         }
     }
@@ -89,7 +89,7 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
         } catch (_: Exception) { false } finally { connection.disconnect() }
     }
 
-    fun host(invitation: String, filename: String, promise: Promise) = thread(isDaemon = true) {
+    fun host(invitation: String, filename: String, promise: Promise, wifi: JSONObject? = null) = thread(isDaemon = true) {
         var session: TabletCable? = null
         try {
             check(Build.VERSION.SDK_INT >= 28)
@@ -99,8 +99,13 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
             check(binary.canExecute()) { "태블릿 GPU 호스트가 포함된 APK가 필요해요." }
             val cable = start(false)
             session = cable
-            val (bridge, link) = cable.join(context, invitation)
-            monitor(cable, link) { true }
+            val (bridge, link) = if (wifi == null) cable.join(context, invitation) else {
+                val network = wifiAddress(context) ?: error("Wi-Fi에 연결해 주세요.")
+                val r = WifiCore.call("bridge", JSONObject().put("Endpoint", wifi))
+                cable.own(Closeable { WifiCore.call("stop") })
+                r.getString("bridge") to network
+            }
+            monitor(cable, link, wifi != null) { true }
             val endpoint = "127.0.0.1:50052"
             val rpc = listOf("--rpc", endpoint)
             val probe = process(cable, binary, bridge, rpc + "--list-devices")
@@ -144,7 +149,7 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
             }
             check(!cable.closed && offloaded.get() && allocatedLocal.get() && allocatedRemote.get() && ready(token)) { "두 GPU에 모델을 나눠 올리지 못했어요. 작은 GGUF와 유선 연결을 확인하세요." }
             synchronized(this) { check(active === cable); hostToken = token }
-            promise.resolve(Arguments.createMap().apply { putString("token", token); putString("model", model.nameWithoutExtension); putString("device", "태블릿 Vulkan + 유선 Vulkan"); putBoolean("tablet", true) })
+            promise.resolve(Arguments.createMap().apply { putString("token", token); putString("model", model.nameWithoutExtension); putString("device", if (wifi == null) "태블릿 Vulkan + 유선 Vulkan" else "태블릿 Vulkan + Wi-Fi GPU"); putBoolean("wifi", wifi != null); putBoolean("tablet", true) })
         } catch (error: Exception) { session?.let(::stopIf); promise.reject("TABLET_GPU", error) }
     }
     override fun onHostResume() {}

@@ -40,7 +40,7 @@ internal class UsbGpuPeer(private val context: ReactApplicationContext) : Lifecy
 
   @Synchronized fun status() = code
 
-  fun start(promise: Promise, tablet: Boolean = false) {
+  fun start(promise: Promise, tablet: Boolean = false, wifi: Boolean = false) {
     Thread {
       var started: Process? = null
       try {
@@ -51,7 +51,9 @@ internal class UsbGpuPeer(private val context: ReactApplicationContext) : Lifecy
           check(child == null) { "GPU 준비 중이에요." }
           check(context.lifecycleState == com.facebook.react.common.LifecycleState.RESUMED) { "앱을 화면에 열어 주세요." }
           check(Build.VERSION.SDK_INT >= 28 && conditionsAllow()) { "Android 9 이상, 배터리 20% 이상, 안전한 온도에서 사용할 수 있어요." }
-          if (tablet) {
+          if (wifi) {
+            check(wifiAddress(context) != null) { "Wi-Fi에 연결해 주세요." }
+          } else if (tablet) {
             check(cableAddresses(context).isNotEmpty()) {
               "USB 테더링 또는 유선 이더넷을 연결한 뒤 다시 눌러 주세요."
             }
@@ -68,7 +70,7 @@ internal class UsbGpuPeer(private val context: ReactApplicationContext) : Lifecy
           val launched = builder.start()
           started = launched
           child = launched
-          if (!tablet) {
+          if (!tablet && !wifi) {
           if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(watcher, IntentFilter(usbAction), Context.RECEIVER_NOT_EXPORTED)
           else @Suppress("DEPRECATION") context.registerReceiver(watcher, IntentFilter(usbAction))
           monitoring = true

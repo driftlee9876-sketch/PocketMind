@@ -15,7 +15,7 @@ async function request(action: 'pair' | 'models' | 'chat', token: string, body: 
     throw error;
   } finally { signal.removeEventListener('abort', cancel); }
 }
-export interface WiredSession { token: string; model: string; device: string; tablet?: boolean }
+export interface WiredSession { token: string; model: string; device: string; tablet?: boolean; wifi?: boolean }
 
 export async function pairWiredHost(code: string, signal: AbortSignal): Promise<WiredSession> {
   if (!/^\d{8}$/.test(code)) throw new Error('Windows에 표시된 8자리 코드를 입력해 주세요.');

@@ -347,6 +347,16 @@ def main():
     start = ttk.Button(form, text="USB 연결 시작", command=run)
     start.grid(row=8, column=0)
     ttk.Button(form, text="새 연결 코드", command=renew).grid(row=8, column=1)
+    from wifi_offer import open_wifi
+    wifi_window = None
+    def wifi():
+        nonlocal wifi_window
+        if wifi_window and wifi_window.winfo_exists():
+            wifi_window.lift()
+        else:
+            open_wifi(root, bundle)
+            wifi_window = root.winfo_children()[-1]
+    ttk.Button(form, text="Wi-Fi로 이 PC의 GPU 제공", command=wifi).grid(row=9, column=0, columnspan=3, sticky="ew", pady=8)
     root.protocol("WM_DELETE_WINDOW", lambda: (stopped.set(), root.destroy()))
     poll()
     root.mainloop()
