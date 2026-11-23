@@ -150,6 +150,7 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
                 else -> error("지원하지 않는 작업이에요.")
             }
             val result=WifiCore.call("status").put("peers",JSONArray(found.values.toList()))
+                .put("searching", browsing != null)
             if(issue.isNotEmpty())result.put("issue",issue)
             promise.resolve(result.toString())
         } catch(e:Throwable){promise.reject("WIFI_GPU",e.message ?: "Wi-Fi GPU를 사용할 수 없어요.",e)}

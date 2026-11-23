@@ -26,6 +26,22 @@ jobs:
       - name: Unit tests
         run: npm test -- --runInBand
 
+  wifi-transport:
+    name: Pair, reconnect and revoke two Wi-Fi endpoints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache: false
+      - name: Exercise the production Android bridge over two private addresses
+        working-directory: workers/wifi
+        run: |
+          sudo ip address add 192.168.246.1/32 dev lo
+          sudo ip address add 192.168.246.2/32 dev lo
+          POCKETMIND_TEST_WIFI_LINK=1 go test -race -count=2 -v ./...
+
   coordinator:
     name: Worker coordinator integration tests
     runs-on: ubuntu-latest

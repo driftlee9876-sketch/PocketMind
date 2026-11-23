@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {WiredSession} from './wiredInference';
 
 type Peer = {ID: string; name: string; platform?: string};
-type Status = {peers: Peer[]; trusted: string[]; offering: boolean; pending?: {id:string;code:string}; issue?:string};
+type Status = {peers: Peer[]; trusted: string[]; offering: boolean; searching?: boolean; pending?: {id:string;code:string}; issue?:string};
 type Preference = {id:string;filename:string};
 const storageKey = 'pocketmind.wifi-gpu.preferred.v1';
 const native = Platform.OS === 'ios' ? NativeModules.PocketMindMetalPeer : NativeModules.PocketMindWorker;
@@ -25,7 +25,6 @@ export function WifiGpuPanel(props:Props) {
   const loading=useRef(false);
   const nextTry=useRef(0);
   const failures=useRef(0);
-  const restored=useRef(false);
   function remember(value:Preference|null) {
     generation.current++;preference.current=value;setPref(value);current.current.onMode(Boolean(value));
     nextTry.current=0;failures.current=0;
@@ -39,7 +38,7 @@ export function WifiGpuPanel(props:Props) {
       const value=JSON.parse(raw);if (/^[A-Za-z0-9_-]{43}$/.test(value.id) && typeof value.filename==='string'){
         preference.current=value;setPref(value);current.current.onMode(true);
       }
-    }).catch(()=>{}).finally(()=>{ restored.current=true; });
+    }).catch(()=>{});
     const sub=AppState.addEventListener('change',s=>setForeground(s==='active'));
     return ()=>{mounted=false;generation.current++;sub.remove();};
   },[]);
@@ -102,7 +101,7 @@ export function WifiGpuPanel(props:Props) {
         {button('거절',()=>action(async()=>{await command('vote',{id:state.pending!.id,accept:false});}))}</View>}
       {Platform.OS==='android' && !state.offering && <View style={s.group}>
         <Text style={s.heading}>주변 GPU</Text>
-        {!state.peers.length && <Text style={s.detail}>기기를 찾는 중… 보조 기기에서 Wi-Fi GPU 제공을 켜 주세요.</Text>}
+        {!state.peers.length && <Text style={s.detail}>{state.searching ? '기기를 찾는 중… 보조 기기에서 Wi-Fi GPU 제공을 켜 주세요.' : '검색을 준비하고 있어요. Wi-Fi 연결을 확인해 주세요.'}</Text>}
         {state.peers.map(p=><View key={p.ID+p.name} style={s.peer}><Text style={s.heading}>{p.name}</Text>
           <Text style={s.detail}>{p.platform || 'GPU'} · {state.trusted.includes(p.ID)?'승인한 기기':'처음 연결'}</Text>
           {state.trusted.includes(p.ID)?button(pref?.id===p.ID?(props.session?.wifi?'두 GPU로 연결됨':'자동 연결 대기 중'):'이 GPU로 대화 · 자동 재연결',()=>{if(props.filename)remember({id:p.ID,filename:props.filename});},!props.filename||!!busy||pref?.id===p.ID||!!props.session):

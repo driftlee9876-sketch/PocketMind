@@ -98,9 +98,16 @@ func TestPairReconnectForget(t *testing.T) {
 		if a.vote("stale", true) == nil {
 			t.Fatal("stale approval accepted")
 		}
-		a.vote(p.ID, true)
+		if allow {
+			a.vote(p.ID, true)
+		}
 		b.vote(q.ID, allow)
-		err := <-done
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("remote rejection or approval did not reach host")
+		}
 		if (err == nil) != allow {
 			t.Fatalf("approval %v: %v", allow, err)
 		}
@@ -128,7 +135,7 @@ func TestWifiBoundary(t *testing.T) {
 	if err := p.validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, ip := range []string{"192.168.51.7", "127.0.0.1", "192.168.50.4", "8.8.8.8", "bad"} {
+	for _, ip := range []string{"192.168.50.0", "192.168.50.255", "192.168.51.7", "127.0.0.1", "192.168.50.4", "8.8.8.8", "bad"} {
 		p.IP = ip
 		if p.validate() == nil {
 			t.Fatal(ip)

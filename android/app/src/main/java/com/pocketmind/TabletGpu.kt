@@ -113,12 +113,12 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
             val reader = thread { probe.inputStream.bufferedReader().useLines { lines ->
                 lines.forEach { if (listing.length < 32000) listing.append(it).append('\n') }
             } }
-            check(probe.waitFor(30, TimeUnit.SECONDS)) { "보조 GPU가 응답하지 않아요. 연결 정보와 케이블을 확인하세요." }
+            check(probe.waitFor(30, TimeUnit.SECONDS)) { "보조 GPU가 응답하지 않아요. 기기 연결을 확인하세요." }
             reader.join(2000)
             val devices = listing.toString()
             val remote = Regex("(?m)^\\s*(RPC[0-9]+):\\s+127\\.0\\.0\\.1:50052\\s+\\(").find(devices)?.groupValues?.get(1)
             val local = Regex("(?m)^\\s*(Vulkan[0-9]+):").find(devices)?.groupValues?.get(1)
-            check(remote != null && local != null) { "두 기기의 Vulkan GPU를 모두 확인하지 못했어요." }
+            check(remote != null && local != null) { "태블릿 GPU와 보조 GPU를 모두 확인하지 못했어요." }
             val token = randomKey()
             val key = File.createTempFile("tablet-gpu-", ".key", context.cacheDir)
             cable.own(Closeable { key.delete() })
@@ -147,7 +147,7 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
                 if (offloaded.get() && allocatedLocal.get() && allocatedRemote.get() && ready(token)) break
                 Thread.sleep(400)
             }
-            check(!cable.closed && offloaded.get() && allocatedLocal.get() && allocatedRemote.get() && ready(token)) { "두 GPU에 모델을 나눠 올리지 못했어요. 작은 GGUF와 유선 연결을 확인하세요." }
+            check(!cable.closed && offloaded.get() && allocatedLocal.get() && allocatedRemote.get() && ready(token)) { "두 GPU에 모델을 나눠 올리지 못했어요. 작은 GGUF와 보조 기기 연결을 확인하세요." }
             synchronized(this) { check(active === cable); hostToken = token }
             promise.resolve(Arguments.createMap().apply { putString("token", token); putString("model", model.nameWithoutExtension); putString("device", if (wifi == null) "태블릿 Vulkan + 유선 Vulkan" else "태블릿 Vulkan + Wi-Fi GPU"); putBoolean("wifi", wifi != null); putBoolean("tablet", true) })
         } catch (error: Exception) { session?.let(::stopIf); promise.reject("TABLET_GPU", error) }

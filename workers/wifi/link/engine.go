@@ -42,7 +42,11 @@ func (p Endpoint) validate() error {
 	}
 	ip := net.ParseIP(p.IP).To4()
 	decoded, err := base64.RawURLEncoding.DecodeString(p.ID)
-	if !subnet.Contains(ip) || ip.Equal(net.ParseIP(p.Local)) || p.Port < 1 || p.Port > 65535 || err != nil || len(decoded) != 32 {
+	broadcast := append(net.IP(nil), subnet.IP...)
+	for i := range broadcast {
+		broadcast[i] |= ^subnet.Mask[i]
+	}
+	if !subnet.Contains(ip) || ip.Equal(subnet.IP) || ip.Equal(broadcast) || ip.Equal(net.ParseIP(p.Local)) || p.Port < 1 || p.Port > 65535 || err != nil || len(decoded) != 32 {
 		return errors.New("같은 Wi-Fi에서 기기를 다시 찾아 주세요.")
 	}
 	return nil
@@ -115,7 +119,11 @@ func (e *Engine) stop() {
 		e.bridge = nil
 	}
 	for c := range e.connections {
-		c.Close()
+		if conn, ok := c.(*tls.Conn); ok {
+			conn.NetConn().Close()
+		} else {
+			c.Close()
+		}
 	}
 	e.connections = map[net.Conn]bool{}
 	if e.pending != nil {
@@ -194,19 +202,29 @@ func (e *Engine) consent(gen uint64, c *tls.Conn, peer string) error {
 		e.mu.Unlock()
 	}()
 	c.SetDeadline(time.Now().Add(65 * time.Second))
-	select {
-	case yes := <-ch.vote:
-		if !yes {
-			return denied
+	remote := make(chan error, 1)
+	go func(result chan<- error) { result <- byteIs(c, 'Y') }(remote)
+	var local <-chan bool = ch.vote
+	timer := time.NewTimer(60 * time.Second)
+	defer timer.Stop()
+	for local != nil || remote != nil {
+		select {
+		case yes := <-local:
+			if !yes {
+				return denied
+			}
+			if _, err = c.Write([]byte{'Y'}); err != nil {
+				return err
+			}
+			local = nil
+		case err := <-remote:
+			if err != nil {
+				return err
+			}
+			remote = nil
+		case <-timer.C:
+			return errors.New("연결 승인 시간이 지났어요.")
 		}
-	case <-time.After(60 * time.Second):
-		return errors.New("연결 승인 시간이 지났어요.")
-	}
-	if _, err = c.Write([]byte{'Y'}); err != nil {
-		return err
-	}
-	if err = byteIs(c, 'Y'); err != nil {
-		return err
 	}
 	e.mu.Lock()
 	if e.epoch != gen {

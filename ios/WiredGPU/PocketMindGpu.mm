@@ -8,12 +8,12 @@
 extern "C" char *PMWifi(char *);
 extern "C" void PMWifiFree(char *);
 static NSDictionary *wifiCall(NSDictionary *request) {
-  NSData *encoded = [NSJSONSerialization dataWithJSONObject:request options:0 error:nil];
+  NSData *encoded = [NSJSONSerialization dataWithJSONObject:request options:0 error:nullptr];
   NSString *json = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding];
   char *raw = PMWifi((char *)json.UTF8String);
   NSData *data = [NSData dataWithBytes:raw length:strlen(raw)];
   PMWifiFree(raw);
-  return [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  return [NSJSONSerialization JSONObjectWithData:data options:0 error:nullptr];
 }
 static NSDictionary *wifiEndpoint() {
   struct ifaddrs *list = nullptr;
@@ -26,7 +26,7 @@ static NSDictionary *wifiEndpoint() {
     auto *ip = (struct sockaddr_in *)i->ifa_addr;
     if (!inet_ntop(AF_INET, &ip->sin_addr, address, sizeof(address))) continue;
     uint32_t mask = ntohl(((struct sockaddr_in *)i->ifa_netmask)->sin_addr.s_addr);
-    result = @{@"Local":@(address), @"Prefix":@(__builtin_popcount(mask))};
+    result = @{@"Local":[NSString stringWithUTF8String:address], @"Prefix":@(__builtin_popcount(mask))};
     break;
   }
   freeifaddrs(list);
@@ -193,10 +193,10 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
   if (_peer) _peer->stop();
 }
 RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
-  NSDictionary *q = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+  NSDictionary *q = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nullptr];
   NSURL *folder = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"wifi-gpu"];
   NSDictionary *r = wifiCall(@{@"Op":@"init", @"Dir":folder.path});
-  [folder setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+  [folder setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nullptr];
   if (r[@"error"]) {reject(@"WIFI_GPU",r[@"error"],nil); return;}
   NSString *op = q[@"op"];
   if ([op isEqual:@"offer"]) {
@@ -225,7 +225,7 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
   NSMutableDictionary *state=[wifiCall(@{@"Op":@"status"}) mutableCopy];
   if (_wifiError) state[@"issue"]=_wifiError;
   state[@"peers"]=@[];
-  NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:nil];
+  NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:nullptr];
   resolve([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]);
 }
 RCT_EXPORT_METHOD(startUsbGpuPeer:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
