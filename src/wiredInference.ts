@@ -15,7 +15,7 @@ async function request(action: 'pair' | 'models' | 'chat', token: string, body: 
     throw error;
   } finally { signal.removeEventListener('abort', cancel); }
 }
-export interface WiredSession { token: string; model: string; device: string }
+export interface WiredSession { token: string; model: string; device: string; tablet?: boolean }
 
 export async function pairWiredHost(code: string, signal: AbortSignal): Promise<WiredSession> {
   if (!/^\d{8}$/.test(code)) throw new Error('Windows에 표시된 8자리 코드를 입력해 주세요.');
@@ -37,6 +37,6 @@ export async function runWiredInference(session: WiredSession, history: PlanMess
     ...history.slice(-20).map(item => ({ ...item, content: item.content.slice(0, 20000) })), { role: 'user', content: prompt },
   ] }, signal);
   const output = response.choices?.[0]?.message?.content;
-  if (typeof output !== 'string' || !output.trim()) throw new Error('PC 모델에서 답변을 받지 못했어요.');
+  if (typeof output !== 'string' || !output.trim()) throw new Error('유선 모델에서 답변을 받지 못했어요.');
   return output.trim();
 }

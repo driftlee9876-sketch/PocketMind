@@ -45,6 +45,26 @@ class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     applyImmersiveNavigationMode()
+    val content = findViewById<View>(android.R.id.content)
+    val frame = android.graphics.Rect()
+    val location = IntArray(2)
+    // Edge-to-edge can leave the RN root full height. Apply only the part of
+    // the IME that actually overlaps it, including in landscape and split view.
+    content.viewTreeObserver.addOnGlobalLayoutListener {
+      content.getLocationOnScreen(location)
+      content.getWindowVisibleDisplayFrame(frame)
+      val rootBottom = location[1] + content.height
+      val overlap = if (Build.VERSION.SDK_INT >= 30) {
+        val insets = content.rootWindowInsets
+        if (insets?.isVisible(WindowInsets.Type.ime()) == true) {
+          val keyboardTop = windowManager.currentWindowMetrics.bounds.bottom - insets.getInsets(WindowInsets.Type.ime()).bottom
+          (rootBottom - keyboardTop).coerceAtLeast(0)
+        } else 0
+      } else {
+        (rootBottom - frame.bottom).takeIf { it > 90 * resources.displayMetrics.density } ?: 0
+      }
+      if (content.paddingBottom != overlap) content.setPadding(content.paddingLeft, content.paddingTop, content.paddingRight, overlap)
+    }
   }
 
   /**

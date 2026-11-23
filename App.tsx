@@ -21,6 +21,7 @@ import {
   Easing,
   FlatList,
   LayoutAnimation,
+  Keyboard,
   Linking,
   Modal,
   NativeModules,
@@ -55,6 +56,8 @@ import {
   approveIntegrationAction,
   rejectIntegrationAction,
 } from './src/integrationActions';
+import { TabletGpuPanel } from './src/TabletGpuPanel';
+import { integrationReply } from './src/integrationPresentation';
 import { IntegrationInputSheet } from './src/IntegrationInputSheet';
 import type { ActionSelection } from './src/IntegrationInputSheet';
 import type { IntegrationConnection } from './src/integrationActions';
@@ -165,6 +168,7 @@ interface ChatMessage {
   text: string;
   timestamp: string;
   source?: string;
+  integrationResult?: boolean;
   issue?: string;
   issueCode?: string;
   pipelineSteps?: PipelineStepResult[];
@@ -288,7 +292,15 @@ const ChatMessageCard = memo(function ChatMessageCard({
             </View>
           ) : null}
           {message.source && <Text style={styles.replySource}>{message.source}</Text>}
-          {Boolean(message.text) && <Text selectable style={[styles.assistantBodyText, largeText && styles.largeChatText]}>{message.text}</Text>}
+          {message.integrationResult && message.text.startsWith('조회 결과 ') ? <View style={{gap: 8}}>
+            {message.text.split('\n\n').map((block, index) => {
+              const [title, ...details] = block.split('\n');
+              return <View key={index} style={index ? styles.integrationRow : undefined}>
+                <Text selectable style={[styles.suggestionTitle, largeText && styles.largeChatText]}>{title}</Text>
+                {details.length > 0 && <Text selectable style={styles.integrationDetail}>{details.join('\n')}</Text>}
+              </View>;
+            })}
+          </View> : Boolean(message.text) && <Text selectable style={[styles.assistantBodyText, largeText && styles.largeChatText]}>{message.text}</Text>}
           {message.issue && <View style={styles.replyIssue}>
             <Text selectable style={styles.replyIssueText}>{message.issue}</Text>
             {message.issueCode === 'subscription_sharing_usage_limit_exceeded' &&
@@ -305,7 +317,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
             >
               <Text style={styles.messageActionText}>복사</Text>
             </TouchableOpacity>
-            {canRegenerate ? (
+            {canRegenerate && !message.integrationResult ? (
               <TouchableOpacity
                 style={styles.messageActionButton}
                 onPress={() => onRegenerate(message)}
@@ -411,6 +423,21 @@ function PocketMindChatGPTScreen() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [chatGPTSettingsOpen, setChatGPTSettingsOpen] = useState(false);
   const [wiredSession, setWiredSession] = useState<WiredSession | null>(null);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const readPending = useRef(false);
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+  useEffect(() => {
+    if (!wiredSession?.tablet) return;
+    let mounted = true;
+    const timer = setInterval(async () => {
+      try { if (!(await gpuPeer.tabletGpuStatus()).hosting && mounted) setWiredSession(null); } catch {}
+    }, 2000);
+    return () => { mounted = false; clearInterval(timer); gpuPeer.stopTabletGpu().catch(() => {}); };
+  }, [wiredSession]);
   const [wiredOpen, setWiredOpen] = useState(false);
   const [pairCode, setPairCode] = useState('');
   const [pairIssue, setPairIssue] = useState('');
@@ -935,7 +962,7 @@ function PocketMindChatGPTScreen() {
           }]);
           return;
         }
-        const history = context.filter(message => message.text && !message.issue && !message.id.startsWith('err-') &&
+        const history = context.filter(message => message.text && !message.integrationResult && !message.issue && !message.id.startsWith('err-') &&
           (message.role === 'user' || !message.pipelineSteps?.length)).map(message => ({ role: message.role, content: message.text }));
         setLiveStatus(wiredSession ? '유선 GPU에서 답변을 생성하고 있어요…' : 'ChatGPT에서 답변을 생성하고 있어요…');
         const result = wiredSession
@@ -1019,12 +1046,30 @@ function PocketMindChatGPTScreen() {
     const request = chatIntegrationRequest(trimmed);
     if (request) {
       const app = CONNECTED_APP_CATALOG.find(item => item.id === request.id)!;
+      if (request.action === 'read') {
+        if (readPending.current) return;
+        readPending.current = true;
+        setInputText('');
+        Keyboard.dismiss();
+        const action = app.actions.find(item => item.id === request.operation && item.risk === 'read');
+        try {
+          if (action) await handleConnectedAppAction(app, action, request.input, trimmed, trimmed);
+        } finally { readPending.current = false; }
+        return;
+      }
       setIntegrationSearch(app.name);
       setIntegrationFilter('all');
       setConnectedAppsOpen(true);
       const connections = await refreshConnectedApps();
       const connection = connections?.find(item => item.id === app.id);
-      if (request.action === 'connect' && connection?.connectable && !connection.connected) {
+      if (request.action === 'form' && connection && isIntegrationUsable(connection) &&
+        (!connection.actions || connection.actions.includes(request.operation))) {
+        const action = app.actions.find(item => item.id === request.operation);
+        if (action) {
+          setConnectedAppsOpen(false); setInputText('');
+          setActionSelection({app, action, prompt: request.prompt});
+        }
+      } else if (request.action === 'connect' && connection?.connectable && !connection.connected) {
         await handleConnectIntegration(app);
       } else if (request.action === 'compose' && connection && isIntegrationUsable(connection) &&
         (!connection.actions || connection.actions.includes('send_message'))) {
@@ -1250,19 +1295,27 @@ function PocketMindChatGPTScreen() {
     action: (typeof CONNECTED_APP_CATALOG)[number]['actions'][number],
     input: Record<string, unknown>,
     preview: string,
+    userCommand?: string,
   ) => {
+    const requestId = 'app-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    const insertReply = (text: string) => updateActiveSessionMessages(previous => [...previous, {
+      id: requestId + '-result', role: 'assistant', text, timestamp: formatNowTime(), source: app.name, integrationResult: true,
+    }]);
+    updateActiveSessionMessages(previous => [...previous, {
+      id: requestId, role: 'user', text: userCommand || app.name + ' · ' + action.label, timestamp: formatNowTime(),
+    }]);
     if (!remotePC.serverUrl.trim() || (remotePC.apiKey || '').trim().length < 24) {
-      Alert.alert('Coordinator 설정 필요', '분산 Worker 설정에서 Coordinator 주소와 API 토큰을 먼저 입력하세요.');
-      return;
-    }
-    if (!configuredIntegrationSet.has(app.id)) {
-      Alert.alert(
-        '앱 연동 설정 필요',
-        `${app.name}의 공식 OAuth/API 연결 또는 자동화 웹훅이 Coordinator에 아직 설정되지 않았습니다. 서버의 POCKETMIND_INTEGRATION_WEBHOOKS_JSON 설정을 확인하세요.`,
-      );
+      insertReply('연결 앱에서 Coordinator 주소와 API 토큰을 설정해 주세요.');
       return;
     }
     try {
+      if (!configuredIntegrationSet.has(app.id)) {
+        const catalog = await getIntegrationCatalog(remotePC.serverUrl, remotePC.apiKey || '');
+        if (!catalog.integrations.some(item => item.id === app.id && isIntegrationUsable(item))) {
+          insertReply(app.name + ' 계정 연결이 필요해요. 채팅에 “' + app.name + ' 연결”을 입력해 주세요.');
+          return;
+        }
+      }
       const submitted = await submitIntegrationAction(remotePC.serverUrl, remotePC.apiKey || '', app.id, action.id, input);
       if (submitted.status === 'awaiting_approval') {
         Alert.alert(
@@ -1282,10 +1335,7 @@ function PocketMindChatGPTScreen() {
               onPress: async () => {
                 try {
                   const result = await approveIntegrationAction(remotePC.serverUrl, (remotePC.apiKey || ''), submitted.actionId);
-                  Alert.alert(
-                    result.status === 'completed' ? '작업 완료' : '작업 결과',
-                    result.result || result.lastError || result.status,
-                  );
+                  insertReply(integrationReply(result));
                 } catch (error: any) {
                   Alert.alert('작업 실행 실패', error?.message || '오류');
                 }
@@ -1294,13 +1344,10 @@ function PocketMindChatGPTScreen() {
           ],
         );
       } else {
-        Alert.alert(
-          submitted.status === 'completed' ? '조회 완료' : '연동 작업 결과',
-          submitted.result || submitted.lastError || submitted.status,
-        );
+        insertReply(integrationReply(submitted));
       }
     } catch (error: any) {
-      Alert.alert('앱 작업 실패', error?.message || '연동 서버를 확인하세요.');
+      insertReply(error?.message || '연동 서버를 확인해 주세요.');
     }
   };
 
@@ -1447,7 +1494,7 @@ function PocketMindChatGPTScreen() {
         </TouchableOpacity>
       </View>
 
-      {preferences.showMetrics && <View style={styles.deviceMetricsBar}>
+      {preferences.showMetrics && !keyboardVisible && <View style={styles.deviceMetricsBar}>
         <View style={styles.deviceMetricCell}>
           <Text style={styles.deviceMetricLabel}>CPU</Text>
           <Text style={styles.deviceMetricValue}>{typeof deviceMetrics?.cpuUsagePercent === 'number' ? `${Math.round(deviceMetrics.cpuUsagePercent)}%` : '—'}</Text>
@@ -1497,21 +1544,21 @@ function PocketMindChatGPTScreen() {
               질문하고, 생각을 정리하고, 필요한 작업을 이어가세요.
             </Text>
 
-            <View style={styles.suggestionGrid}>
+            {!keyboardVisible && <View style={styles.suggestionGrid}>
               <TouchableOpacity
                 style={styles.suggestionCard}
-                onPress={() => setInputText('새로운 아이디어를 구체적인 초안으로 정리해줘.')}
+                onPress={() => setInputText('최근 메일 보여줘')}
               >
-                <Text style={styles.suggestionTitle}>글쓰기</Text>
-                <Text style={styles.suggestionDesc}>아이디어부터 초안까지 정리하기</Text>
+                <Text style={styles.suggestionTitle}>최근 메일</Text>
+                <Text style={styles.suggestionDesc}>Gmail에서 받은 메일 확인</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.suggestionCard}
-                onPress={() => setInputText('다음 문서의 핵심 내용과 중요한 항목을 요약해줘: ')}
+                onPress={() => setInputText('드라이브 파일 보여줘')}
               >
-                <Text style={styles.suggestionTitle}>문서 요약</Text>
-                <Text style={styles.suggestionDesc}>긴 글에서 핵심 내용 찾기</Text>
+                <Text style={styles.suggestionTitle}>드라이브 파일</Text>
+                <Text style={styles.suggestionDesc}>최근 수정한 파일 보기</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1529,7 +1576,7 @@ function PocketMindChatGPTScreen() {
                 <Text style={styles.suggestionTitle}>기기 연결</Text>
                 <Text style={styles.suggestionDesc}>사용 가능한 연산 기기 확인하기</Text>
               </TouchableOpacity>
-            </View>
+            </View>}
           </View>
         )}
         ListFooterComponent={isGenerating && generatingSession === activeSession.id ? (
@@ -1905,7 +1952,7 @@ function PocketMindChatGPTScreen() {
                 style={[styles.pickerRow, wiredSession && styles.pickerRowSelected]}
                 onPress={() => { setModelPickerOpen(false); setWiredOpen(true); }}>
                 <View style={{ flex: 1 }}><Text style={styles.pickerModelName}>유선 GPU 연결</Text>
-                  <Text style={styles.pickerModelMeta}>{wiredSession ? `${wiredSession.model} · ${wiredSession.device}` : Platform.OS === 'ios' ? 'Windows에 이 기기의 Metal GPU 제공' : 'USB로 연결한 Windows PC의 GGUF 모델'}</Text>
+                  <Text style={styles.pickerModelMeta}>{wiredSession ? `${wiredSession.model} · ${wiredSession.device}` : Platform.OS === 'ios' ? 'Windows에 이 기기의 Metal GPU 제공' : 'Android 두 대 또는 Windows와 유선으로 GGUF 실행'}</Text>
                 </View><Text style={styles.modelRowArrow}>›</Text>
               </TouchableOpacity>}
               {safeCatalog.map((m) => {
@@ -1982,12 +2029,16 @@ function PocketMindChatGPTScreen() {
             <TouchableOpacity accessibilityLabel="닫기" onPress={closePairing}><Text style={styles.sheetClose}>✕</Text></TouchableOpacity>
           </View>
           <ScrollView keyboardShouldPersistTaps="handled">
-          <Text style={styles.inputFieldLabel}>모델을 나눠 실행하기 · 실험 기능</Text>
+          {Platform.OS === 'android' && !wiredSession && <TabletGpuPanel
+            filename={installedModelIds.includes(primaryModelId) ? safeCatalog.find(m => m.id === primaryModelId)?.filename : undefined}
+            modelName={safeCatalog.find(m => m.id === primaryModelId)?.shortName}
+            onSession={session => { setWiredSession(session); closePairing(); }}/>}
+          <Text style={styles.inputFieldLabel}>Windows와 연결</Text>
           <Text style={styles.pluginCardDesc}>{gpuCode ? `PC에 입력할 GPU 제공 코드  ${gpuCode}` : '이 기기의 GPU도 사용하려면 먼저 GPU 제공을 켜고 코드를 Windows 실행기에 입력하세요. 앱을 화면에서 벗어나면 제공이 끝나요.'}</Text>
           <TouchableOpacity disabled={gpuStarting} style={styles.sheetSecondaryBtn} onPress={toggleGpuPeer}>
             <Text style={styles.sheetSecondaryBtnText}>{gpuStarting ? 'GPU 확인 중…' : gpuCode ? 'GPU 제공 중지' : 'GPU 제공 시작'}</Text>
           </TouchableOpacity>
-          {Platform.OS === 'android' && <Text style={styles.inputFieldLabel}>PC 모델로 대화</Text>}
+          {Platform.OS === 'android' && <Text style={styles.inputFieldLabel}>유선 모델로 대화</Text>}
           {Boolean(pairIssue) && <Text style={styles.replyIssueText}>{pairIssue}</Text>}
           {Platform.OS === 'ios' ? <Text style={styles.pluginCardDesc}>USB로 Windows에 연결하고 이 컴퓨터를 신뢰하세요. 연산에 참여하는 동안 PocketMind를 화면에 열어 두세요.</Text> : wiredSession ? <>
             <Text style={styles.pluginCardDesc}>{wiredSession.model} · {wiredSession.device}</Text>
@@ -2813,11 +2864,14 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 24,
   },
+  integrationRow: {padding: 12, borderRadius: 12, backgroundColor: '#2A2D2B', maxWidth: 740},
+  integrationDetail: {color: '#C4CCC8', lineHeight: 19, fontSize: 13, marginTop: 4},
   suggestionGrid: {
-    width: '100%',
+    width: '100%', maxWidth: 700, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center',
     gap: 10,
   },
   suggestionCard: {
+    width: '47%',
     backgroundColor: '#2A2A2A',
     borderWidth: 1,
     borderColor: '#383838',

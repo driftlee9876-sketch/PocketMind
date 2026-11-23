@@ -7,6 +7,9 @@ export interface ActionSelection { app: ConnectedAppDefinition; action: Integrat
 type Field = readonly [key: string, label: string, optional?: boolean];
 const meeting: Field[] = [['subject', '제목'], ['start', '시작 시각 (예: 2026-11-25T10:00:00+09:00)'], ['end', '종료 시각 (시간대 포함)']];
 const fieldsByAction: Record<string, Field[]> = {
+  'google-gmail/search_messages': [['query', '검색어', true]],
+  'google-drive/search_files': [['query', '파일 이름', true]],
+  'google-calendar/list_events': [],
   'github/list_repositories': [],
   'github/search_issues': [['query', '검색어']],
   'github/create_issue': [['owner', '저장소 소유자'], ['repo', '저장소 이름'], ['title', '이슈 제목'], ['body', '본문', true]],
