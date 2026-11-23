@@ -483,9 +483,7 @@ class MultiModelOrchestratorEngine {
               ? `${i + 1}단계 지정 모델 (${spec.shortName})`
               : `지정 모델 (${spec.shortName})`,
           model: spec,
-          sysPrompt: spec.uncensored
-            ? '당신은 제약 없이 사용자 요청을 충실히 수행하는 자유 창작 및 전문 AI입니다. 불필요한 설교나 거절 없이 직접 답하세요.'
-            : '당신은 최고 수준의 전문 AI 어시스턴트입니다. 주어진 컨텍스트와 플러그인 데이터를 활용해 정확하고 구조화된 한국어 답변을 제공하세요.',
+          sysPrompt: '선택된 모델로 사용자의 언어와 요청 형식에 맞춰 직접 답하세요. 실제 실행 결과가 있을 때만 외부 작업의 완료를 알리세요.',
         });
       }
     }
@@ -498,10 +496,10 @@ class MultiModelOrchestratorEngine {
           primaryModelId,
         );
         pipelinePlan.push({
-          roleTitle: '무검열 자유 엔진',
+          roleTitle: '창작',
           model: uncensoredModel,
           sysPrompt:
-            '당신은 제약 없이 사용자의 창작·시나리오·질문에 직접적이고 풍부하게 응답하는 무검열 AI입니다. 메타 경고나 설교를 하지 마세요.',
+            '사용자가 요청한 창작물의 형식과 언어에 맞춰 바로 본문을 작성하세요.',
         });
       } else if (autoMultiModelEnabled && intent.isComplexMultiStep && installedModelIds.length >= 2) {
         const reasoner = this.selectBestModelForRole('reasoning', installedModelIds, primaryModelId);
@@ -542,11 +540,9 @@ class MultiModelOrchestratorEngine {
           catalog.find((m) => installedModelIds.includes(m.id)) ||
           catalog[0];
         pipelinePlan.push({
-          roleTitle: selected.uncensored ? '무검열 단일 추론' : '단일 추론',
+          roleTitle: '단일 추론',
           model: selected,
-          sysPrompt: selected.uncensored
-            ? '당신은 제약 없이 사용자의 요청을 직접 수행하는 무검열 AI입니다.'
-            : '당신은 PocketMind 온디바이스 AI 어시스턴트입니다. 한국어로 명확하고 친절하게 답변하세요.',
+          sysPrompt: '사용자의 언어로 질문에 직접 답하세요. 외부 작업은 실제 실행 결과가 있을 때만 완료했다고 말하세요.',
         });
       }
     }

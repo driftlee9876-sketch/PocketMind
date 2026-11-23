@@ -114,9 +114,20 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun runChatGPT(model: String, messagesJson: String, promise: Promise) {
+  fun runChatGPT(requestId: String, model: String, messagesJson: String, promise: Promise) {
+    val call = chatGPTPlan.prepareCall()
     Thread {
-      try { promise.resolve(chatGPTPlan.chat(model, org.json.JSONArray(messagesJson))) }
+      try {
+        val reply = chatGPTPlan.chat(call, model, org.json.JSONArray(messagesJson)) { partial ->
+          if (!call.cancelled && context.hasActiveReactInstance()) {
+            context.emitDeviceEvent("PocketMindChatGPTText", Arguments.createMap().apply {
+              putString("requestId", requestId)
+              putString("text", partial)
+            })
+          }
+        }
+        promise.resolve(reply.json())
+      }
       catch (error: Exception) { promise.reject("CHATGPT_RESPONSE", error) }
     }.start()
   }

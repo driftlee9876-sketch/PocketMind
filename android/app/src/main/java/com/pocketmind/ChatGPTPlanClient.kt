@@ -29,7 +29,10 @@ internal class ChatGPTPlanClient(
   private var listener: ServerSocket? = null
   @Volatile private var loginError: String? = null
   @Volatile private var loginPending = false
-  @Volatile private var activeRequest: HttpURLConnection? = null
+  internal class Call(val connection: HttpURLConnection) {
+    @Volatile var cancelled = false
+  }
+  @Volatile private var activeCall: Call? = null
   private val resource = "https://api.openai.com/v1"
 
   private fun random(): String = ByteArray(32).also { SecureRandom().nextBytes(it) }
@@ -62,7 +65,18 @@ internal class ChatGPTPlanClient(
     preferences.edit().remove("session").commit()
   }
 
-  fun cancel() { activeRequest?.disconnect() }
+  @Synchronized fun cancel() {
+    val call = activeCall ?: return
+    call.cancelled = true
+    call.connection.disconnect()
+    activeCall = null
+  }
+
+  @Synchronized fun prepareCall(): Call {
+    cancel()
+    return Call(URL("https://api.openai.com/v1/responses").openConnection() as HttpURLConnection)
+      .also { activeCall = it }
+  }
 
   fun startLogin(): String = synchronized(lock) {
     listener?.close()
@@ -111,7 +125,7 @@ internal class ChatGPTPlanClient(
             val code = query["code"] ?: throw IllegalStateException("로그인 코드가 없습니다.")
             val issued = query["client_id"] ?: if (prior != null) clientId else throw IllegalStateException("클라이언트 등록이 완료되지 않았습니다.")
             if (prior != null && issued != clientId) throw IllegalStateException("로그인 계정이 변경되었습니다.")
-            val html = "<html><meta charset='utf-8'><body>ChatGPT 로그인이 완료되었습니다. PocketMind로 돌아가세요.</body></html>"
+            val html = "<html><meta charset='utf-8'><body>로그인 응답을 받았습니다. PocketMind로 돌아가 연결 상태를 확인하세요.</body></html>"
             peer.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${html.toByteArray().size}\r\nConnection: close\r\n\r\n" + html).toByteArray())
             val token = requestJson(
               "https://auth.openai.com/api/accounts/oauth/token", "POST",
@@ -132,14 +146,13 @@ internal class ChatGPTPlanClient(
               .put("access_token", token.getString("access_token"))
               .put("refresh_token", token.getString("refresh_token"))
               .put("expires_at", System.currentTimeMillis() + token.optLong("expires_in", 3600) * 1000)
-            synchronized(lock) { save(session) }
+            synchronized(lock) { if (listener === server) save(session) }
           }
         }
       } catch (error: Exception) {
-        loginError = error.message ?: "ChatGPT 로그인에 실패했습니다."
+        synchronized(lock) { if (listener === server) loginError = error.message ?: "ChatGPT 로그인에 실패했습니다." }
       } finally {
-        loginPending = false
-        synchronized(lock) { if (listener === server) listener = null }
+        synchronized(lock) { if (listener === server) { listener = null; loginPending = false } }
       }
     }.start()
     "https://auth.openai.com/api/accounts/authorize?" + params.entries.joinToString("&") { encode(it.key) + "=" + encode(it.value) }
@@ -185,7 +198,7 @@ internal class ChatGPTPlanClient(
     )
     if (!token.optString("scope").split(' ').contains("chatgpt.tokens.use.direct")) throw IllegalStateException("ChatGPT 플랜 사용 권한이 없습니다.")
     session.put("access_token", token.getString("access_token"))
-      .put("refresh_token", token.getString("refresh_token"))
+      .put("refresh_token", token.optString("refresh_token").ifBlank { session.getString("refresh_token") })
       .put("expires_at", System.currentTimeMillis() + token.optLong("expires_in", 3600) * 1000)
     save(session)
     session.getString("access_token")
@@ -204,37 +217,34 @@ internal class ChatGPTPlanClient(
     return visible
   }
 
-  fun chat(model: String, messages: JSONArray): String {
-    if (model.isBlank()) throw IllegalArgumentException("모델을 선택해 주세요.")
-    val body = JSONObject().put("model", model).put("input", messages).put("store", false).put("stream", true)
-    val connection = URL("https://api.openai.com/v1/responses").openConnection() as HttpURLConnection
-    activeRequest = connection
+  fun chat(call: Call, model: String, messages: JSONArray, progress: (String) -> Unit): ChatGPTReply {
+    val connection = call.connection
     try {
+      require(model.isNotBlank()) { "모델을 선택해 주세요." }
+      val body = JSONObject().put("model", model).put("input", messages).put("store", false).put("stream", true)
+        .put("instructions", "사용자의 언어로 질문에 직접 답하세요. 실행 결과가 주어졌을 때만 외부 작업을 완료했다고 말하세요.")
       connection.requestMethod = "POST"
       connection.connectTimeout = 15_000
       connection.readTimeout = 180_000
       connection.setRequestProperty("Authorization", "Bearer ${accessToken()}")
       connection.setRequestProperty("Content-Type", "application/json")
+      connection.setRequestProperty("Accept", "text/event-stream")
       connection.doOutput = true
-      connection.outputStream.use { it.write(body.toString().toByteArray()) }
-      if (connection.responseCode !in 200..299) throw IllegalStateException("ChatGPT 요청 오류 (HTTP ${connection.responseCode})")
-      val text = StringBuilder()
-      var completed = false
-      connection.inputStream.bufferedReader().useLines { lines ->
-        lines.forEach { line ->
-          if (!line.startsWith("data: ") || line == "data: [DONE]") return@forEach
-          val event = try { JSONObject(line.removePrefix("data: ")) } catch (_: Exception) { return@forEach }
-          when (event.optString("type")) {
-            "response.output_text.delta" -> text.append(event.optString("delta"))
-            "response.completed" -> completed = true
-            "response.failed", "response.incomplete" -> throw IllegalStateException("ChatGPT 응답이 완료되지 않았습니다. 사용 한도와 로그인 상태를 확인하세요.")
-          }
+      check(!call.cancelled) { "생성을 중지했습니다." }
+      connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+      val status = connection.responseCode
+      val requestId = connection.getHeaderField("x-request-id")
+      if (status !in 200..299) {
+        val error = connection.errorStream?.bufferedReader()?.use {
+          try { JSONObject(it.readText()).optJSONObject("error") } catch (_: Exception) { null }
         }
+        return ChatGPTResponses.failure(error?.optString("code") ?: "", status, requestId)
       }
-      if (!completed) throw IllegalStateException("ChatGPT 응답이 끝까지 완료되지 않았습니다.")
-      return text.toString().trim().ifBlank { throw IllegalStateException("빈 응답을 받았습니다.") }
+      return connection.inputStream.bufferedReader(Charsets.UTF_8).use { ChatGPTResponses.read(it, requestId, progress) }
+    } catch (_: java.io.IOException) {
+      return ChatGPTResponses.failure("stream_interrupted")
     } finally {
-      activeRequest = null
+      synchronized(this) { if (activeCall === call) activeCall = null }
       connection.disconnect()
     }
   }

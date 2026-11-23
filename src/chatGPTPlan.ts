@@ -1,4 +1,4 @@
-import { NativeModules, Platform } from 'react-native';
+import { DeviceEventEmitter, NativeModules, Platform } from 'react-native';
 
 export interface ChatGPTPlanStatus {
   connected: boolean;
@@ -8,6 +8,8 @@ export interface ChatGPTPlanStatus {
 }
 export interface ChatGPTPlanModel { id: string; name: string }
 export interface PlanMessage { role: 'user' | 'assistant'; content: string }
+export interface PlanReply { text: string; issue?: string; code?: string }
+let nextRequest = 0;
 
 function client(): any {
   const module = NativeModules.PocketMindWorker;
@@ -30,11 +32,20 @@ export async function getChatGPTPlanModels(): Promise<ChatGPTPlanModel[]> {
   const models = JSON.parse(await client().listChatGPTModels());
   return Array.isArray(models) ? models : [];
 }
-export async function chatWithChatGPTPlan(model: string, history: PlanMessage[], prompt: string): Promise<string> {
-  return client().runChatGPT(model, JSON.stringify([
-    ...history.slice(-20).map(message => ({ role: message.role, content: message.content.slice(0, 20_000) })),
-    { role: 'user', content: prompt },
-  ]));
+export async function chatWithChatGPTPlan(model: string, history: PlanMessage[], prompt: string, onText: (text: string) => void): Promise<PlanReply> {
+  const requestId = `chat-${++nextRequest}`;
+  const subscription = DeviceEventEmitter.addListener('PocketMindChatGPTText', event => {
+    if (event?.requestId === requestId && typeof event.text === 'string') onText(event.text);
+  });
+  try {
+    const raw = await client().runChatGPT(requestId, model, JSON.stringify([
+      ...history.slice(-20).map(message => ({ role: message.role, content: message.content.slice(0, 20_000) })),
+      { role: 'user', content: prompt },
+    ]));
+    return JSON.parse(raw);
+  } finally {
+    subscription.remove();
+  }
 }
 export async function stopChatGPTPlan(): Promise<void> {
   await client().stopChatGPT();

@@ -61,7 +61,12 @@ import {
   removeSessionById,
   replaceUserMessageAndTrim,
   renameSessionById,
+  summarizeConversation,
+  sessionTitleMode,
 } from './src/chatHistory';
+import { ChatSettingsSheet } from './src/ChatSettingsSheet';
+import { defaultChatPreferences, enterSubmits, restoreChatPreferences } from './src/chatPreferences';
+import type { ChatPreferences } from './src/chatPreferences';
 import type { CoordinatorWorker } from './src/distributedCoordinatorClient';
 import {
   beginChatGPTPlanLogin,
@@ -150,6 +155,9 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
   timestamp: string;
+  source?: string;
+  issue?: string;
+  issueCode?: string;
   pipelineSteps?: PipelineStepResult[];
   pluginOutputs?: PluginExecutionOutput[];
 }
@@ -159,6 +167,7 @@ interface ChatSession {
   title: string;
   messages: ChatMessage[];
   pinned?: boolean;
+  titleMode?: 'auto' | 'custom';
 }
 
 interface DeviceMetrics {
@@ -174,16 +183,9 @@ interface DeviceMetrics {
   thermalState?: string;
 }
 
-function summarizeSessionPreview(session: ChatSession): string {
-  const latestAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
-  const latestUser = [...session.messages].reverse().find((message) => message.role === 'user');
-  const source = latestAssistant?.text || latestUser?.text || '아직 대화가 없습니다.';
-  const clean = source.replace(/\s+/g, ' ').trim();
-  return clean.length > 72 ? `${clean.slice(0, 69)}…` : clean;
-}
-
 interface ChatMessageCardProps {
   message: ChatMessage;
+  largeText: boolean;
   canRegenerate: boolean;
   disabled: boolean;
   onCopy: (message: ChatMessage) => void;
@@ -193,6 +195,7 @@ interface ChatMessageCardProps {
 
 const ChatMessageCard = memo(function ChatMessageCard({
   message,
+  largeText,
   canRegenerate,
   disabled,
   onCopy,
@@ -224,7 +227,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
       {message.role === 'user' ? (
         <View style={styles.userMessageColumn}>
           <View style={styles.userBubble}>
-            <Text style={styles.userBubbleText}>{message.text}</Text>
+            <Text selectable style={[styles.userBubbleText, largeText && styles.largeChatText]}>{message.text}</Text>
           </View>
           <View style={styles.messageActionRow}>
             <TouchableOpacity
@@ -275,7 +278,15 @@ const ChatMessageCard = memo(function ChatMessageCard({
               ))}
             </View>
           ) : null}
-          <Text style={styles.assistantBodyText}>{message.text}</Text>
+          {message.source && <Text style={styles.replySource}>{message.source}</Text>}
+          {Boolean(message.text) && <Text selectable style={[styles.assistantBodyText, largeText && styles.largeChatText]}>{message.text}</Text>}
+          {message.issue && <View style={styles.replyIssue}>
+            <Text selectable style={styles.replyIssueText}>{message.issue}</Text>
+            {message.issueCode === 'subscription_sharing_usage_limit_exceeded' &&
+              <TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL('https://chatgpt.com/settings/usage').catch(() => Alert.alert('사용량', 'ChatGPT 설정에서 사용량을 확인해 주세요.'))}>
+                <Text style={styles.sheetTextBtnText}>ChatGPT 사용량 보기 ↗</Text>
+              </TouchableOpacity>}
+          </View>}
           <View style={styles.messageActionRow}>
             <TouchableOpacity
               style={styles.messageActionButton}
@@ -337,6 +348,27 @@ function PocketMindChatGPTScreen() {
   const [connectionSettingsReady, setConnectionSettingsReady] = useState(false);
 
   const [inputText, setInputText] = useState('');
+  const [selection, setSelection] = useState({ start: 0, end: 0 });
+  const [preferences, setPreferences] = useState(defaultChatPreferences);
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [generatingSession, setGeneratingSession] = useState('');
+  const submitOnEnter = enterSubmits(preferences.enterMode, inputText, selection.start, selection.end);
+
+  useEffect(() => {
+    let mounted = true;
+    AsyncStorage.getItem('pocketmind.chat-preferences.v1')
+      .then(raw => { if (mounted) setPreferences(restoreChatPreferences(raw)); })
+      .catch(() => {}).finally(() => { if (mounted) setPreferencesReady(true); });
+    return () => { mounted = false; };
+  }, []);
+
+  const savePreferences = (changes: Partial<ChatPreferences>) =>
+    setPreferences(previous => ({ ...previous, ...changes }));
+  useEffect(() => {
+    if (preferencesReady) AsyncStorage.setItem('pocketmind.chat-preferences.v1', JSON.stringify(preferences))
+      .catch(() => Alert.alert('설정 저장 실패', '기기 저장 공간을 확인해 주세요.'));
+  }, [preferences, preferencesReady]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [liveStatus, setLiveStatus] = useState('');
   const [streamingText, setStreamingText] = useState('');
@@ -366,6 +398,7 @@ function PocketMindChatGPTScreen() {
 
   // 모달 & 사이드바 상태
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [drawerToolsOpen, setDrawerToolsOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [chatGPTSettingsOpen, setChatGPTSettingsOpen] = useState(false);
   const [modelStoreOpen, setModelStoreOpen] = useState(false);
@@ -475,9 +508,15 @@ function PocketMindChatGPTScreen() {
       const status = await getChatGPTPlanStatus();
       setChatGPTStatus(status);
       if (status.connected) {
-        const catalog = await getChatGPTPlanModels();
-        setChatGPTModels(catalog);
-        setChatGPTModelId(previous => catalog.some(item => item.id === previous) ? previous : catalog[0]?.id || '');
+        try {
+          const catalog = await getChatGPTPlanModels();
+          setChatGPTModels(catalog);
+          setChatGPTModelId(previous => catalog.some(item => item.id === previous) ? previous : catalog[0]?.id || '');
+        } catch {
+          setChatGPTStatus({ ...status, error: '모델 목록을 불러오지 못했어요. 잠시 후 상태를 새로고침해 주세요.' });
+        }
+      } else {
+        setChatGPTModels([]);
       }
     } catch (error: any) {
       setChatGPTStatus({ connected: false, pending: false, email: '', error: error?.message || '연결 상태 확인 실패' });
@@ -525,11 +564,15 @@ function PocketMindChatGPTScreen() {
             id: session.id,
             title: typeof session.title === 'string' ? session.title.slice(0, 80) : '대화',
             pinned: session.pinned === true,
+            titleMode: session.titleMode,
             messages: session.messages
               .filter((message: any) => message && typeof message.id === 'string' &&
                 (message.role === 'user' || message.role === 'assistant') && typeof message.text === 'string')
               .slice(-120),
-          }));
+          })).map((session: ChatSession) => {
+            const titleMode = sessionTitleMode(session);
+            return { ...session, titleMode, title: titleMode === 'auto' && !session.titleMode ? summarizeConversation(session.messages) : session.title };
+          });
         if (mounted && restored.length > 0) {
           setSessions(restored);
           const savedActiveId = typeof saved.activeSessionId === 'string' ? saved.activeSessionId : '';
@@ -600,7 +643,7 @@ function PocketMindChatGPTScreen() {
   }, [connectionSettingsReady, remotePC.serverUrl, remotePC.apiKey]);
 
   useEffect(() => {
-    if (Platform.OS !== 'android') return;
+    if (Platform.OS !== 'android' || (!preferences.showMetrics && !androidWorkerOpen)) return;
     let mounted = true;
     const refreshMetrics = async () => {
       try {
@@ -615,22 +658,20 @@ function PocketMindChatGPTScreen() {
     refreshMetrics();
     const timer = setInterval(refreshMetrics, 5000);
     return () => { mounted = false; clearInterval(timer); };
-  }, []);
+  }, [preferences.showMetrics, androidWorkerOpen]);
 
   const updateActiveSessionMessages = useCallback((
     updater: (prev: ChatMessage[]) => ChatMessage[],
-    newTitleIfFirst?: string,
+
   ) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setSessions((prevSessions) =>
       prevSessions.map((sess) => {
         if (sess.id !== activeSession.id) return sess;
         const nextMsgs = updater(sess.messages);
-        const nextTitle =
-          sess.messages.length === 0 && newTitleIfFirst
-            ? newTitleIfFirst.slice(0, 24)
-            : sess.title;
-        return { ...sess, title: nextTitle, messages: nextMsgs };
+        const titleMode = sessionTitleMode(sess);
+        const title = titleMode === 'custom' ? sess.title : summarizeConversation(nextMsgs);
+        return { ...sess, title, titleMode, messages: nextMsgs };
       }),
     );
   }, [activeSession.id]);
@@ -639,7 +680,7 @@ function PocketMindChatGPTScreen() {
     .filter((session) => {
       const query = historySearch.trim().toLocaleLowerCase();
       return !query || session.title.toLocaleLowerCase().includes(query) ||
-        summarizeSessionPreview(session).toLocaleLowerCase().includes(query);
+        session.messages.some(message => message.text.toLocaleLowerCase().includes(query));
     })
     .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))), [historySearch, sessions]);
 
@@ -811,12 +852,12 @@ function PocketMindChatGPTScreen() {
     return true;
   }, [installedModelIds.length, remotePC.enabled, remotePC.serverUrl, useChatGPTPlan, chatGPTStatus.connected, chatGPTModelId]);
 
-  const runAssistantGeneration = useCallback(async (prompt: string) => {
-    if (!prompt.trim() || isGenerating || !ensureGenerationAvailable(prompt)) return;
+  const runAssistantGeneration = useCallback(async (prompt: string, context: ChatMessage[]) => {
+    if (!prompt.trim() || generationAbortRef.current || isGenerating || !ensureGenerationAvailable(prompt)) return;
     const controller = new AbortController();
-    generationAbortRef.current?.abort();
     generationAbortRef.current = controller;
 
+    setGeneratingSession(activeSession.id);
     setIsGenerating(true);
     setLiveStatus('생각 중...');
     setStreamingText('');
@@ -826,12 +867,17 @@ function PocketMindChatGPTScreen() {
         setLiveStatus('ChatGPT 플랜으로 응답 생성 중...');
         const result = await chatWithChatGPTPlan(
           chatGPTModelId,
-          messages.map(message => ({ role: message.role, content: message.text })),
+          context.filter(message => !message.issue && !message.id.startsWith('err-') &&
+            (message.role === 'user' || !message.pipelineSteps?.length))
+            .map(message => ({ role: message.role, content: message.text })),
           prompt,
+          partial => { if (!controller.signal.aborted) setStreamingText(partial); },
         );
         if (controller.signal.aborted) return;
         updateActiveSessionMessages(previous => [...previous, {
-          id: `a-${Date.now()}`, role: 'assistant', text: result, timestamp: formatNowTime(),
+          id: `a-${Date.now()}`, role: 'assistant', text: result.text, timestamp: formatNowTime(),
+          source: chatGPTModels.find(model => model.id === chatGPTModelId)?.name || chatGPTModelId,
+          issue: result.issue, issueCode: result.code,
         }]);
         return;
       }
@@ -858,6 +904,7 @@ function PocketMindChatGPTScreen() {
         role: 'assistant',
         text: response.finalText || '응답을 생성하지 못했습니다.',
         timestamp: formatNowTime(),
+        source: response.steps.at(-1)?.modelName || 'PocketMind 플러그인',
         pipelineSteps: response.steps,
         pluginOutputs: response.pluginOutputs,
       };
@@ -867,7 +914,8 @@ function PocketMindChatGPTScreen() {
       const errMsg: ChatMessage = {
         id: `err-${Date.now()}`,
         role: 'assistant',
-        text: `⚠️ 실행 오류: ${error?.message || '알 수 없는 오류'}`,
+        text: '', issue: error?.message || '요청을 처리하지 못했어요. 다시 시도해 주세요.',
+        source: useChatGPTPlan ? chatGPTModelId : 'PocketMind',
         timestamp: formatNowTime(),
       };
       updateActiveSessionMessages((previous) => [...previous, errMsg]);
@@ -885,7 +933,8 @@ function PocketMindChatGPTScreen() {
     ensureGenerationAvailable,
     installedModelIds,
     isGenerating,
-    messages,
+    activeSession.id,
+    chatGPTModels,
     chatGPTModelId,
     useChatGPTPlan,
     primaryModelId,
@@ -895,7 +944,7 @@ function PocketMindChatGPTScreen() {
 
   const handleSendMessage = async (overridePrompt?: string) => {
     const trimmed = (overridePrompt !== undefined ? overridePrompt : inputText).trim();
-    if (!trimmed || isGenerating || !ensureGenerationAvailable(trimmed)) return;
+    if (!trimmed || generationAbortRef.current || isGenerating || !ensureGenerationAvailable(trimmed)) return;
 
     const userMsg: ChatMessage = {
       id: `u-${Date.now()}`,
@@ -904,13 +953,13 @@ function PocketMindChatGPTScreen() {
       timestamp: formatNowTime(),
     };
 
-    updateActiveSessionMessages((prev) => [...prev, userMsg], trimmed);
-    if (overridePrompt === undefined) setInputText('');
-    await runAssistantGeneration(trimmed);
+    updateActiveSessionMessages((prev) => [...prev, userMsg]);
+    setInputText('');
+    await runAssistantGeneration(trimmed, messages);
   };
 
   const handleCopyMessage = useCallback((message: ChatMessage) => {
-    Clipboard.setString(message.text);
+    Clipboard.setString(message.text || message.issue || '');
     showToast('메시지를 복사했습니다.');
   }, [showToast]);
 
@@ -930,7 +979,7 @@ function PocketMindChatGPTScreen() {
     );
     setMessageEditTargetId(null);
     setMessageEditText('');
-    await runAssistantGeneration(prompt);
+    await runAssistantGeneration(prompt, messages.slice(0, messages.findIndex(item => item.id === messageEditTarget.id)));
   };
 
   const handleRegenerateMessage = useCallback(async (message: ChatMessage) => {
@@ -939,7 +988,7 @@ function PocketMindChatGPTScreen() {
     if (!prepared || !ensureGenerationAvailable(prepared.prompt)) return;
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     updateActiveSessionMessages(() => prepared.messages);
-    await runAssistantGeneration(prepared.prompt);
+    await runAssistantGeneration(prepared.prompt, prepared.messages.slice(0, -1));
   }, [ensureGenerationAvailable, isGenerating, messages, runAssistantGeneration, updateActiveSessionMessages]);
 
   const handleStopGeneration = useCallback(() => {
@@ -1254,6 +1303,7 @@ function PocketMindChatGPTScreen() {
   const renderChatMessage = useCallback(({ item }: { item: ChatMessage }) => (
     <ChatMessageCard
       message={item}
+      largeText={preferences.largeText}
       canRegenerate={item.id === lastAssistantMessageId}
       disabled={isGenerating}
       onCopy={handleCopyMessage}
@@ -1266,11 +1316,13 @@ function PocketMindChatGPTScreen() {
     handleRegenerateMessage,
     isGenerating,
     lastAssistantMessageId,
+    preferences.largeText,
   ]);
 
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar hidden />
+      <ChatSettingsSheet visible={settingsOpen} values={preferences} onChange={savePreferences} onClose={() => setSettingsOpen(false)} />
 
       {/* ================= ChatGPT 상단 헤더 ================= */}
       <View style={styles.topHeader}>
@@ -1296,7 +1348,7 @@ function PocketMindChatGPTScreen() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.deviceMetricsBar}>
+      {preferences.showMetrics && <View style={styles.deviceMetricsBar}>
         <View style={styles.deviceMetricCell}>
           <Text style={styles.deviceMetricLabel}>CPU</Text>
           <Text style={styles.deviceMetricValue}>{typeof deviceMetrics?.cpuUsagePercent === 'number' ? `${Math.round(deviceMetrics.cpuUsagePercent)}%` : '—'}</Text>
@@ -1317,7 +1369,7 @@ function PocketMindChatGPTScreen() {
           <Text style={styles.deviceMetricLabel}>USB 기기</Text>
           <Text style={styles.deviceMetricValue}>{typeof deviceMetrics?.usbDeviceCount === 'number' && deviceMetrics.usbDeviceCount > 0 ? `${deviceMetrics.usbDeviceCount}개` : deviceMetrics?.usbConnected ? '연결됨' : '없음'}</Text>
         </TouchableOpacity>
-      </View>
+      </View>}
 
       {/* ================= ChatGPT 메인 대화 영역 ================= */}
       <FlatList
@@ -1335,7 +1387,7 @@ function PocketMindChatGPTScreen() {
         windowSize={7}
         removeClippedSubviews={Platform.OS === 'android'}
         keyboardShouldPersistTaps="handled"
-        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        onContentSizeChange={() => { if (preferences.autoScroll) scrollRef.current?.scrollToEnd({ animated: true }); }}
         ListEmptyComponent={(
           <View style={styles.welcomeHero}>
             <View style={styles.logoCircle}>
@@ -1381,10 +1433,10 @@ function PocketMindChatGPTScreen() {
             </View>
           </View>
         )}
-        ListFooterComponent={isGenerating ? (
+        ListFooterComponent={isGenerating && generatingSession === activeSession.id ? (
           <View style={styles.assistantRow}>
             <View style={styles.assistantBlock}>
-              <View style={styles.assistantHeaderRow}>
+              <View style={styles.progressRow}>
                 <View style={styles.assistantAvatar}>
                   <Text style={styles.assistantAvatarText}>✦</Text>
                 </View>
@@ -1393,7 +1445,7 @@ function PocketMindChatGPTScreen() {
                 </Animated.Text>
               </View>
               {streamingText ? (
-                <Text style={styles.assistantBodyText}>{streamingText}</Text>
+                <Text style={[styles.assistantBodyText, preferences.largeText && styles.largeChatText]}>{streamingText}</Text>
               ) : null}
               <TouchableOpacity
                 style={styles.stopGenerationButton}
@@ -1419,7 +1471,17 @@ function PocketMindChatGPTScreen() {
           </TouchableOpacity>
 
           <TextInput
-            style={styles.composerInput}
+            nativeID="pocketmind-composer"
+            accessibilityLabel="메시지 입력"
+            style={[styles.composerInput, preferences.largeText && styles.largeChatText]}
+            onSelectionChange={event => setSelection(event.nativeEvent.selection)}
+            submitBehavior={submitOnEnter || preferences.enterMode === 'send' ? 'submit' : 'newline'}
+            returnKeyType={submitOnEnter ? 'send' : 'default'}
+            disableFullscreenUI
+            onSubmitEditing={event => {
+              const text = event.nativeEvent.text;
+              if (enterSubmits(preferences.enterMode, text, selection.start, selection.end)) handleSendMessage(text);
+            }}
             value={inputText}
             onChangeText={setInputText}
             placeholder="PocketMind에게 메시지 보내기..."
@@ -1433,6 +1495,7 @@ function PocketMindChatGPTScreen() {
               (!inputText.trim() || isGenerating) && styles.sendCircleDisabled,
             ]}
             onPress={() => handleSendMessage()}
+            accessibilityRole="button" accessibilityLabel="메시지 보내기"
             disabled={!inputText.trim() || isGenerating}
           >
             <Text
@@ -1448,13 +1511,18 @@ function PocketMindChatGPTScreen() {
       </View>
 
       {/* ================= 좌측 ChatGPT 사이드바 Drawer ================= */}
-      <Modal visible={sidebarOpen} transparent animationType="fade">
+      <Modal visible={sidebarOpen} transparent animationType="fade" onRequestClose={() => setSidebarOpen(false)}>
         <View style={styles.drawerOverlay}>
           <View style={styles.drawerPanel}>
             <TouchableOpacity style={styles.drawerNewChatBtn} onPress={handleNewChat}>
               <Text style={styles.drawerNewChatText}>✎  새 채팅</Text>
             </TouchableOpacity>
 
+            <TouchableOpacity style={styles.drawerNavItem} accessibilityRole="button" accessibilityState={{ expanded: drawerToolsOpen }}
+              onPress={() => setDrawerToolsOpen(value => !value)}>
+              <Text style={styles.drawerNavText}>{drawerToolsOpen ? '▾' : '▸'}  모델·플러그인·기기</Text>
+            </TouchableOpacity>
+            {drawerToolsOpen && <ScrollView style={{ maxHeight: 195 }} keyboardShouldPersistTaps="handled">
             <TouchableOpacity
               style={styles.drawerNavItem}
               onPress={() => {
@@ -1487,12 +1555,12 @@ function PocketMindChatGPTScreen() {
               }}
             >
               <Text style={styles.drawerNavText}>
-                🖥️  PC GPU 워커 ({remotePC.enabled ? '연결됨' : '꺼짐'})
+                🖥️  PC GPU 워커 ({remotePC.enabled ? '사용 설정' : '꺼짐'})
               </Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.drawerNavItem} onPress={() => { setSidebarOpen(false); openConnectedApps(); }}>
-              <Text style={styles.drawerNavText}>🔌 연결 앱 허브 ({configuredIntegrationIds.length}개 웹훅 설정)</Text>
+              <Text style={styles.drawerNavText}>🔌 연결 앱 허브 ({configuredIntegrationIds.length}개 사용 가능)</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.drawerNavItem} onPress={() => {
               setSidebarOpen(false);
@@ -1511,6 +1579,11 @@ function PocketMindChatGPTScreen() {
               />
             </View>
 
+            </ScrollView>}
+            <TouchableOpacity style={styles.drawerNavItem} accessibilityRole="button" disabled={!preferencesReady}
+              onPress={() => { setSidebarOpen(false); setSettingsOpen(true); }}>
+              <Text style={styles.drawerNavText}>⚙  채팅 설정</Text>
+            </TouchableOpacity>
             <Text style={styles.drawerSectionTitle}>대화 기록</Text>
             <TextInput
               style={styles.historySearchInput}
@@ -1533,12 +1606,12 @@ function PocketMindChatGPTScreen() {
                     setActiveSessionId(sess.id);
                     setSidebarOpen(false);
                   }}
+                  accessibilityRole="button" accessibilityLabel={sess.title} accessibilityState={{ selected: sess.id === activeSession.id }}
                   onLongPress={() => openSessionActions(sess.id)}
                   delayLongPress={350}
                 >
                   <View style={styles.drawerHistoryTextWrap}>
                     <Text style={styles.drawerHistoryText} numberOfLines={1}>{sess.pinned ? '📌 ' : ''}{sess.title}</Text>
-                    <Text style={styles.drawerHistoryMeta} numberOfLines={1}>{summarizeSessionPreview(sess)}</Text>
                   </View>
                 </TouchableOpacity>
               ))}
@@ -2824,7 +2897,7 @@ const styles = StyleSheet.create({
     width: '78%',
     maxWidth: 320,
     backgroundColor: '#171717',
-    paddingTop: 48,
+    paddingTop: 16,
     paddingHorizontal: 16,
     paddingBottom: 24,
   },
@@ -2908,11 +2981,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
   },
-  drawerHistoryMeta: {
-    color: '#8E8EA0',
-    fontSize: 11,
-    marginTop: 3,
-  },
+  largeChatText: { fontSize: 19, lineHeight: 29 },
+  replySource: { color: '#A4B8B1', fontSize: 12, marginBottom: 5, fontWeight: '600' },
+  replyIssue: { paddingVertical: 8, paddingHorizontal: 12, marginTop: 4, borderLeftWidth: 2, borderColor: '#BD996A', backgroundColor: '#2C2925', borderRadius: 5 },
+  replyIssueText: { color: '#E2CDB1', fontSize: 14, lineHeight: 21 },
+  progressRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5 },
   drawerCloseBtn: {
     backgroundColor: '#2F2F2F',
     paddingVertical: 11,
