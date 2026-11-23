@@ -118,8 +118,12 @@ try:
     def donor_result():
         if label('GPU 제공 중지'):
             return 'offer'
-        for text in ['USB 디버깅','유선 이더넷 한 개','Vulkan GPU를 시작하지','Android 9 이상','데이터 케이블을 연결','error=8','error=13','유선 GPU가 포함된','GPU를 시작하지 못했어요']:
-            if label(text):
+        # Match the standalone diagnostic. A Windows instruction elsewhere in
+        # the sheet also mentions USB debugging and must never satisfy this check.
+        for text in ['데이터 케이블을 연결하고 USB 디버깅을 켜 주세요.',
+                     'USB 테더링 또는 유선 이더넷 한 개를 연결한 뒤 다시 눌러 주세요.',
+                     'Vulkan GPU를 시작하지 못했어요. 기기 드라이버와 USB 상태를 확인하세요.']:
+            if d(text=text).exists:
                 return text
         return None
     state=wait(donor_result,55)
