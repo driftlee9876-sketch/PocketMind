@@ -46,6 +46,22 @@ jobs:
           run-id: 45180768385
           github-token: ${{ github.token }}
           path: baseline
+      - uses: actions/checkout@v4
+        with:
+          ref: 083721195e7d8073a8f880a4b6438c7f27e76196
+          path: release-source
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache: false
+      - name: Prepare native Bonjour and TLS fixtures
+        run: |
+          bash tests/wifi/advert/build.sh
+          cp tests/wifi/fixture.go release-source/workers/wifi/fixture.go
+          (cd release-source/workers/wifi && go build -o "$RUNNER_TEMP/pm-donor" ./fixture.go)
+          sudo ip addr add 192.168.246.1/32 dev lo
+          sudo ip addr add 192.168.246.2/32 dev lo
+          "$RUNNER_TEMP/pm-donor" "$RUNNER_TEMP/donor-data" > "$RUNNER_TEMP/pm-donor.log" 2>&1 &
       - name: Prepare isolated test services
         run: |
           sudo chmod a+rw /dev/kvm
@@ -64,6 +80,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: |
             adb shell getprop ro.product.cpu.abilist
+            adb install -r "$RUNNER_TEMP/pm-advert.apk"
             adb install -r baseline/app-release.apk
             adb reverse tcp:18770 tcp:18770
             python tests/tablet/smoke.py
