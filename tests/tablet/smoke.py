@@ -135,6 +135,19 @@ try:
     print('Tablet-specific cable diagnostic passed',flush=True)
     assert d.app_current()['package']==pkg
     print('GPU panel and missing-model guards passed',flush=True)
+    tap('닫기')
+    tap('모델 선택, 현재')
+    tap('Wi-Fi GPU 연결')
+    wait(lambda: label('주변 GPU'))
+    # This text only appears after the Kotlin discovery listener and native Go
+    # identity engine both return a status. No external peer is required.
+    wait(lambda: label('기기를 찾는 중'),35)
+    assert label('이 기기의 Wi-Fi GPU 제공')
+    assert label('함께 실행할 GGUF')
+    snap('07-wifi-discovery')
+    tap('닫기')
+    wait(lambda: label('메시지 보내기'))
+    print('APK native Wi-Fi discovery and opt-in controls passed',flush=True)
 except Exception:
     snap('failure')
     for name, args in [('ime',['input_method']),('displays',['window','displays'])]:

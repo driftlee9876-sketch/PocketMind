@@ -8,7 +8,7 @@ permissions:
 jobs:
   tablet:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 85
     env:
       POCKETMIND_API_TOKEN: emulator-only-api-token-for-fixtures
       POCKETMIND_ENROLLMENT_TOKEN: emulator-only-enrollment-for-fixtures
@@ -22,10 +22,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Wait for the target release APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while true; do
+            result=$(gh run view 45288522868 --json status,conclusion --jq '.status + "/" + .conclusion')
+            case "$result" in
+              completed/success) break ;;
+              completed/*) echo "$result"; exit 1 ;;
+            esac
+            sleep 30
+          done
       - uses: actions/download-artifact@v4
         with:
           name: PocketMind-GalaxyTab-APK
-          run-id: 45203177499
+          run-id: 45288522868
           github-token: ${{ github.token }}
           path: release
       - uses: actions/download-artifact@v4
@@ -61,3 +73,38 @@ jobs:
           name: tablet-test-evidence
           path: evidence/
           retention-days: 7
+
+  model-over-wifi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 23d691c2001bb6b68b1aba7deaba851b6a2d6072
+          path: release-source
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache: false
+      - name: Generate text over two paired TLS connections
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 https://github.com/ggml-org/llama.cpp/releases/download/b12651/llama-b12651-bin-ubuntu-x64.tar.gz -o "$RUNNER_TEMP/runtime.tar.gz"
+          echo "17b242259181d5b1b1f7719aba27929700a8b0dab39bfaef1b971a992b397b38  $RUNNER_TEMP/runtime.tar.gz" | sha256sum -c
+          mkdir "$RUNNER_TEMP/llama"
+          tar xf "$RUNNER_TEMP/runtime.tar.gz" -C "$RUNNER_TEMP/llama"
+          export POCKETMIND_RPC=$(find "$RUNNER_TEMP/llama" -type f -name '*rpc-server' -print -quit)
+          export POCKETMIND_HOST=$(find "$RUNNER_TEMP/llama" -type f -name llama-server -print -quit)
+          export LD_LIBRARY_PATH="$(dirname "$POCKETMIND_HOST")"
+          export POCKETMIND_MODEL="$RUNNER_TEMP/stories.gguf"
+          curl -fsSL --retry 3 https://huggingface.co/ggml-org/models/resolve/499bc8821c6b12b4e53c5bffcb21ec206f212d81/tinyllamas/stories260K.gguf -o "$POCKETMIND_MODEL"
+          echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $POCKETMIND_MODEL" | sha256sum -c
+          sudo ip addr add 192.168.246.1/32 dev lo
+          sudo ip addr add 192.168.246.2/32 dev lo
+          export POCKETMIND_COMPLETION_TEST="$PWD/tests/wifi/completion.py"
+          export POCKETMIND_WINDOWS_SOURCE="$PWD/release-source/workers/windows"
+          cp tests/wifi/model_linux_test.go release-source/workers/wifi/link/
+          cd release-source/workers/wifi
+          go test -v -race -run TestWifiModelCompletion -timeout 3m ./link
