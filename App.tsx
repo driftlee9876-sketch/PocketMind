@@ -90,6 +90,8 @@ import {
   RemotePCConfig,
 } from './src/multiModelOrchestrator';
 
+const gpuPeer = Platform.OS === 'ios' ? NativeModules.PocketMindMetalPeer : NativeModules.PocketMindWorker;
+
 function formatNowTime(): string {
   try {
     const d = new Date();
@@ -416,9 +418,9 @@ function PocketMindChatGPTScreen() {
   const [gpuCode, setGpuCode] = useState('');
   const [gpuStarting, setGpuStarting] = useState(false);
   useEffect(() => {
-    if (!wiredOpen || Platform.OS !== 'android') return;
+    if (!wiredOpen || !gpuPeer) return;
     let current = true;
-    const refresh = () => NativeModules.PocketMindWorker?.usbGpuPeerStatus?.()
+    const refresh = () => gpuPeer.usbGpuPeerStatus?.()
       ?.then((code: string) => { if (current) setGpuCode(code); }).catch(() => {});
     refresh();
     const timer = setInterval(refresh, 2000);
@@ -427,8 +429,8 @@ function PocketMindChatGPTScreen() {
   const toggleGpuPeer = async () => {
     setGpuStarting(true); setPairIssue('');
     try {
-      if (gpuCode) { await NativeModules.PocketMindWorker.stopUsbGpuPeer(); setGpuCode(''); }
-      else setGpuCode(await NativeModules.PocketMindWorker.startUsbGpuPeer());
+      if (gpuCode) { await gpuPeer.stopUsbGpuPeer(); setGpuCode(''); }
+      else setGpuCode(await gpuPeer.startUsbGpuPeer());
     } catch (error: any) { setPairIssue(error?.message || '이 기기의 GPU를 시작하지 못했어요.'); }
     finally { setGpuStarting(false); }
   };
@@ -1899,11 +1901,11 @@ function PocketMindChatGPTScreen() {
                 <Text style={styles.modelSectionTitle}>기기 및 Worker</Text>
                 <Text style={styles.modelSectionHint}>설치 모델</Text>
               </View>
-              {Platform.OS === 'android' && <TouchableOpacity accessibilityRole="button"
+              {(Platform.OS === 'android' || gpuPeer) && <TouchableOpacity accessibilityRole="button"
                 style={[styles.pickerRow, wiredSession && styles.pickerRowSelected]}
                 onPress={() => { setModelPickerOpen(false); setWiredOpen(true); }}>
                 <View style={{ flex: 1 }}><Text style={styles.pickerModelName}>유선 GPU 연결</Text>
-                  <Text style={styles.pickerModelMeta}>{wiredSession ? `${wiredSession.model} · ${wiredSession.device}` : 'USB로 연결한 Windows PC의 GGUF 모델'}</Text>
+                  <Text style={styles.pickerModelMeta}>{wiredSession ? `${wiredSession.model} · ${wiredSession.device}` : Platform.OS === 'ios' ? 'Windows에 이 기기의 Metal GPU 제공' : 'USB로 연결한 Windows PC의 GGUF 모델'}</Text>
                 </View><Text style={styles.modelRowArrow}>›</Text>
               </TouchableOpacity>}
               {safeCatalog.map((m) => {
@@ -1981,13 +1983,13 @@ function PocketMindChatGPTScreen() {
           </View>
           <ScrollView keyboardShouldPersistTaps="handled">
           <Text style={styles.inputFieldLabel}>모델을 나눠 실행하기 · 실험 기능</Text>
-          <Text style={styles.pluginCardDesc}>{gpuCode ? `PC에 입력할 태블릿 GPU 제공 코드  ${gpuCode}` : '이 태블릿의 GPU도 사용하려면 먼저 GPU 제공을 켜고 코드를 Windows 실행기에 입력하세요. 앱을 화면에서 벗어나면 제공이 끝나요.'}</Text>
+          <Text style={styles.pluginCardDesc}>{gpuCode ? `PC에 입력할 GPU 제공 코드  ${gpuCode}` : '이 기기의 GPU도 사용하려면 먼저 GPU 제공을 켜고 코드를 Windows 실행기에 입력하세요. 앱을 화면에서 벗어나면 제공이 끝나요.'}</Text>
           <TouchableOpacity disabled={gpuStarting} style={styles.sheetSecondaryBtn} onPress={toggleGpuPeer}>
-            <Text style={styles.sheetSecondaryBtnText}>{gpuStarting ? 'GPU 확인 중…' : gpuCode ? '태블릿 GPU 제공 중지' : '태블릿 GPU 제공 시작'}</Text>
+            <Text style={styles.sheetSecondaryBtnText}>{gpuStarting ? 'GPU 확인 중…' : gpuCode ? 'GPU 제공 중지' : 'GPU 제공 시작'}</Text>
           </TouchableOpacity>
-          <Text style={styles.inputFieldLabel}>PC 모델로 대화</Text>
+          {Platform.OS === 'android' && <Text style={styles.inputFieldLabel}>PC 모델로 대화</Text>}
           {Boolean(pairIssue) && <Text style={styles.replyIssueText}>{pairIssue}</Text>}
-          {wiredSession ? <>
+          {Platform.OS === 'ios' ? <Text style={styles.pluginCardDesc}>USB로 Windows에 연결하고 이 컴퓨터를 신뢰하세요. 연산에 참여하는 동안 PocketMind를 화면에 열어 두세요.</Text> : wiredSession ? <>
             <Text style={styles.pluginCardDesc}>{wiredSession.model} · {wiredSession.device}</Text>
             <TouchableOpacity style={styles.sheetSecondaryBtn} onPress={() => { setWiredSession(null); closePairing(); }}>
               <Text style={styles.sheetSecondaryBtnText}>이 기기에서 연결 해제</Text>
@@ -2557,7 +2559,7 @@ function PocketMindChatGPTScreen() {
             </View>
             <ScrollView>
               <Text style={[styles.pluginCardDesc, { marginBottom: 10 }]}>
-              USB 상태: {deviceMetrics?.usbStatus || '확인 중'} · 분산 작업 참여는 각 기기의 앱에서 Worker를 켜고 동일한 Coordinator에 등록해야 합니다. USB 케이블만 연결하면 두 기기의 GPU가 자동으로 합쳐지는 것은 아닙니다.
+              USB 상태: {deviceMetrics?.usbStatus || '확인 중'} · 독립 작업을 받을 기기는 같은 Coordinator에 등록하세요. 하나의 모델을 유선으로 나눠 실행하려면 상단 모델 선택에서 ‘유선 GPU 연결’을 여세요.
             </Text>
             <Text style={styles.inputFieldLabel}>Coordinator 주소</Text>
               <TextInput

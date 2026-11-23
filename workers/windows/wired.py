@@ -17,6 +17,8 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from apple_usb import apple_endpoint
+
 LOOPBACK = "127.0.0.1"
 PAIR_PORT = 18788
 MODEL_PORT = 18789
@@ -142,7 +144,7 @@ def remove_mapping(adb, serial, remote_port, host_port):
         pass
 
 
-def start_host(adb, executable, model, raw_peers, tablet_code, stopped, events):
+def start_host(adb, executable, model, raw_peers, tablet_code, apple_code, iproxy, stopped, events):
     peers = private_peers(raw_peers)
     if tablet_code and not re.fullmatch(r"[0-9]{8}", tablet_code):
         raise ValueError("태블릿에 표시된 GPU 제공 코드 8자리를 입력하세요.")
@@ -164,6 +166,10 @@ def start_host(adb, executable, model, raw_peers, tablet_code, stopped, events):
                     pass
             cleanup.callback(remove_forward)
             peers.append(f"127.0.0.1:{allocated_port}")
+        if apple_code:
+            if not iproxy or not Path(iproxy).is_file():
+                raise ValueError("iPhone용 libusbmuxd의 iproxy.exe를 선택하세요.")
+            peers.append(apple_endpoint(iproxy, apple_code, stopped, cleanup, stop_process))
         args = [executable, "--list-devices"]
         if peers:
             args.extend(["--rpc", ",".join(peers)])
@@ -261,8 +267,18 @@ def main():
     peers = tk.StringVar()
     ttk.Label(form, text="다른 전용 GPU 터널 (선택)").grid(row=4, column=0, sticky="w")
     ttk.Entry(form, textvariable=peers).grid(row=4, column=1, columnspan=2, sticky="ew")
+    apple_code = tk.StringVar()
+    iproxy = tk.StringVar(value=shutil.which("iproxy") or "")
+    ttk.Label(form, text="iPhone·iPad GPU 제공 코드 (선택)").grid(row=5, column=0, sticky="w")
+    ttk.Entry(form, textvariable=apple_code).grid(row=5, column=1, sticky="ew")
+    ttk.Label(form, text="Apple USB · iproxy.exe").grid(row=6, column=0, sticky="w")
+    ttk.Entry(form, textvariable=iproxy).grid(row=6, column=1, sticky="ew")
+    def select_iproxy():
+        path = filedialog.askopenfilename(filetypes=[("iproxy", "iproxy.exe")])
+        if path: iproxy.set(path)
+    ttk.Button(form, text="선택", command=select_iproxy).grid(row=6, column=2)
     status = tk.StringVar(value="Android 기기를 데이터 케이블로 연결하고 USB 디버깅을 허용하세요.")
-    ttk.Label(form, textvariable=status, wraplength=530).grid(row=5, column=0, columnspan=3, sticky="w", pady=15)
+    ttk.Label(form, textvariable=status, wraplength=530).grid(row=7, column=0, columnspan=3, sticky="w", pady=15)
 
     def run():
         nonlocal active, pairing
@@ -277,9 +293,11 @@ def main():
         pairing = None
         peer_list = peers.get()
         selected_tablet_code = tablet_code.get().strip()
+        apple = apple_code.get().strip()
+        proxy_path = iproxy.get().strip()
         def worker():
             try:
-                start_host(*paths, peer_list, selected_tablet_code, stopped, events)
+                start_host(*paths, peer_list, selected_tablet_code, apple, proxy_path, stopped, events)
             except Exception as error:
                 events.put(("error", str(error)))
             finally:
@@ -307,8 +325,8 @@ def main():
         root.after(150, poll)
 
     start = ttk.Button(form, text="USB 연결 시작", command=run)
-    start.grid(row=6, column=0)
-    ttk.Button(form, text="새 연결 코드", command=renew).grid(row=6, column=1)
+    start.grid(row=8, column=0)
+    ttk.Button(form, text="새 연결 코드", command=renew).grid(row=8, column=1)
     root.protocol("WM_DELETE_WINDOW", lambda: (stopped.set(), root.destroy()))
     poll()
     root.mainloop()

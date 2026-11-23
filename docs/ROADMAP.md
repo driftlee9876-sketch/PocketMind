@@ -15,7 +15,8 @@ This roadmap follows the product direction: all planned capabilities, a simple G
 
 ### 1. Chat usability and history
 - [x] Persist recent conversations locally.
-- [x] Show a preview for each conversation.
+- [x] Show a one-line local topic summary in each history button and preserve custom titles.
+- [x] Configure Enter, blank-line sending, text size, device metrics and scrolling.
 - [x] Search conversation titles and previews.
 - [x] Pin important conversations in the sidebar.
 - [x] Add safe conversation rename and delete actions.
@@ -57,6 +58,6 @@ This roadmap follows the product direction: all planned capabilities, a simple G
 
 - The currently deployed Cloudflare Worker is not modified by this roadmap.
 - The existing coordinator architecture routes complete jobs to eligible workers; it does not combine multiple devices' GPU memory or split one model's weights across devices.
-- USB presence alone is not a peer-to-peer inference transport.
+- The wired experiment is separate from the Coordinator. A Windows llama.cpp host can explicitly shard a GGUF onto an authorized Android Vulkan peer and a foreground iOS Metal peer over USB. Actual cross-device performance, driver compatibility and physical installs still require testing.
 - Device temperature availability depends on Android/OEM thermal-zone exposure.
 - A successful CI build is not a substitute for installation and runtime testing on the target Galaxy Tab.
