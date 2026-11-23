@@ -9,6 +9,7 @@ import queue
 import re
 import secrets
 import shutil
+import sys
 import socket
 import subprocess
 import tempfile
@@ -46,7 +47,7 @@ def select_devices(listing, peers):
         name, description = match.groups()
         if name.startswith("RPC"):
             if description.strip() in peers:
-                remote[description.strip()] = name
+                remote.setdefault(description.strip(), name)
         elif re.match(r"^(CUDA|Vulkan|ROCm|HIP|Metal|SYCL|OpenCL|CANN|MUSA)", name, re.I):
             local.append(name)
     if not local or any(peer not in remote for peer in peers):
@@ -54,12 +55,26 @@ def select_devices(listing, peers):
     return [local[0], *(remote[peer] for peer in peers)]
 
 
+def rpc_options(peers):
+    return ["--rpc", ",".join(peers)] if peers else []
+
+
+def allocated_device(line, devices, peers):
+    match = re.search(r"([\w.-]+)(?:\[(127\.0\.0\.1:[0-9]+)\])?\s+model buffer size\s*=\s*([\d.]+)\s+MiB", line, re.I)
+    if not match or float(match[3]) <= 0:
+        return None
+    # Remote buffer names use the index on the peer. Local device names use a global index.
+    if match[2]:
+        return dict(zip(peers, devices[1:])).get(match[2]) if match[1].startswith("RPC") else None
+    return match[1] if match[1] in devices else None
+
+
 def model_command(executable, model, port, key_file, devices, peers):
-    args = [str(executable), "-m", str(model), "--host", LOOPBACK, "--port", str(port),
+    args = [str(executable), *rpc_options(peers), "-m", str(model), "--host", LOOPBACK, "--port", str(port),
             "--api-key-file", str(key_file), "--alias", "pocketmind-wired", "--ctx-size", "4096",
             "--n-gpu-layers", "99", "--device", ",".join(devices)]
     if peers:
-        args.extend(["--rpc", ",".join(peers), "--split-mode", "layer",
+        args.extend(["--split-mode", "layer",
                      "--tensor-split", ",".join(["1"] * len(devices))])
     return args
 
@@ -170,9 +185,7 @@ def start_host(adb, executable, model, raw_peers, tablet_code, apple_code, iprox
             if not iproxy or not Path(iproxy).is_file():
                 raise ValueError("iPhone용 libusbmuxd의 iproxy.exe를 선택하세요.")
             peers.append(apple_endpoint(iproxy, apple_code, stopped, cleanup, stop_process))
-        args = [executable, "--list-devices"]
-        if peers:
-            args.extend(["--rpc", ",".join(peers)])
+        args = [executable, *rpc_options(peers), "--list-devices"]
         devices = select_devices(command(args, timeout=25), peers)
         folder = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="pocketmind-wired-")))
         key_file = folder / "session.key"
@@ -196,10 +209,10 @@ def start_host(adb, executable, model, raw_peers, tablet_code, apple_code, iprox
                 for line in lines:
                     if re.search(r"offloaded\s+[1-9]\d*(?:/\d+)?\s+layers?\s+to GPU", line, re.I):
                         gpu_loaded.set()
-                    match = re.search(r"(\w+)\s+model buffer size\s*=\s*([\d.]+)\s+MiB", line, re.I)
-                    if match and match[1] in devices and float(match[2]) > 0:
+                    device = allocated_device(line, devices, peers)
+                    if device:
                         with allocation_lock:
-                            allocated.add(match[1])
+                            allocated.add(device)
         threading.Thread(target=observe_loading, daemon=True).start()
         deadline = time.monotonic() + 240
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -247,10 +260,16 @@ def main():
     active = None
     pairing = None
     stopped = threading.Event()
+    bundle = Path(sys.executable if getattr(sys, 'frozen', False) else __file__).resolve().parent
+
+    def executable(relative, name):
+        candidate = bundle / relative / name
+        return str(candidate) if candidate.is_file() else shutil.which(name) or ""
+
     for_row = []
     for row, (title, default) in enumerate([
-        ("Android Platform Tools · adb.exe", shutil.which("adb") or ""),
-        ("GPU 지원 llama-server.exe", shutil.which("llama-server") or ""),
+        ("Android Platform Tools · adb.exe", executable("platform-tools", "adb.exe")),
+        ("GPU 지원 llama-server.exe", executable("runtime", "llama-server.exe")),
         ("GGUF 모델", ""),
     ]):
         field = tk.StringVar(value=default)
@@ -268,7 +287,7 @@ def main():
     ttk.Label(form, text="다른 전용 GPU 터널 (선택)").grid(row=4, column=0, sticky="w")
     ttk.Entry(form, textvariable=peers).grid(row=4, column=1, columnspan=2, sticky="ew")
     apple_code = tk.StringVar()
-    iproxy = tk.StringVar(value=shutil.which("iproxy") or "")
+    iproxy = tk.StringVar(value=executable("apple-usb", "iproxy.exe"))
     ttk.Label(form, text="iPhone·iPad GPU 제공 코드 (선택)").grid(row=5, column=0, sticky="w")
     ttk.Entry(form, textvariable=apple_code).grid(row=5, column=1, sticky="ew")
     ttk.Label(form, text="Apple USB · iproxy.exe").grid(row=6, column=0, sticky="w")
