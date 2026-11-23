@@ -70,7 +70,8 @@ def allocated_device(line, devices, peers):
 
 
 def model_command(executable, model, port, key_file, devices, peers):
-    args = [str(executable), *rpc_options(peers), "-m", str(model), "--host", LOOPBACK, "--port", str(port),
+    # Level 4 includes layer and per-device allocation events needed to confirm readiness.
+    args = [str(executable), *rpc_options(peers), "-lv", "4", "-m", str(model), "--host", LOOPBACK, "--port", str(port),
             "--api-key-file", str(key_file), "--alias", "pocketmind-wired", "--ctx-size", "4096",
             "--n-gpu-layers", "99", "--device", ",".join(devices)]
     if peers:

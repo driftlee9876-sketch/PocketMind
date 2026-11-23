@@ -39,10 +39,14 @@ jobs:
           $usage = & ./dist/runtime/llama-server.exe --help 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0 -or $usage -notmatch '--rpc' -or $usage -notmatch '--tensor-split') { throw "Inference runtime failed its startup check" }
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ggml-org/llama.cpp/f5e6915c28f10330885fcb9243a93ae98d3115ab/LICENSE" -OutFile dist/runtime/llama-LICENSE.txt
-      - name: Verify the packaged server over local RPC
+      - name: Verify model sharding and inference on two local CPU-backed RPC peers
         shell: pwsh
         run: |
           $env:POCKETMIND_TEST_LLAMA_RUNTIME = (Resolve-Path dist/runtime).Path
+          $fixture = Join-Path $env:RUNNER_TEMP "stories260K.gguf"
+          Invoke-WebRequest -Uri "https://huggingface.co/ggml-org/models/resolve/499bc8821c6b12b4e53c5bffcb21ec206f212d81/tinyllamas/stories260K.gguf" -OutFile $fixture
+          if ((Get-FileHash -Algorithm SHA256 $fixture).Hash -ne "270CBA1BD5109F42D03350F60406024560464DB173C0E387D91F0426D3BD256D") { throw "Unexpected model fixture" }
+          $env:POCKETMIND_TEST_GGUF = $fixture
           python -m unittest discover -s workers/windows
       - uses: actions/upload-artifact@v4
         with:

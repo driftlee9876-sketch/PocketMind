@@ -1,3 +1,4 @@
+import contextlib
 import http.client
 import json
 import os
@@ -7,7 +8,9 @@ import socket
 import subprocess
 import time
 import secrets
+import tempfile
 import threading
+import urllib.request
 import unittest
 from http.server import ThreadingHTTPServer
 
@@ -44,16 +47,32 @@ class WiredTests(unittest.TestCase):
             self.assertEqual(allocated_device(line, devices, peers), expected)
 
     @unittest.skipUnless(os.getenv("POCKETMIND_TEST_LLAMA_RUNTIME"), "requires packaged Windows runtime")
-    def test_packaged_llama_discovers_a_real_local_rpc_peer(self):
+    def test_packaged_runtime_generates_across_two_loopback_rpc_peers(self):
         runtime = Path(os.environ["POCKETMIND_TEST_LLAMA_RUNTIME"]).resolve()
-        peer_exe = next(path for path in runtime.glob("*rpc-server.exe"))
-        with socket.socket() as reservation:
-            reservation.bind(("127.0.0.1", 0))
-            port = reservation.getsockname()[1]
-        endpoint = "127.0.0.1:" + str(port)
-        with subprocess.Popen([peer_exe, "--host", "127.0.0.1", "--port", str(port), "--device", "CPU"],
-                              cwd=runtime, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as peer:
-            try:
+        model = Path(os.environ["POCKETMIND_TEST_GGUF"]).resolve()
+        peer_exe = next(runtime.glob("*rpc-server.exe"))
+
+        def free_port():
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                return reservation.getsockname()[1]
+
+        def stop(process):
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(4)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(4)
+
+        with tempfile.TemporaryDirectory() as temp, contextlib.ExitStack() as cleanup:
+            endpoints = []
+            for _ in range(2):
+                port = free_port()
+                peer = subprocess.Popen([peer_exe, "--host", "127.0.0.1", "--port", str(port), "--device", "CPU"],
+                                        cwd=runtime, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                cleanup.callback(stop, peer)
                 for _ in range(100):
                     self.assertIsNone(peer.poll(), "Packaged rpc-server stopped")
                     try:
@@ -61,11 +80,45 @@ class WiredTests(unittest.TestCase):
                             break
                     except OSError:
                         time.sleep(0.1)
-                process = subprocess.run([runtime / "llama-server.exe", *rpc_options([endpoint]), "--list-devices"],
-                                         cwd=runtime, capture_output=True, timeout=30, check=True)
-                self.assertIn(("RPC0: " + endpoint).encode(), process.stdout + process.stderr)
-            finally:
-                peer.terminate()
+                endpoints.append("127.0.0.1:" + str(port))
+
+            executable = runtime / "llama-server.exe"
+            devices = ["RPC0", "RPC1"]
+            listing = subprocess.run([executable, *rpc_options(endpoints), "--list-devices"],
+                                     cwd=runtime, capture_output=True, timeout=30, check=True)
+            for name, endpoint in zip(devices, endpoints):
+                self.assertIn((name + ": " + endpoint).encode(), listing.stdout + listing.stderr)
+
+            key_file = Path(temp, "key.txt")
+            token = secrets.token_urlsafe(32)
+            key_file.write_text(token, encoding="ascii")
+            logs = Path(temp, "load.log")
+            log = cleanup.enter_context(logs.open("w", encoding="utf-8"))
+            port = free_port()
+            args = model_command(executable, model, port, key_file, devices, endpoints)
+            host = subprocess.Popen(args, cwd=runtime, stdout=log, stderr=log)
+            cleanup.callback(stop, host)
+            base = "http://127.0.0.1:" + str(port)
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            for _ in range(200):
+                self.assertIsNone(host.poll(), "Packaged inference server stopped")
+                try:
+                    with opener.open(base + "/health", timeout=1) as response:
+                        if json.load(response).get("status") == "ok":
+                            break
+                except OSError:
+                    pass
+                time.sleep(0.1)
+            request = urllib.request.Request(base + "/v1/completions",
+                data=json.dumps({"model": "pocketmind-wired", "prompt": "Once upon a time", "max_tokens": 8}).encode(),
+                headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+            with opener.open(request, timeout=30) as response:
+                result = json.load(response)
+            self.assertGreater(result["usage"]["completion_tokens"], 0)
+            self.assertTrue(result["choices"][0]["text"].strip())
+            lines = logs.read_text(encoding="utf-8", errors="replace").splitlines()
+            allocations = {allocated_device(line, ["host", *devices], endpoints) for line in lines}
+            self.assertTrue(set(devices).issubset(allocations), "Each peer must contain a nonzero model allocation")
 
     def test_pairing_is_one_time_and_attempt_limited(self):
         pair = Pairing(secrets.token_urlsafe(32), "model", ["Vulkan0"])
