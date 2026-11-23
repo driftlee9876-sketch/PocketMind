@@ -64,6 +64,18 @@ try:
     if d.window_size()[0] < d.window_size()[1]:
         adb('shell','wm','user-rotation','lock','1')
     wait(lambda: d.window_size()[0] > d.window_size()[1])
+    # Establish a real stored conversation using the previous release, then
+    # install the new APK over it, without clearing app storage.
+    send('최근 메일 보여줘')
+    setup_message = '연결 앱에서 Coordinator 주소와 API 토큰을 설정해 주세요.'
+    wait(lambda: label(setup_message))
+    d.app_stop(pkg)
+    assert 'Success' in adb('install','-r','release/app-release.apk')
+    launch()
+    wait(lambda: label(setup_message))
+    print('Signed in-place APK update preserved existing chat',flush=True)
+    tap('✎')
+    wait(lambda: label('무엇을 도와드릴까요?'))
     snap('01-home')
     field().click()
     wait(lambda: ime() or bool(re.search(r'type=ime .*?visible=true',adb('shell','dumpsys','window','displays'),re.I)))
@@ -115,23 +127,12 @@ try:
     join=wait(lambda: label('두 GPU로 모델 열기'))
     assert not scan.info['enabled'] and not join.info['enabled'], 'Model-less tablet should not start inference'
     tap('이 기기의 GPU 제공하기')
-    def donor_result():
-        if label('GPU 제공 중지'):
-            return 'offer'
-        # Match the standalone diagnostic. A Windows instruction elsewhere in
-        # the sheet also mentions USB debugging and must never satisfy this check.
-        for text in ['데이터 케이블을 연결하고 USB 디버깅을 켜 주세요.',
-                     'USB 테더링 또는 유선 이더넷 한 개를 연결한 뒤 다시 눌러 주세요.',
-                     'Vulkan GPU를 시작하지 못했어요. 기기 드라이버와 USB 상태를 확인하세요.']:
-            if d(text=text).exists:
-                return text
-        return None
-    state=wait(donor_result,55)
-    print('GPU offer attempt on emulator:',state,flush=True)
-    if state == 'offer':
-        tap('GPU 제공 중지')
-    else:
-        snap('06-gpu-diagnostic')
+    message = 'USB 테더링 또는 유선 이더넷을 연결한 뒤 다시 눌러 주세요.'
+    wait(lambda: d(text=message).exists, 55)
+    assert not d(text='데이터 케이블을 연결하고 USB 디버깅을 켜 주세요.').exists
+    assert not label('GPU 제공 중지')
+    snap('06-gpu-diagnostic')
+    print('Tablet-specific cable diagnostic passed',flush=True)
     assert d.app_current()['package']==pkg
     print('GPU panel and missing-model guards passed',flush=True)
 except Exception:
