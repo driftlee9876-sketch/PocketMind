@@ -32,6 +32,7 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
   ReactContextBaseJavaModule(context) {
 
   private val keyAlias = "PocketMindWorkerAesKey"
+  private val chatGPTPlan by lazy { ChatGPTPlanClient(context, ::encryptSecret, ::decryptSecret) }
   @Volatile private var previousCpuSample: Pair<Long, Long>? = null
 
   private fun readCpuUsagePercent(): Double? {
@@ -85,6 +86,46 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
   }
 
   override fun getName(): String = "PocketMindWorker"
+
+  @ReactMethod
+  fun getChatGPTStatus(promise: Promise) {
+    try { promise.resolve(chatGPTPlan.status().toString()) }
+    catch (error: Exception) { promise.reject("CHATGPT_STATUS", error) }
+  }
+
+  @ReactMethod
+  fun beginChatGPTLogin(promise: Promise) {
+    try { promise.resolve(chatGPTPlan.startLogin()) }
+    catch (error: Exception) { promise.reject("CHATGPT_LOGIN", error) }
+  }
+
+  @ReactMethod
+  fun disconnectChatGPT(promise: Promise) {
+    try { chatGPTPlan.signOut(); promise.resolve(true) }
+    catch (error: Exception) { promise.reject("CHATGPT_DISCONNECT", error) }
+  }
+
+  @ReactMethod
+  fun listChatGPTModels(promise: Promise) {
+    Thread {
+      try { promise.resolve(chatGPTPlan.models().toString()) }
+      catch (error: Exception) { promise.reject("CHATGPT_MODELS", error) }
+    }.start()
+  }
+
+  @ReactMethod
+  fun runChatGPT(model: String, messagesJson: String, promise: Promise) {
+    Thread {
+      try { promise.resolve(chatGPTPlan.chat(model, org.json.JSONArray(messagesJson))) }
+      catch (error: Exception) { promise.reject("CHATGPT_RESPONSE", error) }
+    }.start()
+  }
+
+  @ReactMethod
+  fun stopChatGPT(promise: Promise) {
+    chatGPTPlan.cancel()
+    promise.resolve(true)
+  }
 
   private fun getOrCreateKey(): SecretKey {
     val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

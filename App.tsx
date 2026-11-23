@@ -64,6 +64,15 @@ import {
 } from './src/chatHistory';
 import type { CoordinatorWorker } from './src/distributedCoordinatorClient';
 import {
+  beginChatGPTPlanLogin,
+  chatWithChatGPTPlan,
+  disconnectChatGPTPlan,
+  getChatGPTPlanModels,
+  getChatGPTPlanStatus,
+  stopChatGPTPlan,
+} from './src/chatGPTPlan';
+import type { ChatGPTPlanModel, ChatGPTPlanStatus } from './src/chatGPTPlan';
+import {
   multiModelOrchestrator,
   PipelineStepResult,
   RemotePCConfig,
@@ -335,6 +344,11 @@ function PocketMindChatGPTScreen() {
   // 설치된 모델 및 기본 선택 모델
   const [installedModelIds, setInstalledModelIds] = useState<string[]>([]);
   const [primaryModelId, setPrimaryModelId] = useState<string>('qwen2.5-0.5b-abliterated');
+  const [useChatGPTPlan, setUseChatGPTPlan] = useState(false);
+  const [chatGPTModelId, setChatGPTModelId] = useState('');
+  const [chatGPTModels, setChatGPTModels] = useState<ChatGPTPlanModel[]>([]);
+  const [chatGPTStatus, setChatGPTStatus] = useState<ChatGPTPlanStatus>({ connected: false, pending: false, email: '', error: '' });
+  const [chatGPTPreferenceReady, setChatGPTPreferenceReady] = useState(false);
   const [autoMultiModel, setAutoMultiModel] = useState<boolean>(true);
   const [downloadingMap, setDownloadingMap] = useState<Record<string, number>>({});
 
@@ -353,6 +367,7 @@ function PocketMindChatGPTScreen() {
   // 모달 & 사이드바 상태
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [chatGPTSettingsOpen, setChatGPTSettingsOpen] = useState(false);
   const [modelStoreOpen, setModelStoreOpen] = useState(false);
   const [pluginStoreOpen, setPluginStoreOpen] = useState(false);
   const [quickPlusOpen, setQuickPlusOpen] = useState(false);
@@ -454,6 +469,46 @@ function PocketMindChatGPTScreen() {
       multiModelOrchestrator.releaseAll().catch(() => {});
     };
   }, []);
+
+  const refreshChatGPTPlan = useCallback(async () => {
+    try {
+      const status = await getChatGPTPlanStatus();
+      setChatGPTStatus(status);
+      if (status.connected) {
+        const catalog = await getChatGPTPlanModels();
+        setChatGPTModels(catalog);
+        setChatGPTModelId(previous => catalog.some(item => item.id === previous) ? previous : catalog[0]?.id || '');
+      }
+    } catch (error: any) {
+      setChatGPTStatus({ connected: false, pending: false, email: '', error: error?.message || '연결 상태 확인 실패' });
+    }
+  }, []);
+
+  useEffect(() => { refreshChatGPTPlan(); }, [refreshChatGPTPlan]);
+
+  useEffect(() => {
+    if (!chatGPTStatus.pending) return;
+    const timer = setInterval(refreshChatGPTPlan, 2000);
+    return () => clearInterval(timer);
+  }, [chatGPTStatus.pending, refreshChatGPTPlan]);
+
+  useEffect(() => {
+    Promise.all([
+      AsyncStorage.getItem('pocketmind.chatgpt-selected.v1'),
+      AsyncStorage.getItem('pocketmind.chatgpt-model.v1'),
+    ]).then(values => {
+      setUseChatGPTPlan(values[0] === 'true');
+      if (values[1]) setChatGPTModelId(values[1]);
+    }).catch(() => {}).finally(() => setChatGPTPreferenceReady(true));
+  }, []);
+
+  useEffect(() => {
+    if (!chatGPTPreferenceReady) return;
+    Promise.all([
+      AsyncStorage.setItem('pocketmind.chatgpt-selected.v1', String(useChatGPTPlan)),
+      AsyncStorage.setItem('pocketmind.chatgpt-model.v1', chatGPTModelId),
+    ]).catch(() => {});
+  }, [chatGPTPreferenceReady, useChatGPTPlan, chatGPTModelId]);
 
   useEffect(() => {
     let mounted = true;
@@ -735,6 +790,13 @@ function PocketMindChatGPTScreen() {
   }, []);
 
   const ensureGenerationAvailable = useCallback((prompt: string): boolean => {
+    if (useChatGPTPlan) {
+      if (chatGPTStatus.connected && chatGPTModelId) return true;
+      Alert.alert('ChatGPT 연결 필요', 'ChatGPT 계정에 연결하고 사용 가능한 모델을 선택하세요.', [
+        { text: '설정 열기', onPress: () => setChatGPTSettingsOpen(true) },
+      ]);
+      return false;
+    }
     const hasLocal = installedModelIds.length > 0;
     const hasPC = remotePC.enabled && remotePC.serverUrl.trim().length > 0;
     const isPurePluginCommand = /^\/[a-z0-9-]+(\s|$)/i.test(prompt);
@@ -747,7 +809,7 @@ function PocketMindChatGPTScreen() {
       return false;
     }
     return true;
-  }, [installedModelIds.length, remotePC.enabled, remotePC.serverUrl]);
+  }, [installedModelIds.length, remotePC.enabled, remotePC.serverUrl, useChatGPTPlan, chatGPTStatus.connected, chatGPTModelId]);
 
   const runAssistantGeneration = useCallback(async (prompt: string) => {
     if (!prompt.trim() || isGenerating || !ensureGenerationAvailable(prompt)) return;
@@ -760,6 +822,19 @@ function PocketMindChatGPTScreen() {
     setStreamingText('');
 
     try {
+      if (useChatGPTPlan) {
+        setLiveStatus('ChatGPT 플랜으로 응답 생성 중...');
+        const result = await chatWithChatGPTPlan(
+          chatGPTModelId,
+          messages.map(message => ({ role: message.role, content: message.text })),
+          prompt,
+        );
+        if (controller.signal.aborted) return;
+        updateActiveSessionMessages(previous => [...previous, {
+          id: `a-${Date.now()}`, role: 'assistant', text: result, timestamp: formatNowTime(),
+        }]);
+        return;
+      }
       const response = await multiModelOrchestrator.executeAutonomousPipeline({
         userPrompt: prompt,
         installedModelIds,
@@ -810,6 +885,9 @@ function PocketMindChatGPTScreen() {
     ensureGenerationAvailable,
     installedModelIds,
     isGenerating,
+    messages,
+    chatGPTModelId,
+    useChatGPTPlan,
     primaryModelId,
     remotePC,
     updateActiveSessionMessages,
@@ -866,13 +944,14 @@ function PocketMindChatGPTScreen() {
 
   const handleStopGeneration = useCallback(() => {
     generationAbortRef.current?.abort();
+    if (useChatGPTPlan) stopChatGPTPlan().catch(() => {});
     generationAbortRef.current = null;
     multiModelOrchestrator.cancelActive().catch(() => {});
     setIsGenerating(false);
     setLiveStatus('');
     setStreamingText('');
     showToast('답변 생성을 중지했습니다.');
-  }, [showToast]);
+  }, [showToast, useChatGPTPlan]);
 
   const togglePlugin = (pluginId: string) => {
     setEnabledPluginIds((prev) =>
@@ -1136,6 +1215,9 @@ function PocketMindChatGPTScreen() {
 
   const activeModelSpec =
     safeCatalog.find((m) => m.id === primaryModelId) || safeCatalog[0];
+  const activeModelLabel = useChatGPTPlan
+    ? (chatGPTModels.find(model => model.id === chatGPTModelId)?.name || 'ChatGPT 연결 필요')
+    : (activeModelSpec?.shortName || '모델 선택');
 
   const filteredPlugins = useMemo(() => safePlugins.filter((p) => {
     const matchCat = pluginCategory === '전체' || p.category === pluginCategory;
@@ -1202,7 +1284,7 @@ function PocketMindChatGPTScreen() {
         >
           <Text style={styles.modelPillBrand}>PocketMind</Text>
           <Text style={styles.modelPillName} numberOfLines={1}>
-            {activeModelSpec ? activeModelSpec.shortName : '모델 선택'} ▾
+            {activeModelLabel} ▾
           </Text>
         </TouchableOpacity>
 
@@ -1604,9 +1686,35 @@ function PocketMindChatGPTScreen() {
             </View>
 
             <ScrollView style={{ maxHeight: 360 }}>
+              <Text style={styles.inputFieldLabel}>ChatGPT 계정 · 기기에서 모델 실행 안 함</Text>
+              {chatGPTStatus.connected ? chatGPTModels.map(model => (
+                <TouchableOpacity
+                  key={model.id}
+                  style={[styles.pickerRow, useChatGPTPlan && chatGPTModelId === model.id && styles.pickerRowSelected]}
+                  onPress={() => {
+                    setChatGPTModelId(model.id);
+                    setUseChatGPTPlan(true);
+                    setModelPickerOpen(false);
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.pickerModelName}>{model.name}</Text>
+                    <Text style={styles.pickerModelMeta}>내 ChatGPT 플랜 사용 · 다운로드 불필요</Text>
+                  </View>
+                  <Text style={styles.pickerCheck}>{useChatGPTPlan && chatGPTModelId === model.id ? '✓' : ''}</Text>
+                </TouchableOpacity>
+              )) : (
+                <TouchableOpacity style={styles.pickerRow} onPress={() => {
+                  setModelPickerOpen(false);
+                  setChatGPTSettingsOpen(true);
+                }}>
+                  <Text style={styles.pickerModelName}>ChatGPT 계정 연결하기</Text>
+                </TouchableOpacity>
+              )}
+              <Text style={styles.inputFieldLabel}>온디바이스·Worker 모델</Text>
               {safeCatalog.map((m) => {
                 const isInstalled = installedModelIds.includes(m.id);
-                const isSelected = primaryModelId === m.id;
+                const isSelected = !useChatGPTPlan && primaryModelId === m.id;
                 return (
                   <TouchableOpacity
                     key={m.id}
@@ -1614,6 +1722,7 @@ function PocketMindChatGPTScreen() {
                     onPress={() => {
                       if (isInstalled || remotePC.enabled) {
                         setPrimaryModelId(m.id);
+                        setUseChatGPTPlan(false);
                         setModelPickerOpen(false);
                       } else {
                         setModelPickerOpen(false);
@@ -1646,6 +1755,16 @@ function PocketMindChatGPTScreen() {
             </ScrollView>
 
             <TouchableOpacity
+              style={styles.integrationSecondaryButton}
+              onPress={() => {
+                setModelPickerOpen(false);
+                setChatGPTSettingsOpen(true);
+              }}
+            >
+              <Text style={styles.integrationSecondaryButtonText}>ChatGPT 계정 관리</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
               style={styles.sheetPrimaryBtn}
               onPress={() => {
                 setModelPickerOpen(false);
@@ -1653,6 +1772,55 @@ function PocketMindChatGPTScreen() {
               }}
             >
               <Text style={styles.sheetPrimaryBtnText}>+ 모델 다운로드 관리 열기</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={chatGPTSettingsOpen} transparent animationType="slide">
+        <View style={styles.bottomSheetOverlay}>
+          <View style={styles.bottomSheetCard}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>ChatGPT 계정</Text>
+              <TouchableOpacity onPress={() => setChatGPTSettingsOpen(false)}>
+                <Text style={styles.sheetClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.pluginCardDesc}>
+              {chatGPTStatus.connected
+                ? `연결됨: ${chatGPTStatus.email || 'ChatGPT 계정'} · 내 ChatGPT 플랜 사용`
+                : chatGPTStatus.pending ? '브라우저에서 로그인 완료를 기다리는 중...' : chatGPTStatus.error || 'ChatGPT 계정으로 로그인하면 사용 가능한 모델을 불러옵니다.'}
+            </Text>
+            {!chatGPTStatus.connected && !chatGPTStatus.pending && (
+              <TouchableOpacity style={styles.sheetPrimaryBtn} onPress={async () => {
+                try {
+                  const url = await beginChatGPTPlanLogin();
+                  await refreshChatGPTPlan();
+                  await Linking.openURL(url);
+                } catch (error: any) {
+                  Alert.alert('ChatGPT 로그인 실패', error?.message || '브라우저를 열 수 없습니다.');
+                }
+              }}>
+                <Text style={styles.sheetPrimaryBtnText}>ChatGPT 계정으로 로그인</Text>
+              </TouchableOpacity>
+            )}
+            {chatGPTStatus.connected && (
+              <TouchableOpacity style={styles.sheetPrimaryBtn} onPress={() => {
+                Alert.alert('연결 해제', '이 기기의 ChatGPT 로그인 정보를 지울까요?', [
+                  { text: '취소', style: 'cancel' },
+                  { text: '연결 해제', style: 'destructive', onPress: async () => {
+                    await disconnectChatGPTPlan();
+                    setUseChatGPTPlan(false);
+                    setChatGPTModels([]);
+                    await refreshChatGPTPlan();
+                  } },
+                ]);
+              }}>
+                <Text style={styles.sheetPrimaryBtnText}>연결 해제</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.integrationSecondaryButton} onPress={refreshChatGPTPlan}>
+              <Text style={styles.integrationSecondaryButtonText}>연결 상태 새로고침</Text>
             </TouchableOpacity>
           </View>
         </View>
