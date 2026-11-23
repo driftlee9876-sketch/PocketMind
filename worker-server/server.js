@@ -363,7 +363,8 @@ function googleAuthorizationUrl(integrationId) {
     scope: ['openid', 'email', ...integration.scopes.map(scope => `https://www.googleapis.com/auth/${scope}`)].join(' '),
     access_type: 'offline',
     prompt: 'consent',
-    include_granted_scopes: 'true',
+    // A previous YouTube grant cannot be combined with Drive's drive.file scope.
+    include_granted_scopes: 'false',
     state: nonce,
   }).toString();
   return url.toString();

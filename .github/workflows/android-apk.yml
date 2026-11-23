@@ -9,7 +9,7 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 100
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -173,8 +173,9 @@ jobs:
           python3 - <<'PYTHON'
           from zipfile import ZipFile
           with ZipFile('android/app/build/outputs/apk/release/app-release.apk') as apk:
-              with apk.open('lib/arm64-v8a/libpocketmind_usb_gpu.so') as peer:
-                  header = peer.read(20)
+              for binary in ['libpocketmind_usb_gpu.so', 'libpocketmind_tablet_host.so']:
+                  with apk.open('lib/arm64-v8a/' + binary) as peer:
+                      header = peer.read(20)
                   assert header[:4] == bytes.fromhex('7f454c46') and int.from_bytes(header[18:20], 'little') == 183
               assert apk.getinfo('assets/licenses/llama.cpp.txt').file_size > 0
           PYTHON

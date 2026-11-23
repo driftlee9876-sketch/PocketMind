@@ -223,6 +223,15 @@ test('built-in Google OAuth exposes secure one-tap authorization flows', { timeo
   assert.equal(sheetsUrl.searchParams.get('redirect_uri'), 'https://pocketmind.example/v1/oauth/google/callback');
   assert.match(sheetsUrl.searchParams.get('scope'), /spreadsheets/);
 
+  for (const [id, own, other] of [['google-drive', 'drive.file', 'youtube.force-ssl'], ['youtube', 'youtube.force-ssl', 'drive.file']]) {
+    const response = await authenticated('/v1/integrations/' + id + '/connect', 'POST');
+    const url = new URL((await response.json()).authorizationUrl);
+    const scopes = url.searchParams.get('scope').split(' ');
+    assert.equal(url.searchParams.get('include_granted_scopes'), 'false');
+    assert.ok(scopes.includes('https://www.googleapis.com/auth/' + own));
+    assert.ok(!scopes.includes('https://www.googleapis.com/auth/' + other));
+  }
+
   const invalidCallback = await fetch(baseUrl + '/v1/oauth/google/callback?state=invalid&code=unused');
   assert.equal(invalidCallback.status, 400);
   assert.match(await invalidCallback.text(), /Google 연결 실패/);

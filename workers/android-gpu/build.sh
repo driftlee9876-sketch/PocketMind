@@ -17,12 +17,13 @@ cmake -S "$vendor" -B "$stage" -G Ninja \
   "-DVulkan_GLSLC_EXECUTABLE=$(command -v glslc)" \
   "-DVulkan_INCLUDE_DIR=$root/build/pocketmind-vulkan/include" \
   "-DSPIRV-Headers_DIR=$(dirname "$spirv_config")" "-DGGML_VULKAN_SPIRV_INCLUDE_DIR=$stage-headers/include" \
-  -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_CURL=OFF \
+  -DLLAMA_BUILD_SERVER=ON -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_CURL=OFF \
   -DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384
-cmake --build "$stage" --target ggml-rpc-server --parallel 3
+cmake --build "$stage" --target ggml-rpc-server llama-server --parallel 3
 out="$root/android/app/build/wired/jniLibs/arm64-v8a"
 mkdir -p "$out"
 cp "$stage/bin/ggml-rpc-server" "$out/libpocketmind_usb_gpu.so"
-"$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" "$out/libpocketmind_usb_gpu.so"
+cp "$stage/bin/llama-server" "$out/libpocketmind_tablet_host.so"
+"$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" "$out/libpocketmind_usb_gpu.so" "$out/libpocketmind_tablet_host.so"
 mkdir -p "$root/android/app/build/wired/assets/licenses"
 cp "$vendor/LICENSE" "$root/android/app/build/wired/assets/licenses/llama.cpp.txt"
