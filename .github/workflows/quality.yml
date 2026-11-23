@@ -57,6 +57,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Install JavaScript dependencies
         run: npm install --legacy-peer-deps
+      - name: Test the tablet GPU socket transport
+        run: |
+          g++ -std=c++17 -I workers/android-gpu android/app/src/test/cpp/usb_transport_test.cpp -o "$RUNNER_TEMP/test-tablet-sockets"
+          "$RUNNER_TEMP/test-tablet-sockets"
       - name: Compile Android Kotlin and test response streams
         run: |
           chmod +x android/gradlew

@@ -151,7 +151,10 @@ internal class TabletCable : Closeable {
         val ctx = pinnedContext(fields[3])
         val name = "pocketmind_host_" + randomKey()
         val listener = LocalServerSocket(name)
-        own(Closeable { listener.close() })
+        own(Closeable {
+            runCatching { android.system.Os.shutdown(listener.fileDescriptor, android.system.OsConstants.SHUT_RDWR) }
+            listener.close()
+        })
         serve({ listener.accept() }) { accepted ->
             val local = accepted as LocalSocket
             if (local.peerCredentials.uid != android.os.Process.myUid()) return@serve
