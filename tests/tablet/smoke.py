@@ -51,15 +51,21 @@ def launch():
 
 try:
     # Use the original release APK with a tablet-sized screen and the stock IME.
-    adb('shell','wm','size','1600x2560')
+    adb('shell','settings','put','secure','immersive_mode_confirmations','confirmed')
+    adb('shell','wm','size','2560x1600')
     adb('shell','wm','density','240')
     adb('shell','settings','put','system','accelerometer_rotation','0')
-    adb('shell','settings','put','system','user_rotation','1')
+    adb('shell','wm','user-rotation','lock','0')
     adb('shell','settings','put','secure','show_ime_with_hard_keyboard','1')
     launch()
+    if d(textMatches='(?i)got it').exists(timeout=2):
+        d(textMatches='(?i)got it').click()
+    if d.window_size()[0] < d.window_size()[1]:
+        adb('shell','wm','user-rotation','lock','1')
+    wait(lambda: d.window_size()[0] > d.window_size()[1])
     snap('01-home')
     field().click()
-    wait(ime)
+    wait(lambda: ime() or bool(re.search(r'type=ime .*?visible=true',adb('shell','dumpsys','window','displays'),re.I)))
     time.sleep(1)
     snap('02-keyboard')
     for part in ['displays','windows']:
@@ -105,6 +111,8 @@ try:
     print('GPU panel and missing-model guards passed',flush=True)
 except Exception:
     snap('failure')
+    for name, args in [('ime',['input_method']),('displays',['window','displays'])]:
+        (out/('failed-'+name+'.txt')).write_text(adb('shell','dumpsys',*args))
     (out/'logcat.txt').write_text(adb('logcat','-d','-t','1200'))
     traceback.print_exc()
     raise
