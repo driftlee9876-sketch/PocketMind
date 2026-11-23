@@ -29,7 +29,8 @@ def label(text):
 def tap(text):
     wait(lambda: label(text)).click()
 def snap(name):
-    d.screenshot(str(out/(name+'.png')))
+    with (out/(name+'.png')).open('wb') as screen:
+        subprocess.run(['adb','exec-out','screencap','-p'],stdout=screen,check=True)
     (out/(name+'.xml')).write_text(d.dump_hierarchy())
 def ime():
     return bool(re.search(r'(?:mInputShown|inputShown)=true', adb('shell','dumpsys','input_method')))
@@ -67,7 +68,7 @@ try:
     field().click()
     wait(lambda: ime() or bool(re.search(r'type=ime .*?visible=true',adb('shell','dumpsys','window','displays'),re.I)))
     time.sleep(1)
-    snap('02-keyboard')
+    wait(lambda: not label('CPU 온도') and not label('Gmail에서 받은 메일 확인'))
     for part in ['displays','windows']:
         (out/('window-'+part+'.txt')).write_text(adb('shell','dumpsys','window',part))
     dumps=(out/'window-displays.txt').read_text()
@@ -79,6 +80,12 @@ try:
     viewport=field().info['bounds']
     print('IME frames',frames,'composer',viewport,flush=True)
     assert frames and viewport['bottom'] <= min(frames) + 2, 'Keyboard overlaps composer or missing visible IME frame'
+    button=wait(lambda: label('메시지 보내기')).info['bounds']
+    assert button['bottom'] <= min(frames) + 2
+    time.sleep(1)
+    snap('02-keyboard')
+    assert ime() and not label('CPU 온도')
+    print('Keyboard stable, send button bounds:',button,flush=True)
     hide()
     # The chat command opens the app catalog without a configured AI model.
     send('@Google Drive')
@@ -107,6 +114,20 @@ try:
     scan=wait(lambda: label('보조 기기 QR 스캔'))
     join=wait(lambda: label('두 GPU로 모델 열기'))
     assert not scan.info['enabled'] and not join.info['enabled'], 'Model-less tablet should not start inference'
+    tap('이 기기의 GPU 제공하기')
+    def donor_result():
+        if label('GPU 제공 중지'):
+            return 'offer'
+        for text in ['USB 디버깅','유선 이더넷 한 개','Vulkan GPU를 시작하지','Android 9 이상','데이터 케이블을 연결','error=8','error=13','유선 GPU가 포함된','GPU를 시작하지 못했어요']:
+            if label(text):
+                return text
+        return None
+    state=wait(donor_result,55)
+    print('GPU offer attempt on emulator:',state,flush=True)
+    if state == 'offer':
+        tap('GPU 제공 중지')
+    else:
+        snap('06-gpu-diagnostic')
     assert d.app_current()['package']==pkg
     print('GPU panel and missing-model guards passed',flush=True)
 except Exception:
