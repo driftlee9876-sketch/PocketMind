@@ -172,10 +172,22 @@ jobs:
         run: |
           python3 - <<'PYTHON'
           from zipfile import ZipFile
+          from pathlib import Path
+          import re
+          import subprocess
+          import tempfile
+          android_libraries = {'libc.so', 'libm.so', 'libdl.so', 'libvulkan.so', 'liblog.so', 'libandroid.so', 'libz.so'}
           with ZipFile('android/app/build/outputs/apk/release/app-release.apk') as apk:
               for binary in ['libpocketmind_usb_gpu.so', 'libpocketmind_tablet_host.so']:
                   with apk.open('lib/arm64-v8a/' + binary) as peer:
-                      header = peer.read(20)
+                      contents = peer.read()
+                      header = contents[:20]
+                  with tempfile.TemporaryDirectory() as directory:
+                      executable = Path(directory) / binary
+                      executable.write_bytes(contents)
+                      dynamic = subprocess.check_output(['readelf', '-d', executable], text=True)
+                      extra = set(re.findall(r'Shared library: \[(.*?)\]', dynamic)) - android_libraries
+                      assert not extra, (binary, 'Unbundled runtime dependencies', extra)
                   assert header[:4] == bytes.fromhex('7f454c46') and int.from_bytes(header[18:20], 'little') == 183
               assert apk.getinfo('assets/licenses/llama.cpp.txt').file_size > 0
           PYTHON

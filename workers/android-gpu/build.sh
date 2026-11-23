@@ -13,7 +13,7 @@ cmake -S "$vendor" -B "$stage" -G Ninja \
   "-DCMAKE_TOOLCHAIN_FILE=$ndk/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 -DANDROID_STL=c++_static \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_BACKEND_DL=OFF \
-  -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF -DGGML_VULKAN=ON -DGGML_NATIVE=OFF \
+  -DGGML_OPENMP=OFF -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF -DGGML_VULKAN=ON -DGGML_NATIVE=OFF \
   "-DVulkan_GLSLC_EXECUTABLE=$(command -v glslc)" \
   "-DVulkan_INCLUDE_DIR=$root/build/pocketmind-vulkan/include" \
   "-DSPIRV-Headers_DIR=$(dirname "$spirv_config")" "-DGGML_VULKAN_SPIRV_INCLUDE_DIR=$stage-headers/include" \
