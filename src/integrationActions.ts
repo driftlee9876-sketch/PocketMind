@@ -189,3 +189,10 @@ export async function rejectIntegrationAction(
     'POST', {},
   );
 }
+
+export async function issuePersonalKey(endpoint:string,adminKey:string) {
+  if (!/^https:\/\//i.test(endpoint)) throw Error('개인 키 발급에는 HTTPS 주소가 필요해요.');
+  const data=await call<{token:string}>(baseUrl(endpoint),adminKey,'/v1/accounts','POST',{});
+  if(!/^pm_[A-Za-z0-9_-]{43}$/.test(data.token))throw Error('개인 키를 발급하지 못했어요.');
+  return data.token;
+}

@@ -14,7 +14,7 @@ const initial:Status = {peers:[],trusted:[],offering:false};
 async function command(op:string,args:object={}):Promise<Status> {
   return JSON.parse(await native.wifiGpu(JSON.stringify({op,...args})));
 }
-type Props={visible:boolean;reset:number;filename?:string;session:WiredSession|null;onSession:(v:WiredSession|null)=>void;onMode:(v:boolean)=>void;onClose:()=>void};
+type Props={running:boolean;visible:boolean;reset:number;filename?:string;session:WiredSession|null;onSession:(v:WiredSession|null)=>void;onMode:(v:boolean)=>void;onClose:()=>void};
 export function WifiGpuPanel(props:Props) {
   const [state,setState]=useState<Status>(initial);
   const [pref,setPref]=useState<Preference|null>(null);
@@ -80,7 +80,7 @@ export function WifiGpuPanel(props:Props) {
         setState(s);
         for(const peer of s.peers) names.current[peer.ID]=peer.name;
         const target=preference.current;
-        if(target && !s.offering && !current.current.session && !loading.current && target.ids.every(id=>s.trusted.includes(id) && s.peers.some(p=>p.ID===id)) && Date.now()>=nextTry.current){
+        if(target && !current.current.running && !s.offering && !current.current.session && !loading.current && target.ids.every(id=>s.trusted.includes(id) && s.peers.some(p=>p.ID===id)) && Date.now()>=nextTry.current){
           const epoch=generation.current;loading.current=true;setBusy(`보조 GPU ${target.ids.length}대에 모델을 나눠 올리는 중…`);
           try{
             const previous=await savedComparison(target.filename,target.ids);
@@ -173,13 +173,14 @@ export function WifiGpuPanel(props:Props) {
         {!pref && selected.length>0 && button(`선택한 ${selected.length}/20대로 대화 · 자동 재연결`,()=>{
           if(props.filename)remember({ids:[...selected],filename:props.filename});
         },!props.filename||!!busy||!!props.session||!selected.every(id=>state.trusted.includes(id)&&state.peers.some(p=>p.ID===id)))}
-        {!pref && !!selected.length && button('탭 단독과 속도 비교',benchmark,!props.filename||!!busy||!!props.session)}
+        {!pref && !!selected.length && button('탭 단독과 속도 비교',benchmark,props.running||!props.filename||!!busy||!!props.session)}
         {report && <View style={s.group}>{report.samples.map(row=><Text key={row.label} style={s.detail}>{row.label} · 준비 {(row.loadMs/1000).toFixed(1)}초 · 첫 토큰 {(row.firstMs/1000).toFixed(2)}초 · {row.rate>0 ? row.rate.toFixed(1)+' tok/s' : '속도 미제공'}</Text>)}
           {report.unavailable.map(value=><Text key={value} style={s.detail}>{value}</Text>)}
           {!!report.samples.some(row=>row.rate>0 && row.label!=='탭 단독') && <Text style={s.detail}>선택된 분배 · {report.policy==='equal'?'균등':'여유 메모리 기준'}</Text>}</View>}
-        {pref && !props.session && missing.length>0 && <View style={s.group}>
-          <Text style={s.detail}>다시 연결 대기 · {missing.map(id=>names.current[id] || id.slice(0,8)).join(', ')}</Text>
-          {button('현재 연결된 기기로 계속',()=>{const ids=pref.ids.filter(id=>!missing.includes(id));setSelected(ids);remember({...pref,ids});},missing.length===pref.ids.length||!!busy)}
+        {pref && !props.session && pref.ids.length>0 && <View style={s.group}>
+          <Text style={s.detail}>{missing.length?'다시 연결 대기 · '+missing.map(id=>names.current[id] || id.slice(0,8)).join(', '):'선택한 기기의 응답을 기다리는 중…'}</Text>
+          {pref.ids.length>1 && pref.ids.map(id=>button((names.current[id]||id.slice(0,8))+' 제외',()=>{const ids=pref.ids.filter(peer=>peer!==id);setSelected(ids);remember({...pref,ids});},!!busy))}
+          {button('현재 연결된 기기로 계속',()=>{const ids=pref.ids.filter(id=>!missing.includes(id));setSelected(ids);remember({...pref,ids});},!missing.length||missing.length===pref.ids.length||!!busy)}
           {button('탭 단독으로 전환',()=>{remember({...pref,ids:[]});setSelected([]);},!!busy)}
         </View>}
         {!pref && selected.length>0 && button('선택 초기화',()=>setSelected([]),!!busy)}

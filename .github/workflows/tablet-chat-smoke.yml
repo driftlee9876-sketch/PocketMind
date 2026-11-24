@@ -1,0 +1,48 @@
+name: Verify tablet chat in the packaged APK
+on:
+  push:
+    branches: [feat/pocketmind-chat-upgrade]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  tablet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find the APK from this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in {1..110}; do
+            info=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/android-apk.yml/runs?head_sha=$GITHUB_SHA&event=push" --jq '.workflow_runs[0] | [.id,.status,.conclusion] | @tsv')
+            read -r id status result <<< "$info"
+            if [[ "$status" == "completed" ]]; then
+              test "$result" = success
+              echo "APK_RUN=$id" >> "$GITHUB_ENV"
+              break
+            fi
+            sleep 30
+          done
+          test "$status" = completed
+      - uses: actions/download-artifact@v4
+        with:
+          name: PocketMind-GalaxyTab-Test-APK
+          run-id: ${{ env.APK_RUN }}
+          github-token: ${{ github.token }}
+          path: apk
+      - run: |
+          sudo chmod a+rw /dev/kvm
+          python -m pip install uiautomator2==3.2.10
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_c
+          ram-size: 4096M
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: |
+            adb install -r apk/app-release.apk
+            python tests/chat/tablet_smoke.py

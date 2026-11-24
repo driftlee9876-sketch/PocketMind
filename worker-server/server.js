@@ -153,6 +153,8 @@ const state = { workers: {}, tasks: {}, actions: {}, oauthConnections: {}, oauth
 const storage = stateStorage(DATA_FILE, process.env.DATABASE_URL);
 const ownerContext = new AsyncLocalStorage();
 const owner = () => ownerContext.getStore() || 'legacy';
+const keyOwners = new Map();
+const keyDigest = token => crypto.createHash('sha256').update(token).digest('hex');
 const userTokens = Object.entries(JSON.parse(process.env.POCKETMIND_USER_TOKENS_JSON || '{}'));
 for (const [id, token] of userTokens) {
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id) || ['legacy','constructor','__proto__','prototype'].includes(id) ||
@@ -166,7 +168,7 @@ function personal() {
 }
 function requestOwner(req) {
   const token = bearer(req);
-  if (token) return userTokens.find(entry => tokenMatches(token, entry[1]))?.[0] || 'legacy';
+  if (token) return keyOwners.get(keyDigest(token)) || 'legacy';
   const url = new URL(req.url, 'http://localhost');
   if (/^\/v1\/oauth\/(google|github|microsoft)\/callback$/.test(url.pathname)) {
     const nonce = url.searchParams.get('state');
@@ -213,7 +215,8 @@ function bearer(req) {
 }
 
 function authenticateApi(req) {
-  return owner() !== 'legacy' || tokenMatches(bearer(req), API_TOKEN);
+  const token = bearer(req);
+  return tokenMatches(token, API_TOKEN) || (owner() !== 'legacy' && keyOwners.get(keyDigest(token)) === owner());
 }
 
 function authenticateEnrollment(req) {
@@ -483,6 +486,7 @@ async function handleGoogleCallback(url, res) {
     return html(res, 409, `${integration.label} 연결 실패`, 'Google이 새로고침 토큰을 보내지 않았습니다. 계정 접근 권한을 해제한 뒤 다시 연결해 주세요.');
   }
   personal().oauthConnections[pending.integrationId] = {
+    generation: crypto.randomUUID(),
     refreshToken: encryptSecret(token.refresh_token),
     accessToken: encryptSecret(token.access_token),
     accessTokenExpiresAt: Date.now() + Math.max(60, Number(token.expires_in || 3600)) * 1000,
@@ -818,6 +822,8 @@ async function dispatchBuiltinGoogleAction(action) {
 async function dispatchIntegrationAction(action) {
   if (builtinGoogle(action.integrationId) || builtinDirect(action.integrationId)) {
     try {
+      if (builtinGoogle(action.integrationId) && action.accountGeneration !== personal().oauthConnections[action.integrationId]?.generation)
+        throw Error('연결한 계정이 바뀌었어요. 새 작업을 요청하세요.');
       const result = builtinDirect(action.integrationId) ? await direct.run(action) : await dispatchBuiltinGoogleAction(action);
       action.status = 'completed';
       action.result = action.action === 'read_content' ? JSON.stringify(result) : JSON.stringify(result).slice(0, 20_000);
@@ -1027,6 +1033,17 @@ async function handle(req, res) {
     return json(res, 200, { status: 'ok', service: 'pocketmind-worker-coordinator', version: 1, now: Date.now() });
   }
 
+  if (req.method === 'POST' && url.pathname === '/v1/accounts') {
+    if (!tokenMatches(bearer(req), API_TOKEN)) return json(res,403,{error:'관리자 키가 필요합니다.'});
+    if (Object.keys(state.accounts).length >= 1000) return json(res,409,{error:'계정 한도에 도달했어요.'});
+    const id = crypto.randomUUID();
+    const token = 'pm_' + crypto.randomBytes(32).toString('base64url');
+    const keyHash = keyDigest(token);
+    state.accounts[id] = {keyHash, oauthConnections:{}, oauthStates:{}, actions:{}};
+    await persist();
+    keyOwners.set(keyHash,id);
+    return json(res,201,{id,token});
+  }
   if (req.method === 'GET' && parts.length === 4 && parts[0] === 'v1' && parts[1] === 'oauth' &&
       ['microsoft', 'github'].includes(parts[2]) && parts[3] === 'callback') {
     try {
@@ -1282,7 +1299,7 @@ async function handle(req, res) {
     const action = {
       actionId: crypto.randomUUID(),
       viaHub,
-      accountGeneration: provider ? personal().oauthConnections[body.integrationId]?.generation : undefined,
+      accountGeneration: provider || google ? personal().oauthConnections[body.integrationId]?.generation : undefined,
       integrationId: body.integrationId,
       action: body.action,
       risk: body.risk,
@@ -1406,6 +1423,10 @@ async function handle(req, res) {
 
 async function main() {
   await load();
+  for (const [id,token] of userTokens) keyOwners.set(keyDigest(token),id);
+  for (const [id,record] of Object.entries(state.accounts)) {
+    if (record.keyHash) keyOwners.set(record.keyHash,id);
+  }
   const server = http.createServer((req, res) => {
     Promise.resolve().then(() => ownerContext.run(requestOwner(req), () => handle(req, res))).catch(error => {
       console.error('Request failed:', error.message);
@@ -1413,7 +1434,7 @@ async function main() {
       else res.destroy();
     });
   });
-  server.listen(PORT, HOST, () => console.log(`PocketMind coordinator listening on ${HOST}:${PORT}`));
+  server.listen(PORT, HOST, () => console.log(`PocketMind coordinator listening on ${HOST}:${server.address().port}`));
   const shutdown = async () => {
     server.close();
     await saveChain;

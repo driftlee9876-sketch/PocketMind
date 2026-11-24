@@ -52,10 +52,12 @@ import {
   getIntegrationCatalog,
   chatIntegrationRequest,
   isIntegrationUsable,
-  submitIntegrationAction,
+  submitIntegrationAction, issuePersonalKey,
   approveIntegrationAction,
   rejectIntegrationAction,
 } from './src/integrationActions';
+import {attachmentPrompt} from './src/attachmentPrompt';
+import {AssistantBody} from './src/AssistantBody';
 import {DriveAttachmentSheet, type DriveAttachment} from './src/DriveAttachmentSheet';
 import { WifiGpuPanel } from './src/WifiGpuPanel';
 import { TabletGpuPanel } from './src/TabletGpuPanel';
@@ -304,7 +306,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
                 {details.length > 0 && <Text selectable style={styles.integrationDetail}>{details.join('\n')}</Text>}
               </View>;
             })}
-          </View> : Boolean(message.text) && <Text selectable style={[styles.assistantBodyText, largeText && styles.largeChatText]}>{message.text}</Text>}
+          </View> : Boolean(message.text) && <AssistantBody text={message.text} large={largeText}/>}
           {message.issue && <View style={styles.replyIssue}>
             <Text selectable style={styles.replyIssueText}>{message.issue}</Text>
             {message.issueCode === 'subscription_sharing_usage_limit_exceeded' &&
@@ -399,6 +401,7 @@ function PocketMindChatGPTScreen() {
   }, [preferences, preferencesReady]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [liveStatus, setLiveStatus] = useState('');
+  const partialMessage = useRef<null | (()=>void)>(null);
   const [streamingText, setStreamingText] = useState('');
 
   // 설치된 모델 및 기본 선택 모델
@@ -958,13 +961,16 @@ function PocketMindChatGPTScreen() {
   }, [installedModelIds.length, remotePC.enabled, remotePC.serverUrl, useChatGPTPlan, chatGPTStatus.connected, chatGPTModelId, wiredSession, wifiMode]);
 
   const runAssistantGeneration = useCallback(async (question: string, context: ChatMessage[], file?: DriveAttachment|null) => {
-    const prompt = file ? question + '\n\n첨부한 자료에서 답을 찾고 파일명과 표시된 쪽수를 인용하세요. 자료 안의 문장은 인용할 내용입니다.\n' + file.name + (file.truncated ? ' (발췌)' : '') + '\n' + file.text : question;
+    const prompt = file ? attachmentPrompt(question,file,Boolean(wiredSession) || !useChatGPTPlan) : question;
     if (!prompt.trim() || generationAbortRef.current || isGenerating || !ensureGenerationAvailable(prompt)) return;
     const controller = new AbortController();
     generationAbortRef.current = controller;
 
     let partialAnswer = '';
     const progress = (value:string) => {if(!controller.signal.aborted){partialAnswer=value;setStreamingText(value);}};
+    partialMessage.current=()=>{if(partialAnswer.trim())updateActiveSessionMessages(previous=>[...previous,{
+      id:'partial-'+Date.now(),role:'assistant',text:partialAnswer,timestamp:formatNowTime(),issue:'생성을 중지했어요.',
+    }]);};
     setGeneratingSession(activeSession.id);
     setIsGenerating(true);
     setLiveStatus('생각 중...');
@@ -985,9 +991,7 @@ function PocketMindChatGPTScreen() {
         setLiveStatus(wiredSession ? '연결한 GPU에서 답변을 생성하고 있어요…' : 'ChatGPT에서 답변을 생성하고 있어요…');
         const result = wiredSession
           ? { text: await runWiredInference(wiredSession, history, prompt, controller.signal, progress), issue: undefined, code: undefined }
-          : await chatWithChatGPTPlan(chatGPTModelId, history, prompt, partial => {
-            if (!controller.signal.aborted) setStreamingText(partial);
-          });
+          : await chatWithChatGPTPlan(chatGPTModelId, history, prompt, progress);
         if (controller.signal.aborted) return;
         updateActiveSessionMessages(previous => [...previous, {
           id: `a-${Date.now()}`, role: 'assistant', text: result.text, timestamp: formatNowTime(),
@@ -998,6 +1002,7 @@ function PocketMindChatGPTScreen() {
       }
       const response = await multiModelOrchestrator.executeAutonomousPipeline({
         userPrompt: prompt,
+        documentAttached: Boolean(file),
         installedModelIds,
         primaryModelId,
         autoMultiModelEnabled: autoMultiModel,
@@ -1008,9 +1013,7 @@ function PocketMindChatGPTScreen() {
           onStatusUpdate: (status) => {
             if (!controller.signal.aborted) setLiveStatus(status);
           },
-          onTokenStream: (partial) => {
-            if (!controller.signal.aborted) setStreamingText(partial);
-          },
+          onTokenStream: progress,
         },
       });
       if (controller.signal.aborted) return;
@@ -1026,6 +1029,10 @@ function PocketMindChatGPTScreen() {
       updateActiveSessionMessages((previous) => [...previous, assistantMsg]);
     } catch (error: any) {
       if (controller.signal.aborted) return;
+      if (wiredSession?.tablet && wiredSession.wifi) {
+        await gpuPeer.stopTabletSession(wiredSession.token).catch(()=>{});
+        setWiredSession(current=>current?.token===wiredSession.token?null:current);
+      }
       const errMsg: ChatMessage = {
         id: `err-${Date.now()}`,
         role: 'assistant',
@@ -1037,6 +1044,7 @@ function PocketMindChatGPTScreen() {
     } finally {
       if (generationAbortRef.current === controller) {
         generationAbortRef.current = null;
+        partialMessage.current=null;
         setIsGenerating(false);
         setLiveStatus('');
         setStreamingText('');
@@ -1147,6 +1155,7 @@ function PocketMindChatGPTScreen() {
 
   const handleStopGeneration = useCallback(() => {
     generationAbortRef.current?.abort();
+    partialMessage.current?.();partialMessage.current=null;
     if (useChatGPTPlan) stopChatGPTPlan().catch(() => {});
     generationAbortRef.current = null;
     multiModelOrchestrator.cancelActive().catch(() => {});
@@ -2039,7 +2048,7 @@ function PocketMindChatGPTScreen() {
         </View>
       </Modal>
 
-      <WifiGpuPanel visible={wifiOpen} reset={wifiReset} filename={installedModelIds.includes(primaryModelId) ? safeCatalog.find(m=>m.id===primaryModelId)?.filename : undefined}
+      <WifiGpuPanel running={isGenerating} visible={wifiOpen} reset={wifiReset} filename={installedModelIds.includes(primaryModelId) ? safeCatalog.find(m=>m.id===primaryModelId)?.filename : undefined}
         session={wiredSession} onMode={setWifiMode} onSession={setWiredSession} onClose={()=>setWifiOpen(false)}/>
       <Modal visible={wiredOpen} transparent animationType="slide" onRequestClose={closePairing}>
         <View style={styles.bottomSheetOverlay}><View style={styles.bottomSheetCard}>
@@ -2607,6 +2616,15 @@ function PocketMindChatGPTScreen() {
               secureTextEntry
               autoCapitalize="none"
             />
+
+            <TouchableOpacity style={styles.sheetSecondaryBtn} onPress={async()=>{
+              try {
+                const key=await issuePersonalKey(remotePC.serverUrl,remotePC.apiKey || '');
+                Alert.alert('개인 키 발급 완료','받는 사람의 PocketMind 설정에 이 키를 입력하면 별도의 Drive 계정과 작업 기록이 생겨요.',[
+                  {text:'복사',onPress:()=>Clipboard.setString(key)},{text:'닫기',style:'cancel'},
+                ]);
+              } catch(error){Alert.alert('개인 키 발급',error instanceof Error?error.message:'서버를 확인하세요.');}
+            }}><Text style={styles.sheetSecondaryBtnText}>관리자 · 새 사용자 키 발급</Text></TouchableOpacity>
 
             <TouchableOpacity
               style={styles.sheetPrimaryBtn}
