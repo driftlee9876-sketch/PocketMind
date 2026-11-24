@@ -1,5 +1,7 @@
 """Download selected model weights. Media inference uses bundled local executables."""
-import ctypes
+import time
+import wave
+from array import array
 import hashlib
 import json
 import os
@@ -60,8 +62,43 @@ def download(base, model, cancelled, status):
     (directory/"ready").write_text(model["revision"],encoding="ascii")
 
 
+class Microphone:
+    def __init__(self):
+        import sounddevice
+        self.pcm = bytearray()
+        self.last_voice = None
+        self.voiced = 0
+        self.stream = sounddevice.RawInputStream(samplerate=16000, channels=1, dtype="int16",
+                                                blocksize=1600, callback=self.capture)
+        self.started = time.monotonic()
+        try:
+            self.stream.start()
+        except Exception:
+            self.stream.close()
+            raise
+
+    def capture(self, data, frames, when, status):
+        chunk = bytes(data)
+        if len(self.pcm) < 960000:
+            self.pcm.extend(chunk[:960000 - len(self.pcm)])
+        samples = array("h", chunk)
+        if samples and sum(v*v for v in samples) / len(samples) > (32768 * 10**(-42/20))**2:
+            self.last_voice = time.monotonic()
+            self.voiced += 1
+
+    def close(self, destination=None):
+        try:
+            self.stream.stop()
+        finally:
+            self.stream.close()
+        if destination is not None:
+            with wave.open(str(destination), "wb") as output:
+                output.setparams((1, 2, 16000, 0, "NONE", ""))
+                output.writeframes(self.pcm)
+
+
 def speak(text):
-    command="[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()"
+    command="[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $voice=$s.GetInstalledVoices() | Where-Object {$_.Enabled -and $_.VoiceInfo.Culture.TwoLetterISOLanguageName -eq 'ko'} | Select-Object -First 1; if($voice){$s.SelectVoice($voice.VoiceInfo.Name)}; $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()"
     p=subprocess.Popen(["powershell.exe","-NoProfile","-NonInteractive","-Command",command],stdin=subprocess.PIPE,creationflags=FLAGS)
     threading.Thread(target=lambda:p.communicate(text.encode("utf-8")),daemon=True).start()
     return p
@@ -101,7 +138,14 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
         prompt.pack(fill="x")
     state=tk.StringVar()
     ttk.Label(frame,textvariable=state,wraplength=420).pack(fill="x",pady=6)
-    busy=recording=closing=False
+    continuous=tk.BooleanVar(value=False)
+    toggle=None
+    if kind=="voice":
+        toggle=ttk.Checkbutton(frame,text="연속 대화",variable=continuous)
+        toggle.pack(anchor="w")
+    busy=recording=closing=answering=False
+    microphone=None
+    stop_reply=None
     child=None
     wav=None
     alias="pm"+uuid.uuid4().hex
@@ -128,11 +172,6 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
             return
         work(lambda: shutil.rmtree(model_folder(base / "media-models", model)))
 
-    def mic(command):
-        code=ctypes.windll.winmm.mciSendStringW(command,None,0,None)
-        if code:
-            raise OSError("Windows 마이크를 열 수 없어요. 입력 장치와 권한을 확인하세요.")
-
     def work(fn):
         nonlocal busy
         busy=True
@@ -147,8 +186,8 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
         threading.Thread(target=run,daemon=True).start()
 
     def run():
-        nonlocal child,recording,wav
-        if busy:
+        nonlocal child,recording,wav,microphone
+        if busy or answering:
             return
         model=models[selection.current()]
         directory=model_folder(base/"media-models",model)
@@ -180,25 +219,20 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
             work(draw)
         elif not recording:
             try:
-                mic("open new type waveaudio alias "+alias)
-                mic(f"set {alias} time format milliseconds bitspersample 16 samplespersec 16000 channels 1 alignment 2 bytespersec 32000")
-                mic(f"record {alias}")
+                microphone=Microphone()
                 recording=True
-                state.set("듣고 있어요. 다 말하면 눌러서 보내세요.")
-                window.after(29500,lambda: run() if recording and not closing else None)
+                state.set("듣고 있어요. 말이 끝나면 보내요." if continuous.get() else "듣고 있어요. 다 말하면 눌러서 보내세요.")
             except Exception as e:
-                ctypes.windll.winmm.mciSendStringW("close "+alias,None,0,None)
-                state.set(str(e))
+                state.set("마이크를 시작하지 못했어요. " + str(e))
         else:
             recording=False
             try:
                 wav=Path(tempfile.gettempdir())/(alias+".wav")
-                mic("stop "+alias)
-                mic(f'save {alias} "{wav}"')
+                microphone.close(wav)
             except Exception as e:
                 state.set(str(e));return
             finally:
-                ctypes.windll.winmm.mciSendStringW("close "+alias,None,0,None)
+                microphone=None
             def recognize():
                 nonlocal child
                 try:
@@ -213,12 +247,48 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
                     wav.unlink(missing_ok=True);Path(str(wav)+".txt").unlink(missing_ok=True)
             work(recognize)
 
-    def close():
+    def cleanup():
         nonlocal closing
+        if closing:return
         closing=True;cancelled.set()
         if child and child.poll() is None:child.terminate()
-        if recording:ctypes.windll.winmm.mciSendStringW("close "+alias,None,0,None)
-        window.destroy()
+        try:
+            if microphone is not None:microphone.close()
+        finally:
+            if stop_reply:stop_reply()
+
+    def close():
+        try:cleanup()
+        finally:window.destroy()
+    window.bind("<Destroy>",lambda event: cleanup() if event.widget is window else None)
+
+    def reply(text):
+        nonlocal child,answering,stop_reply
+        stop_reply=None
+        if closing:return
+        if not text:
+            answering=False
+            state.set("답변을 생성하지 못했어요.")
+            return
+        state.set(text)
+        try:
+            child=speak(text)
+        except OSError as e:
+            answering=False
+            state.set(str(e))
+            return
+        def finished():
+            nonlocal answering
+            if closing:return
+            if child.poll() is None:
+                window.after(100,finished)
+            else:
+                answering=False
+                if child.returncode:
+                    state.set("기기 음성 출력을 확인해 주세요.")
+                elif continuous.get():
+                    run()
+        window.after(100,finished)
 
     action=ttk.Button(frame,command=run)
     action.pack(fill="x")
@@ -226,7 +296,7 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
     delete.pack(fill="x")
     ttk.Button(frame,text="닫기",command=close).pack(fill="x")
     def poll():
-        nonlocal busy
+        nonlocal busy,answering,stop_reply,recording,microphone
         if closing:return
         while not events.empty():
             op,value=events.get_nowait()
@@ -234,14 +304,27 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
                 busy=False
                 readiness.clear()
             elif op=="image":on_image(*value);close();return
-            elif op=="voice":on_voice(value);close();return
+            elif op=="voice":
+                answering=True
+                state.set(value+" · 답변 생성 중…")
+                stop_reply=on_voice(value,reply)
             else:state.set(value)
-        selection.configure(state="disabled" if busy or recording else "readonly")
+        if recording:
+            elapsed=time.monotonic()-microphone.started
+            spoken=microphone.voiced>=2
+            if continuous.get() and not spoken and elapsed>=29:
+                microphone.close();microphone=None;recording=False
+                state.set("들린 음성이 없어 마이크를 껐어요.")
+            elif elapsed>=29.5 or (continuous.get() and spoken and time.monotonic()-microphone.last_voice>=1.2):
+                run()
+        locked=busy or answering or recording
+        if toggle:toggle.configure(state="disabled" if locked else "normal")
+        selection.configure(state="disabled" if locked else "readonly")
         model=models[selection.current()]
         available = ready(model)
-        delete.configure(state="normal" if available and not busy and not recording else "disabled")
+        delete.configure(state="normal" if available and not locked else "disabled")
         label="선택한 모델 다운로드" if not available else "이미지 생성" if kind=="image" else "녹음 종료하고 보내기" if recording else "말하기"
-        action.configure(text=label,state="disabled" if busy else "normal")
+        action.configure(text=label,state="disabled" if busy or answering else "normal")
         window.after(120,poll)
     window.protocol("WM_DELETE_WINDOW",close)
     poll()

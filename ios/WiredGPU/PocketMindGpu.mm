@@ -449,9 +449,14 @@ RCT_EXPORT_METHOD(startVoiceRecording:(RCTPromiseResolveBlock)resolve rejecter:(
     NSURL *url=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".wav"]]];
     if(![audio setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker error:&error] || ![audio setActive:YES error:&error]){reject(@"MIC",error.localizedDescription,error);return;}
     _recorder=[[AVAudioRecorder alloc] initWithURL:url settings:@{AVFormatIDKey:@(kAudioFormatLinearPCM),AVSampleRateKey:@16000,AVNumberOfChannelsKey:@1,AVLinearPCMBitDepthKey:@16,AVLinearPCMIsFloatKey:@NO,AVLinearPCMIsBigEndianKey:@NO} error:&error];
+    _recorder.meteringEnabled = YES;
     if(![_recorder recordForDuration:30]){[self clearVoice];reject(@"MIC",@"녹음을 시작하지 못했어요.",error);return;}
     resolve(@YES);
   });}];
+}
+RCT_EXPORT_METHOD(voiceLevel:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  [_recorder updateMeters];
+  resolve(_recorder ? @([_recorder averagePowerForChannel:0]) : @(-120));
 }
 RCT_EXPORT_METHOD(finishVoiceRecording:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   if(!_recorder){reject(@"MIC",@"녹음 중이 아니에요.",nil);return;}

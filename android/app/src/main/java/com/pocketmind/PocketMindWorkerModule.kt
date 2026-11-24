@@ -33,6 +33,7 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
 
   private val chatVoice=ChatVoice(context)
   @ReactMethod fun startVoiceRecording(promise:Promise){chatVoice.start(promise)}
+  @ReactMethod fun voiceLevel(promise:Promise){promise.resolve(chatVoice.decibels)}
   @ReactMethod fun finishVoiceRecording(promise:Promise){chatVoice.finish(promise)}
   @ReactMethod fun speakReply(text:String,promise:Promise){chatVoice.speak(text,promise)}
   @ReactMethod fun cancelVoice(promise:Promise){chatVoice.cancel();promise.resolve(true)}

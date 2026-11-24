@@ -17,6 +17,8 @@ import java.util.Locale
 internal class ChatVoice(private val context:ReactApplicationContext):LifecycleEventListener {
     private val main=Handler(Looper.getMainLooper())
     @Volatile private var recording=false
+    @Volatile var decibels = -120.0
+        private set
     private var worker:Thread?=null
     private var samples=ByteArrayOutputStream()
     private var captureError:String?=null
@@ -31,12 +33,19 @@ internal class ChatVoice(private val context:ReactApplicationContext):LifecycleE
             val size=maxOf(4096,AudioRecord.getMinBufferSize(16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT))
             val mic=AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,size)
             try{check(mic.state==AudioRecord.STATE_INITIALIZED);mic.startRecording()}catch(e:Exception){mic.release();throw e}
-            samples=ByteArrayOutputStream();captureError=null;recording=true
+            samples=ByteArrayOutputStream();captureError=null;decibels = -120.0;recording=true
             worker=Thread {
                 val buffer=ByteArray(size)
                 try{while(recording && samples.size()<16000*2*30){
                     val n=mic.read(buffer,0,minOf(size,960000-samples.size()))
-                    if(n<=0)error("마이크에서 음성을 읽지 못했어요.");samples.write(buffer,0,n)
+                    if(n<=0)error("마이크에서 음성을 읽지 못했어요.")
+                    var energy = 0.0
+                    for (i in 0 until (n - 1) step 2) {
+                        val value = ((buffer[i].toInt() and 255) or (buffer[i+1].toInt() shl 8)).toShort().toDouble() / 32768.0
+                        energy += value * value
+                    }
+                    decibels = 10.0 * kotlin.math.log10(maxOf(1e-12, energy / maxOf(n/2, 1)))
+                    samples.write(buffer,0,n)
                 }}catch(e:Exception){captureError=e.message}finally{runCatching{mic.stop()};mic.release()}
             }.also{it.start()};p.resolve(true)
         }catch(e:Exception){p.reject("VOICE",e)}

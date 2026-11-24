@@ -63,8 +63,8 @@ class DesktopChat:
         import tkinter as tk
         from tkinter import ttk
         self.bundle=bundle
-        self.speaker=None
         self.voice_task=None
+        self.voice_result=None
         self.photos=[]
         self.session = session
         self.status = status
@@ -179,16 +179,26 @@ class DesktopChat:
     def media(self,kind):
         from desktop_media import open_media
         if self.task:return
-        if self.speaker and self.speaker.poll() is None:self.speaker.terminate()
         if kind=="voice" and not self.session():
             self.status.set("음성 답변에 사용할 모델을 GPU 연결 설정에서 시작하세요.")
             return
         def image(prompt,path):
             self.current["messages"].extend([{"role":"user","content":prompt},{"role":"assistant","content":"","image":path.name}])
             self.save();self.render()
-        def voice(text):
+        def voice(text, result):
             self.prompt.delete("1.0","end");self.prompt.insert("1.0",text);self.submit()
+            if not self.task:
+                result("")
+                return lambda: None
             self.voice_task=self.task
+            self.voice_result=result
+            task=self.task
+            def cancel():
+                if self.voice_task is task:
+                    self.voice_result=None
+                    self.voice_task=None
+                    task.stop()
+            return cancel
         try:open_media(self.frame,self.bundle,self.path.parent,kind,image,voice)
         except (OSError,ValueError) as e:self.status.set(str(e))
 
@@ -251,9 +261,9 @@ class DesktopChat:
             elif kind=="end":
                 if self.voice_task is task:
                     self.voice_task=None
-                    if self.reply["content"] and not task.cancelled.is_set():
-                        from desktop_media import speak
-                        self.speaker=speak(self.reply["content"])
+                    result,self.voice_result=self.voice_result,None
+                    if result:
+                        result(self.reply["content"] if not task.cancelled.is_set() else "")
                 if not self.reply["content"]:
                     self.owner["messages"].pop()
                 self.task=self.owner=self.reply=None
@@ -265,7 +275,6 @@ class DesktopChat:
 
     def close(self):
         self.closed=True
-        if self.speaker and self.speaker.poll() is None:self.speaker.terminate()
         if self.task:
             self.task.stop()
         self.current["draft"]=self.prompt.get("1.0","end-1c")

@@ -4,6 +4,7 @@ import FS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {fromByteArray} from 'base64-js';
 import {mediaModels,mediaDir,byteSize,installed,install,type MediaModel} from './store';
+import {detectTurnEnd} from './endOfSpeech';
 import {generateImage} from './diffusion';
 
 interface VoiceContext { transcribe(path:string,options:{language:string}):{stop:()=>Promise<void>;promise:Promise<{result:string}>};release():Promise<void> }
@@ -24,8 +25,13 @@ export function MediaSheet(props:Props){
   const model=list.find(m=>m.id===id)||list[0];
   const selectedKey='pocketmind.media.'+props.kind;
   const choiceMade=useRef(false);
+  const [continuous,setContinuous]=useState(false);
+  const currentProps=useRef(props);
+  currentProps.current=props;
+  const nextTurn=useRef<ReturnType<typeof setTimeout>|null>(null);
   const refresh=async()=>{const states=await Promise.all(list.map(installed));if(alive.current)setReady(list.filter((_,i)=>states[i]).map(m=>m.id));};
   function cancel(){
+    if(nextTurn.current)clearTimeout(nextTurn.current);
     task.current?.abort();
     if(finishTimer.current)clearTimeout(finishTimer.current);
     if(mic.current){mic.current=false;setRecording(false);task.current=null;setBusy(false);}
@@ -68,7 +74,7 @@ export function MediaSheet(props:Props){
   async function finish(){
     const ctl=task.current;if(!ctl||!mic.current)return;
     mic.current=false;setRecording(false);if(finishTimer.current)clearTimeout(finishTimer.current);
-    let wav='';let context:VoiceContext|undefined;
+    let wav='';let context:VoiceContext|undefined;let anotherTurn=false;
     try{
       wav=await native().finishVoiceRecording();
       update(ctl,'음성을 글로 바꾸는 중…');
@@ -80,13 +86,17 @@ export function MediaSheet(props:Props){
       await context.release();context=undefined;
       if(ctl.signal.aborted)return;if(!text)throw Error('인식된 음성이 없어요.');
       setHeard(text);update(ctl,'답변 생성 중…');asking.current=true;
-      const answer=await props.ask(text);asking.current=false;
+      const answer=await currentProps.current.ask(text);asking.current=false;
       if(ctl.signal.aborted)return;
       if(!answer){update(ctl,'답변할 채팅 모델을 선택하고 다시 시도해 주세요.');return;}
       setReply(answer);update(ctl,'답변을 읽는 중…');await native().speakReply(answer);
-      update(ctl,'이어서 말할 수 있어요.');
+      update(ctl,'이어서 말할 수 있어요.');anotherTurn=continuous;
     }catch(e){update(ctl,e instanceof Error?e.message:'음성 대화를 진행하지 못했어요.');}
-    finally{asking.current=false;transcribeStop.current=null;if(context)await context.release().catch(()=>{});if(wav)await FS.unlink(wav).catch(()=>{});end(ctl);}
+    finally{asking.current=false;transcribeStop.current=null;if(context)await context.release().catch(()=>{});if(wav)await FS.unlink(wav).catch(()=>{});end(ctl);
+      if(anotherTurn && alive.current && !ctl.signal.aborted)nextTurn.current=setTimeout(()=>{
+        if(alive.current && !ctl.signal.aborted && AppState.currentState==='active')void record();
+      },250);
+    }
   }
   async function record(){
     const ctl=start();if(!ctl)return;
@@ -96,7 +106,21 @@ export function MediaSheet(props:Props){
       await native().startVoiceRecording();
       if(ctl.signal.aborted){await native().cancelVoice();end(ctl);return;}
       mic.current=true;setRecording(true);setHeard('');setReply('');update(ctl,'듣고 있어요. 다 말하면 눌러서 보내세요.');
-      finishTimer.current=setTimeout(()=>void finish(),29500);
+      if(!continuous){finishTimer.current=setTimeout(()=>void finish(),29500);return;}
+      update(ctl,'듣고 있어요. 말이 끝나면 자동으로 보내요.');
+      const detect=detectTurnEnd(),started=Date.now();
+      const poll=async()=>{
+        if(!mic.current || ctl.signal.aborted)return;
+        try{
+          const level=await native().voiceLevel();
+          if(!mic.current || ctl.signal.aborted)return;
+          const next=detect(level,Date.now()-started);
+          if(next==='send'){void finish();return;}
+          if(next==='empty'){cancel();setStatus('들린 음성이 없어 마이크를 껐어요.');return;}
+          finishTimer.current=setTimeout(()=>void poll(),150);
+        }catch{if(mic.current && !ctl.signal.aborted){cancel();setStatus('마이크를 확인하고 다시 시작해 주세요.');}}
+      };
+      void poll();
     }catch(e){update(ctl,e instanceof Error?e.message:'녹음 실패');end(ctl);}
   }
   function remove(){Alert.alert('다운로드한 모델 삭제',model.name,[{text:'취소'},{text:'삭제',onPress:async()=>{
@@ -110,7 +134,7 @@ export function MediaSheet(props:Props){
       {model.id==='sd15' && <Text style={s.hint}>고용량 모델이에요. 실행에 필요한 메모리가 부족하면 SDXS를 선택하세요.</Text>}
       {!ready.includes(id)?<Button label="선택한 모델 다운로드" act={download} disabled={busy}/>:<>
         {props.kind==='image'?<><TextInput multiline style={s.input} editable={!busy} placeholder="만들고 싶은 이미지를 영어로 설명하세요" placeholderTextColor="#aaa" value={prompt} onChangeText={setPrompt}/><Button label="이미지 생성" act={draw} disabled={busy||!prompt.trim()}/></>:
-          <><Text style={s.hint}>한국어 음성을 선택한 모델로 인식하고, 현재 채팅 모델의 답변을 기기 음성으로 읽어요.</Text><Button label={recording?'녹음 종료하고 보내기':'말하기'} act={recording?finish:record} disabled={busy&&!recording}/></>}
+          <><Button disabled={busy} label={continuous?'연속 대화 켜짐':'연속 대화 꺼짐'} act={()=>{if(nextTurn.current)clearTimeout(nextTurn.current);setContinuous(!continuous);}}/><Text style={s.hint}>한국어 음성을 선택한 모델로 인식하고, 현재 채팅 모델의 답변을 기기 음성으로 읽어요.</Text><Button label={recording?'녹음 종료하고 보내기':'말하기'} act={recording?finish:record} disabled={busy&&!recording}/></>}
         {!busy&&<Button label="모델 삭제" act={remove}/>}
       </>}
       {!!status&&<Text accessibilityLiveRegion="polite" style={s.hint}>{status}</Text>}{!!heard&&<Text style={s.text}>{heard}</Text>}{!!reply&&<Text selectable style={s.text}>{reply}</Text>}
