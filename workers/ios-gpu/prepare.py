@@ -64,8 +64,11 @@ model_source = upstream / "src/llama-model.cpp"
 with model_source.open("a") as f:
     f.write("""
 extern "C" bool pm_model_has_weights(const llama_model *model, ggml_backend_dev_t device) {
-    auto sizes = model->memory_breakdown();
-    auto it = sizes.find(ggml_backend_dev_buffer_type(device));
-    return it != sizes.end() && it->second > 0;
+    for (const auto & [type, bytes] : model->memory_breakdown()) {
+        auto owner = ggml_backend_buft_get_device(type);
+        if (!owner) owner = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (owner == device && bytes > 0) return true;
+    }
+    return false;
 }
 """)

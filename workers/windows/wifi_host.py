@@ -155,7 +155,7 @@ def open_host(root, bundle, executable, model, loaded_model):
         status.set("보조 GPU에 모델 레이어를 올리고 있어요…")
         def run():
             try:
-                with loaded_model(executable,model,bridges,stopped) as (port,token,devices,process):
+                with loaded_model(executable,model,bridges,stopped,allow_remote_only=True) as (port,token,devices,process):
                     notices.put(("ready",(port,token,devices)))
                     while not stopped.wait(.5):
                         if process.poll() is not None:

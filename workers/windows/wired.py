@@ -37,7 +37,7 @@ def private_peers(value):
     return peers
 
 
-def select_devices(listing, peers):
+def select_devices(listing, peers, allow_remote_only=False):
     local = []
     remote = {}
     for line in listing.splitlines():
@@ -50,9 +50,9 @@ def select_devices(listing, peers):
                 remote.setdefault(description.strip(), name)
         elif re.match(r"^(CUDA|Vulkan|ROCm|HIP|Metal|SYCL|OpenCL|CANN|MUSA)", name, re.I):
             local.append(name)
-    if not local or any(peer not in remote for peer in peers):
+    if (not local and not (peers and allow_remote_only)) or any(peer not in remote for peer in peers):
         raise ValueError("PC GPU 또는 지정한 보조 장치를 llama.cpp에서 찾지 못했어요.")
-    return [local[0], *(remote[peer] for peer in peers)]
+    return [*local[:1], *(remote[peer] for peer in peers)]
 
 
 def rpc_options(peers):
@@ -65,7 +65,7 @@ def allocated_device(line, devices, peers):
         return None
     # Remote buffer names use the index on the peer. Local device names use a global index.
     if match[2]:
-        return dict(zip(peers, devices[1:])).get(match[2]) if match[1].startswith("RPC") else None
+        return dict(zip(peers, devices[-len(peers):])).get(match[2]) if match[1].startswith("RPC") else None
     return match[1] if match[1] in devices else None
 
 
@@ -161,10 +161,10 @@ def remove_mapping(adb, serial, remote_port, host_port):
 
 
 @contextlib.contextmanager
-def loaded_model(executable, model, peers, stopped):
+def loaded_model(executable, model, peers, stopped, allow_remote_only=False):
     with contextlib.ExitStack() as cleanup:
         args = [executable, *rpc_options(peers), "--list-devices"]
-        devices = select_devices(command(args, timeout=25), peers)
+        devices = select_devices(command(args, timeout=25), peers, allow_remote_only)
         folder = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="pocketmind-wired-")))
         key_file = folder / "session.key"
         token = secrets.token_urlsafe(32)
