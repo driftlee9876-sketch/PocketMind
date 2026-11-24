@@ -59,9 +59,13 @@ class Completion:
 
 
 class DesktopChat:
-    def __init__(self, parent, session, status):
+    def __init__(self, parent, session, status, bundle):
         import tkinter as tk
         from tkinter import ttk
+        self.bundle=bundle
+        self.speaker=None
+        self.voice_task=None
+        self.photos=[]
         self.session = session
         self.status = status
         self.events = queue.Queue()
@@ -92,7 +96,7 @@ class DesktopChat:
         self.text.tag_configure("assistant",spacing3=8)
         actions=tk.Frame(self.frame,bg="#101010")
         actions.pack(fill="x",padx=12)
-        for label,fn in [("파일 첨부",self.attach),("답변 복사",self.copy),("질문 수정",lambda:self.fork(False)),("다시 생성",lambda:self.fork(True))]:
+        for label,fn in [("이미지 만들기",lambda:self.media("image")),("음성 대화",lambda:self.media("voice")),("파일 첨부",self.attach),("답변 복사",self.copy),("질문 수정",lambda:self.fork(False)),("다시 생성",lambda:self.fork(True))]:
             ttk.Button(actions,text=label,command=fn).pack(side="left",padx=2)
         compose=tk.Frame(self.frame,bg="#2b2b2b",padx=8,pady=6)
         compose.pack(fill="x",padx=14,pady=12)
@@ -131,14 +135,28 @@ class DesktopChat:
         names=[next((m["content"].splitlines()[0][:30] for m in r["messages"] if m.get("content")), "새 채팅") for r in self.rooms]
         self.history.configure(values=names)
         self.history.current(next(i for i,r in enumerate(self.rooms) if r is self.current))
+        at_end=self.text.yview()[1]>.98
+        position=self.text.yview()[0]
+        self.photos=[]
         self.text.configure(state="normal")
         self.text.delete("1.0","end")
         if not self.current["messages"]:
             self.text.insert("end","무엇을 도와드릴까요?")
         for m in self.current["messages"]:
+            if m.get("image"):
+                import tkinter as tk
+                path=self.path.parent/"chat-images"/Path(m["image"]).name
+                try:
+                    photo=tk.PhotoImage(file=str(path)).subsample(2,2)
+                    self.photos.append(photo)
+                    self.text.image_create("end",image=photo)
+                    self.text.insert("end","\n")
+                except tk.TclError:
+                    self.text.insert("end","이미지 파일을 열 수 없어요.\n")
             self.text.insert("end",m["content"]+"\n\n",m["role"])
         self.text.configure(state="disabled")
-        self.text.see("end")
+        if at_end:self.text.see("end")
+        else:self.text.yview_moveto(position)
         self.send_button.configure(text="중지" if self.task and self.owner is self.current else "보내기")
 
     def enter(self,event):
@@ -157,6 +175,22 @@ class DesktopChat:
                 self.prompt.insert("end","\n["+Path(file).name+"]\n"+text[:32000]+("\n(본문 발췌)" if len(text)>32000 else ""))
             except (OSError,UnicodeError) as error:
                 self.status.set(str(error))
+
+    def media(self,kind):
+        from desktop_media import open_media
+        if self.task:return
+        if self.speaker and self.speaker.poll() is None:self.speaker.terminate()
+        if kind=="voice" and not self.session():
+            self.status.set("음성 답변에 사용할 모델을 GPU 연결 설정에서 시작하세요.")
+            return
+        def image(prompt,path):
+            self.current["messages"].extend([{"role":"user","content":prompt},{"role":"assistant","content":"","image":path.name}])
+            self.save();self.render()
+        def voice(text):
+            self.prompt.delete("1.0","end");self.prompt.insert("1.0",text);self.submit()
+            self.voice_task=self.task
+        try:open_media(self.frame,self.bundle,self.path.parent,kind,image,voice)
+        except (OSError,ValueError) as e:self.status.set(str(e))
 
     def copy(self):
         reply=next((m["content"] for m in reversed(self.current["messages"]) if m["role"]=="assistant" and m["content"]),None)
@@ -215,6 +249,11 @@ class DesktopChat:
             elif kind=="error":
                 self.status.set(value)
             elif kind=="end":
+                if self.voice_task is task:
+                    self.voice_task=None
+                    if self.reply["content"] and not task.cancelled.is_set():
+                        from desktop_media import speak
+                        self.speaker=speak(self.reply["content"])
                 if not self.reply["content"]:
                     self.owner["messages"].pop()
                 self.task=self.owner=self.reply=None
@@ -226,6 +265,7 @@ class DesktopChat:
 
     def close(self):
         self.closed=True
+        if self.speaker and self.speaker.poll() is None:self.speaker.terminate()
         if self.task:
             self.task.stop()
         self.current["draft"]=self.prompt.get("1.0","end-1c")

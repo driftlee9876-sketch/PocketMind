@@ -126,9 +126,9 @@ def open_host(root, bundle, executable, model, loaded_model):
         peers[endpoint["ID"]] = ("원격 GPU",endpoint)
         redraw()
 
-    def selected():
+    def selected(optional=False):
         result = [peers[peer_keys[i]][1] for i in listing.curselection()]
-        if not result:
+        if not result and not optional:
             raise ValueError("목록에서 갤탭을 선택하세요.")
         return result
 
@@ -154,7 +154,7 @@ def open_host(root, bundle, executable, model, loaded_model):
         if active:
             stopped.set()
             return
-        donors = selected()
+        donors = selected(optional=True)
         if not Path(model).is_file():
             model = filedialog.askopenfilename(parent=window,filetypes=[("GGUF","*.gguf")])
         if not model:
@@ -164,7 +164,7 @@ def open_host(root, bundle, executable, model, loaded_model):
         # The bundled Windows runtime has 16 backend slots, including local GPU and CPU.
         if len(donors)>14:
             raise ValueError("이 Windows 실행기는 보조 GPU를 최대 14대까지 지원해요.")
-        bridges = transport.call("bridges",Endpoints=donors)["bridges"]
+        bridges = transport.call("bridges",Endpoints=donors)["bridges"] if donors else []
         stopped.clear()
         active = True
         status.set("보조 GPU에 모델 레이어를 올리고 있어요…")
@@ -203,7 +203,7 @@ def open_host(root, bundle, executable, model, loaded_model):
     ttk.Button(toolbar,text="GPU 연결 설정",command=toggle_setup).pack(side="left")
     ttk.Label(toolbar,textvariable=status,wraplength=450).pack(side="left")
     window.geometry("760x760")
-    desktop=DesktopChat(window,lambda:session,status)
+    desktop=DesktopChat(window,lambda:session,status,bundle)
     selector.bind("<<ComboboxSelected>>",lambda _:guard(browse)())
     last_trust = set()
     def poll():

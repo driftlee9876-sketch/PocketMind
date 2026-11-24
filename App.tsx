@@ -1521,6 +1521,12 @@ function PocketMindChatGPTScreen() {
     preferences.largeText,
   ]);
 
+  function afterQuickMenu(action: () => void) {
+    if (Platform.OS === 'ios') pendingDevicePicker.current = action;
+    setQuickPlusOpen(false);
+    if (Platform.OS !== 'ios') action();
+  }
+
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar hidden />
@@ -2165,14 +2171,13 @@ function PocketMindChatGPTScreen() {
             </View>
 
             <ScrollView keyboardShouldPersistTaps="handled" style={{maxHeight:430}}>
-            <TouchableOpacity style={styles.quickActionCard} disabled={isGenerating} accessibilityRole="button" onPress={()=>{setQuickPlusOpen(false);setMedia('image');}}><Text style={styles.quickActionLabel}>이미지 만들기</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.quickActionCard} disabled={isGenerating} accessibilityRole="button" onPress={()=>{setQuickPlusOpen(false);setMedia('voice');}}><Text style={styles.quickActionLabel}>음성 대화</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.quickActionCard} disabled={isGenerating} accessibilityRole="button" onPress={()=>afterQuickMenu(()=>setMedia('image'))}><Text style={styles.quickActionLabel}>이미지 만들기</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.quickActionCard} disabled={isGenerating} accessibilityRole="button" onPress={()=>afterQuickMenu(()=>setMedia('voice'))}><Text style={styles.quickActionLabel}>음성 대화</Text></TouchableOpacity>
             <TouchableOpacity style={styles.quickActionCard} accessibilityRole="button" onPress={()=>{
               const pick=async()=>{try{const file=await gpuPeer.pickChatDocument();if(file)setAttachment(file);}catch(e:any){showToast(e?.message || '파일을 열 수 없어요.');}};
-              if(Platform.OS==='ios')pendingDevicePicker.current=pick;
-              setQuickPlusOpen(false);if(Platform.OS!=='ios')void pick();
+              afterQuickMenu(pick);
             }}><Text style={styles.quickActionLabel}>기기에서 텍스트 파일 첨부</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.quickActionCard} onPress={()=>{setQuickPlusOpen(false);setDrivePicker(true);}}><Text style={styles.quickActionLabel}>Drive 파일 첨부</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.quickActionCard} onPress={()=>afterQuickMenu(()=>setDrivePicker(true))}><Text style={styles.quickActionLabel}>Drive 파일 첨부</Text></TouchableOpacity>
             <View style={styles.quickActionRow}>
               <TouchableOpacity
                 style={styles.quickActionCard}
