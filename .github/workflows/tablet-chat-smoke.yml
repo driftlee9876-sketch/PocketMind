@@ -11,12 +11,16 @@ jobs:
     timeout-minutes: 95
     steps:
       - uses: actions/checkout@v4
-      - name: Find the APK from this exact commit
+        with:
+          fetch-depth: 0
+      - name: Find the APK for this source
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Test-only commits can reuse a byte-identical build without waiting for another package.
+          source=$(git log -1 --format=%H -- . ':(exclude)tests/chat/**' ':(exclude).github/workflows/tablet-chat-smoke.yml')
           for attempt in {1..110}; do
-            info=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/android-apk.yml/runs?head_sha=$GITHUB_SHA&event=push" --jq '.workflow_runs[0] | [.id,.status,.conclusion] | @tsv')
+            info=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/android-apk.yml/runs?head_sha=$source&event=push" --jq '.workflow_runs[0] | [.id,.status,.conclusion] | @tsv')
             read -r id status result <<< "$info"
             if [[ "$status" == "completed" ]]; then
               test "$result" = success
