@@ -37,6 +37,17 @@ internal fun wifiAddress(context: Context): CableAddress? {
         }}.distinct().singleOrNull()
 }
 
+internal fun gpuNetwork(context: Context, mesh: Boolean): CableAddress? {
+    if (!mesh) return wifiAddress(context)
+    val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    return manager.allNetworks.filter { manager.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true }
+        .flatMap { network -> manager.getLinkProperties(network)?.linkAddresses.orEmpty().mapNotNull {
+            val ip = it.address as? Inet4Address
+            if (ip != null && ip.address[0].toInt()==100 && (ip.address[1].toInt() and 255) in 64..127)
+                CableAddress(ip,10,network) else null
+        }}.distinct().singleOrNull()
+}
+
 /** NSD is a directory only. Adverts are never used as proof of device identity. */
 @Suppress("DEPRECATION")
 internal class WifiLan(private val context: ReactApplicationContext, private val gpu: UsbGpuPeer) : LifecycleEventListener {
@@ -54,6 +65,26 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
     private var offeredOn: CableAddress? = null
     private var scannedOn: CableAddress? = null
     private var issue = ""
+    private var meshOffer = false
+    private var invitation = ""
+    private val invites = context.getSharedPreferences("wifi-mesh-peers",Context.MODE_PRIVATE)
+    private fun addInvite(input: String) {
+        val fields = input.trim().split('|')
+        require(fields.size == 3 && fields[0] == "pmgpu1" && fields[2].matches(Regex("[A-Za-z0-9_-]{43}"))) { "보조 기기에서 복사한 초대를 붙여넣으세요." }
+        val parts = fields[1].split('.')
+        require(parts.size == 4 && parts.all { it.toIntOrNull()?.let { n -> n in 0..255 && n.toString()==it } == true } &&
+            parts[0]=="100" && parts[1].toInt() in 64..127) { "Tailscale IPv4 주소를 확인하세요." }
+        check(fields[2] != WifiCore.call("status").getString("id")) { "다른 기기의 초대를 입력하세요." }
+        check(invites.contains(fields[2]) || invites.all.size < 20) { "원격 기기는 최대 20대까지 저장할 수 있어요." }
+        invites.edit().putString(fields[2],fields[1]).apply()
+    }
+    private fun available(): List<JSONObject> {
+        val local = found.values.toList()
+        if (gpuNetwork(context,true)==null) return local
+        val remote = invites.all.map { (id,ip) -> JSONObject().put("ID",id).put("IP",ip).put("Port",47832)
+            .put("Mesh",true).put("name","원격 GPU · $ip").put("platform","Tailscale") }
+        return (local + remote).distinctBy { it.getString("ID") }
+    }
     init { context.addLifecycleEventListener(this) }
     private fun boot() = WifiCore.call("init", JSONObject().put("Dir", File(context.noBackupFilesDir, "wifi-gpu").path))
     private fun next() {
@@ -109,8 +140,8 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
         found.clear();live.clear();queue.clear();resolving=false
     }
     private fun endpoint(id: String): JSONObject {
-        val peer = found.values.singleOrNull { it.optString("ID")==id } ?: error("기기를 다시 검색해 주세요.")
-        val link = wifiAddress(context) ?: error("Wi-Fi에 연결해 주세요.")
+        val peer = available().firstOrNull { it.optString("ID")==id } ?: error("기기를 다시 검색해 주세요.")
+        val link = gpuNetwork(context,peer.optBoolean("Mesh")) ?: error("기기 네트워크에 연결해 주세요.")
         return JSONObject(peer.toString()).put("Local",link.ip.hostAddress).put("Prefix",link.prefix)
     }
     fun selected(id: String): JSONObject {
@@ -126,18 +157,22 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
                 "browse" -> { enabled=true; issue=""; wifiAddress(context)?.let(::discover) }
                 "status" -> {
                     val link=wifiAddress(context)
-                    if (ownGpu && (offeredOn!=link || gpu.status().isEmpty())) stopOffer()
+                    if (ownGpu && (offeredOn!=gpuNetwork(context,meshOffer) || gpu.status().isEmpty())) stopOffer()
                     if (enabled && scannedOn!=link) {endBrowse();link?.let(::discover)}
                 }
                 "offer" -> {
                     check(context.lifecycleState==LifecycleState.RESUMED && !ownGpu)
-                    val link=wifiAddress(context) ?: error("Wi-Fi에 연결해 주세요.")
+                    meshOffer=q.optBoolean("mesh")
+                    val link=gpuNetwork(context,meshOffer) ?: error(if (meshOffer) "Tailscale VPN을 먼저 연결하세요." else "Wi-Fi에 연결해 주세요.")
                     val code=gpu.status()
                     check(code.isNotEmpty()) { "GPU 제공을 먼저 시작해 주세요." }
                     ownGpu=true;offeredOn=link
                     try {
                         val r=WifiCore.call("offer",JSONObject().put("Backend","android").put("Value",code)
-                            .put("Endpoint",JSONObject().put("Local",link.ip.hostAddress).put("Prefix",link.prefix)))
+                            .put("Endpoint",JSONObject().put("Local",link.ip.hostAddress).put("Prefix",link.prefix).put("Mesh",meshOffer)))
+                        if (meshOffer) {
+                            invitation="pmgpu1|${link.ip.hostAddress}|${r.getString("id")}"
+                        } else {
                         val service=NsdServiceInfo().apply {
                             serviceName="PocketMind "+Build.MODEL.take(30);serviceType=type;port=r.getInt("port")
                             setAttribute("id",r.getString("id"));setAttribute("platform","Android");setAttribute("ip",link.ip.hostAddress)
@@ -150,16 +185,18 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
                             override fun onRegistrationFailed(s:NsdServiceInfo,c:Int){main.post{if(registration===this){stopOffer();issue="Wi-Fi 제공을 알리지 못했어요 ($c)."}}}
                         }
                         registration=cb;nsd.registerService(service,NsdManager.PROTOCOL_DNS_SD,cb)
+                        }
                     } catch(e:Exception){stopOffer();throw e}
                 }
+                "import" -> addInvite(q.getString("invite"))
                 "pair" -> WifiCore.call("pair",JSONObject().put("Endpoint",endpoint(q.getString("id"))))
                 "vote" -> WifiCore.call("vote",JSONObject().put("Challenge",q.getString("id")).put("Accept",q.getBoolean("accept")))
                 "stop" -> {enabled=false;endBrowse();stopOffer();WifiCore.call("stop");issue=""}
-                "forget" -> {stopOffer();WifiCore.call("forget");issue=""}
+                "forget" -> {stopOffer();WifiCore.call("forget");invites.edit().clear().apply();issue=""}
                 else -> error("지원하지 않는 작업이에요.")
             }
-            val result=WifiCore.call("status").put("peers",JSONArray(found.values.toList()))
-                .put("searching", browsing != null)
+            val result=WifiCore.call("status").put("peers",JSONArray(available()))
+                .put("searching", browsing != null).put("invitation",invitation).put("meshReady",gpuNetwork(context,true)!=null)
             if(issue.isNotEmpty())result.put("issue",issue)
             promise.resolve(result.toString())
         } catch(e:Throwable){promise.reject("WIFI_GPU",e.message ?: "Wi-Fi GPU를 사용할 수 없어요.",e)}
@@ -168,7 +205,7 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
         val old=registration; registration=null
         if(old!=null)runCatching{nsd.unregisterService(old)}
         if(ownGpu){WifiCore.call("stop");gpu.stop()}
-        ownGpu=false;offeredOn=null
+        ownGpu=false;offeredOn=null;meshOffer=false;invitation=""
     }
     override fun onHostPause(){main.post{enabled=false;endBrowse();stopOffer();runCatching{WifiCore.call("stop")}}}
     override fun onHostResume(){}

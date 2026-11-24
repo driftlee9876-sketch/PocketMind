@@ -40,6 +40,9 @@ def interfaces():
             if addr.family != socket.AF_INET or not addr.netmask:
                 continue
             link = ipaddress.IPv4Interface(f"{addr.address}/{addr.netmask}")
+            if link.ip in ipaddress.ip_network("100.64.0.0/10") and "tailscale" in name.lower():
+                rows[f"Tailscale · {link.ip}"] = {"Local": str(link.ip), "Prefix": 10, "Mesh": True}
+                continue
             if link.ip.is_loopback or not link.ip.is_private or not 1 <= link.network.prefixlen <= 30:
                 continue
             rows[f"{name} · {link.ip}"] = {"Local": str(link.ip), "Prefix": link.network.prefixlen}
@@ -55,6 +58,7 @@ def open_wifi(root, bundle):
     frame = ttk.Frame(window, padding=18)
     frame.pack()
     status = tk.StringVar(value="태블릿과 같은 네트워크를 선택하세요.")
+    invite = tk.StringVar()
     rows = interfaces()
     choice = tk.StringVar(value=next(iter(rows), ""))
     ttk.Combobox(frame, textvariable=choice, values=list(rows), state="readonly", width=42).pack(fill="x")
@@ -66,9 +70,12 @@ def open_wifi(root, bundle):
         return
     process = zc = advert = endpoint = challenge = None
     deadline = 0
+    advertised = False
 
     def stop():
-        nonlocal process, zc, advert, endpoint, challenge
+        nonlocal process, zc, advert, endpoint, challenge, advertised
+        advertised = False
+        invite.set("")
         transport.call("stop")
         if zc:
             try:
@@ -86,8 +93,12 @@ def open_wifi(root, bundle):
         status.set("GPU 제공이 중지됐어요.")
 
     def announce():
-        nonlocal zc, advert
+        nonlocal zc, advert, advertised
         state = transport.call("offer", Endpoint=endpoint, Backend="windows", Value=str(port[0]))
+        if endpoint.get("Mesh"):
+            invite.set(f"pmgpu1|{endpoint['Local']}|{state['id']}")
+            advertised = True
+            return
         service = "_pmgpu._tcp.local."
         safe_name = socket.gethostname().split(".")[0][:26]
         advert = ServiceInfo(service, f"PocketMind {safe_name}.{service}", port=state["port"],
@@ -96,6 +107,7 @@ def open_wifi(root, bundle):
                              server=f"pm-{state['id'][:10].lower().replace('_','x')}.local.")
         zc = Zeroconf(interfaces=[endpoint["Local"]], ip_version=IPVersion.V4Only)
         zc.register_service(advert, allow_name_change=True)
+        advertised = True
 
     port = [0]
     def start():
@@ -134,7 +146,7 @@ def open_wifi(root, bundle):
             if process:
                 if process.poll() is not None or endpoint not in interfaces().values():
                     raise RuntimeError("GPU 또는 네트워크 연결이 종료됐어요.")
-                if not zc:
+                if not advertised:
                     try:
                         with socket.create_connection(("127.0.0.1",port[0]),timeout=.15):
                             pass
@@ -143,7 +155,7 @@ def open_wifi(root, bundle):
                             raise RuntimeError("Vulkan GPU가 준비되지 않았어요.")
                     else:
                         announce()
-                if zc:
+                if advertised:
                     state=transport.call("status")
                     challenge=state.get("pending")
                     status.set(("태블릿과 같은 코드인지 확인하세요 · "+challenge["code"]) if challenge else
@@ -156,6 +168,12 @@ def open_wifi(root, bundle):
         if window.winfo_exists():
             window.after(700,poll)
     ttk.Button(frame,text="GPU 제공 시작 / 중지",command=start).pack(fill="x")
+    def copy_invite():
+        if invite.get():
+            root.clipboard_clear()
+            root.clipboard_append(invite.get())
+    ttk.Entry(frame,textvariable=invite,state="readonly").pack(fill="x")
+    ttk.Button(frame,text="원격 초대 복사",command=copy_invite).pack(fill="x")
     approve=ttk.Button(frame,text="코드 일치 · 승인",command=lambda:vote(True));approve.pack(fill="x")
     reject=ttk.Button(frame,text="거절",command=lambda:vote(False));reject.pack(fill="x")
     ttk.Button(frame,text="연결 기기 잊기",command=forget).pack(fill="x")

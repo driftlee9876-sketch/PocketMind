@@ -15,18 +15,19 @@ static NSDictionary *wifiCall(NSDictionary *request) {
   PMWifiFree(raw);
   return [NSJSONSerialization JSONObjectWithData:data options:0 error:nullptr];
 }
-static NSDictionary *wifiEndpoint() {
+static NSDictionary *wifiEndpoint(BOOL mesh) {
   struct ifaddrs *list = nullptr;
   if (getifaddrs(&list) != 0) return nil;
   NSDictionary *result = nil;
   for (auto *i = list; i; i = i->ifa_next) {
     if (!i->ifa_addr || !i->ifa_netmask || i->ifa_addr->sa_family != AF_INET ||
-        strcmp(i->ifa_name, "en0") || !(i->ifa_flags & IFF_UP)) continue;
+        (mesh ? strncmp(i->ifa_name,"utun",4) : strcmp(i->ifa_name, "en0")) || !(i->ifa_flags & IFF_UP)) continue;
     char address[INET_ADDRSTRLEN];
     auto *ip = (struct sockaddr_in *)i->ifa_addr;
+    if (mesh && (ntohl(ip->sin_addr.s_addr) >> 22) != 401) continue; // 100.64.0.0/10
     if (!inet_ntop(AF_INET, &ip->sin_addr, address, sizeof(address))) continue;
     uint32_t mask = ntohl(((struct sockaddr_in *)i->ifa_netmask)->sin_addr.s_addr);
-    result = @{@"Local":[NSString stringWithUTF8String:address], @"Prefix":@(__builtin_popcount(mask))};
+    result = @{@"Local":[NSString stringWithUTF8String:address], @"Prefix":@(mesh ? 10 : __builtin_popcount(mask)), @"Mesh":@(mesh)};
     break;
   }
   freeifaddrs(list);
@@ -147,6 +148,7 @@ struct Peer {
   NSNetService *_wifiService;
   NSDictionary *_wifiLink;
   NSString *_wifiError;
+  NSString *_meshInvite;
 }
 RCT_EXPORT_MODULE(PocketMindMetalPeer)
 + (BOOL)requiresMainQueueSetup { return YES; }
@@ -162,15 +164,15 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
   return self;
 }
 - (void)background:(NSNotification *)notification {
-  if (!_wifiService && _peer) _peer->stop();
+  if (!_wifiLink && _peer) _peer->stop();
 }
 - (void)endWifi {
-  if (_wifiService) {
+  if (_wifiLink) {
     _wifiService.delegate = nil; [_wifiService stop]; _wifiService = nil;
     wifiCall(@{@"Op":@"stop"});
     if (_peer) _peer->stop();
   }
-  _wifiLink = nil;
+  _wifiLink = nil; _meshInvite = nil;
 }
 - (void)stopBackground:(NSNotification *)notification {
   [self endWifi];
@@ -200,30 +202,37 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
   if (r[@"error"]) {reject(@"WIFI_GPU",r[@"error"],nil); return;}
   NSString *op = q[@"op"];
   if ([op isEqual:@"offer"]) {
-    NSDictionary *link = wifiEndpoint();
+    BOOL remote = [q[@"mesh"] boolValue];
+    NSDictionary *link = wifiEndpoint(remote);
     if (!link || !_peer || _peer->closed.load() || _peer->paired.exchange(true)) {
-      reject(@"WIFI_GPU",@"Wi-Fi에 연결하고 GPU 제공을 다시 시작해 주세요.",nil);return;
+      reject(@"WIFI_GPU",remote ? @"Tailscale VPN 연결과 GPU 제공 상태를 확인하세요." : @"Wi-Fi에 연결하고 GPU 제공을 다시 시작해 주세요.",nil);return;
     }
     r = wifiCall(@{@"Op":@"offer",@"Endpoint":link,@"Backend":@"ios",@"Value":@(_peer->token.c_str())});
     if (!r[@"error"]) {
       _wifiError = nil;
       _wifiLink = link;
+      if (remote) {
+        _meshInvite = [NSString stringWithFormat:@"pmgpu1|%@|%@",link[@"Local"],r[@"id"]];
+      } else {
       _wifiService = [[NSNetService alloc] initWithDomain:@"local." type:@"_pmgpu._tcp." name:@"PocketMind iOS" port:[r[@"port"] intValue]];
       _wifiService.delegate = self;
       [_wifiService setTXTRecordData:[NSNetService dataFromTXTRecordDictionary:@{@"id":[r[@"id"] dataUsingEncoding:NSUTF8StringEncoding],@"platform":[@"iOS" dataUsingEncoding:NSUTF8StringEncoding],@"ip":[link[@"Local"] dataUsingEncoding:NSASCIIStringEncoding]}]];
       [_wifiService publish];
+      }
     } else { _peer->stop(); }
   } else if ([op isEqual:@"stop"] || [op isEqual:@"forget"]) {
     [self endWifi]; _wifiError = nil;
     r = wifiCall(@{@"Op":op});
   } else if ([op isEqual:@"vote"]) {
     r = wifiCall(@{@"Op":op,@"Challenge":q[@"id"] ?: @"",@"Accept":q[@"accept"] ?: @NO});
-  } else if (_wifiService && (!_peer || _peer->closed.load() || ![_wifiLink isEqual:wifiEndpoint()])) {
+  } else if (_wifiLink && (!_peer || _peer->closed.load() || ![_wifiLink isEqual:wifiEndpoint([_wifiLink[@"Mesh"] boolValue])])) {
     [self endWifi]; _wifiError=@"Wi-Fi 또는 GPU 연결이 종료됐어요.";
   }
   if (r[@"error"]) {reject(@"WIFI_GPU",r[@"error"],nil);return;}
   NSMutableDictionary *state=[wifiCall(@{@"Op":@"status"}) mutableCopy];
   if (_wifiError) state[@"issue"]=_wifiError;
+  if (_meshInvite) state[@"invitation"]=_meshInvite;
+  state[@"meshReady"]=@(wifiEndpoint(YES)!=nil);
   state[@"peers"]=@[];
   NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:nullptr];
   resolve([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]);

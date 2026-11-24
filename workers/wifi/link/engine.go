@@ -20,7 +20,13 @@ const protocol = "pocketmind-gpu/1"
 
 var denied = errors.New("GPU 연결이 거절됐어요. 두 기기의 연결 기록과 승인 상태를 확인하세요.")
 
+const maxPeers = 20
+const meshPort = 47832
+
+var _, meshSubnet, _ = net.ParseCIDR("100.64.0.0/10")
+
 type Endpoint struct {
+	Mesh   bool
 	Local  string
 	Prefix int
 	IP     string
@@ -30,6 +36,12 @@ type Endpoint struct {
 
 func (p Endpoint) network() (*net.IPNet, error) {
 	ip := net.ParseIP(p.Local).To4()
+	if p.Mesh {
+		if !meshSubnet.Contains(ip) {
+			return nil, errors.New("Tailscale 연결을 확인하세요.")
+		}
+		return meshSubnet, nil
+	}
 	if ip == nil || !(ip.IsPrivate() || ip.IsLinkLocalUnicast()) || p.Prefix < 1 || p.Prefix > 30 {
 		return nil, errors.New("같은 Wi-Fi의 IPv4 주소를 확인하세요.")
 	}
@@ -46,7 +58,7 @@ func (p Endpoint) validate() error {
 	for i := range broadcast {
 		broadcast[i] |= ^subnet.Mask[i]
 	}
-	if !subnet.Contains(ip) || ip.Equal(subnet.IP) || ip.Equal(broadcast) || ip.Equal(net.ParseIP(p.Local)) || p.Port < 1 || p.Port > 65535 || err != nil || len(decoded) != 32 {
+	if (p.Mesh && p.Port != meshPort) || !subnet.Contains(ip) || ip.Equal(subnet.IP) || ip.Equal(broadcast) || ip.Equal(net.ParseIP(p.Local)) || p.Port < 1 || p.Port > 65535 || err != nil || len(decoded) != 32 {
 		return errors.New("같은 Wi-Fi에서 기기를 다시 찾아 주세요.")
 	}
 	return nil
@@ -66,7 +78,7 @@ type Engine struct {
 	pending     *challenge
 	issue       string
 	listener    net.Listener
-	bridge      net.Listener
+	bridges     []net.Listener
 	connections map[net.Conn]bool
 	epoch       uint64
 }
@@ -98,7 +110,11 @@ func (e *Engine) generation() uint64 { e.mu.Lock(); defer e.mu.Unlock(); return 
 func (e *Engine) track(gen uint64, c net.Conn) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.epoch != gen || len(e.connections) >= 32 {
+	limit := 32
+	if len(e.bridges) > 0 {
+		limit = 32 * len(e.bridges)
+	}
+	if e.epoch != gen || len(e.connections) >= limit {
 		c.Close()
 		return false
 	}
@@ -114,10 +130,10 @@ func (e *Engine) stop() {
 		e.listener.Close()
 		e.listener = nil
 	}
-	if e.bridge != nil {
-		e.bridge.Close()
-		e.bridge = nil
+	for _, l := range e.bridges {
+		l.Close()
 	}
+	e.bridges = nil
 	for c := range e.connections {
 		if conn, ok := c.(*tls.Conn); ok {
 			conn.NetConn().Close()
@@ -307,12 +323,16 @@ func (e *Engine) offer(p Endpoint, backend Backend) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	l, err := net.Listen("tcp4", net.JoinHostPort(p.Local, "0"))
+	port := "0"
+	if p.Mesh {
+		port = strconv.Itoa(meshPort)
+	}
+	l, err := net.Listen("tcp4", net.JoinHostPort(p.Local, port))
 	if err != nil {
 		return 0, err
 	}
 	e.mu.Lock()
-	if e.listener != nil || e.bridge != nil {
+	if e.listener != nil || len(e.bridges) != 0 {
 		e.mu.Unlock()
 		l.Close()
 		return 0, errors.New("GPU 연결이 이미 실행 중이에요.")
@@ -396,25 +416,51 @@ func (e *Engine) connectData(gen uint64, p Endpoint) (net.Conn, error) {
 	return c, nil
 }
 func (e *Engine) openBridge(p Endpoint) (string, error) {
-	if err := p.validate(); err != nil {
-		return "", err
-	}
-	if !e.isTrusted(p.ID) {
-		return "", denied
-	}
-	l, name, err := localBridge()
+	names, err := e.openBridges([]Endpoint{p})
 	if err != nil {
 		return "", err
 	}
-	e.mu.Lock()
-	if e.bridge != nil || e.listener != nil {
-		e.mu.Unlock()
-		l.Close()
-		return "", denied
+	return names[0], nil
+}
+func (e *Engine) openBridges(peers []Endpoint) ([]string, error) {
+	if len(peers) < 1 || len(peers) > maxPeers {
+		return nil, errors.New("보조 기기를 1~20대 선택하세요.")
 	}
-	e.bridge = l
-	gen := e.epoch
-	e.mu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.bridges) > 0 || e.listener != nil {
+		return nil, denied
+	}
+	seen := map[string]bool{}
+	for _, p := range peers {
+		if err := p.validate(); err != nil {
+			return nil, err
+		}
+		if seen[p.ID] || !e.trusted[p.ID] || p.ID == e.id {
+			return nil, denied
+		}
+		seen[p.ID] = true
+	}
+	var listeners []net.Listener
+	var names []string
+	for range peers {
+		l, name, err := localBridge()
+		if err != nil {
+			for _, old := range listeners {
+				old.Close()
+			}
+			return nil, err
+		}
+		listeners = append(listeners, l)
+		names = append(names, name)
+	}
+	e.bridges = listeners
+	for i, p := range peers {
+		e.serveBridge(listeners[i], p, e.epoch)
+	}
+	return names, nil
+}
+func (e *Engine) serveBridge(l net.Listener, p Endpoint, gen uint64) {
 	go func() {
 		for {
 			a, err := l.Accept()
@@ -437,13 +483,13 @@ func (e *Engine) openBridge(p Endpoint) (string, error) {
 			}()
 		}
 	}()
-	return name, nil
 }
 
 // Commands are supplied only by the platform UI, never by network clients.
 type Request struct {
 	Op, Dir, Challenge, Backend, Value string
 	Accept                             bool
+	Endpoints                          []Endpoint
 	Endpoint                           Endpoint
 }
 
@@ -463,6 +509,9 @@ func (e *Engine) Command(q Request) (map[string]any, error) {
 		return nil, e.vote(q.Challenge, q.Accept)
 	case "pair":
 		return nil, e.pair(q.Endpoint)
+	case "bridges":
+		names, err := e.openBridges(q.Endpoints)
+		return map[string]any{"bridges": names}, err
 	case "bridge":
 		name, err := e.openBridge(q.Endpoint)
 		return map[string]any{"bridge": name}, err

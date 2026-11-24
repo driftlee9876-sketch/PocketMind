@@ -42,9 +42,12 @@ socket_ptr socket_t::create_server(const char * host, int port) {
 
 // The tablet host calls back into its own app over a private abstract socket.
 socket_ptr socket_t::connect(const char * host, int port) {
-    const char * name = std::getenv("POCKETMIND_HOST_SOCKET");
-    if (!name || std::strncmp(name, "pocketmind_host_", 16) != 0 || std::strlen(name) > 80 ||
-        std::strcmp(host, "127.0.0.1") != 0 || port != 50052) return nullptr;
+    if (std::strcmp(host, "127.0.0.1") != 0 || port < 50052 || port >= 50052 + 20) return nullptr;
+    char key[40];
+    if (port == 50052) std::strcpy(key, "POCKETMIND_HOST_SOCKET");
+    else std::snprintf(key, sizeof(key), "POCKETMIND_HOST_SOCKET_%d", port - 50052);
+    const char * name = std::getenv(key);
+    if (!name || std::strncmp(name, "pocketmind_host_", 16) != 0 || std::strlen(name) > 80) return nullptr;
     int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return nullptr;
     sockaddr_un addr {};

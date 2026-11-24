@@ -42,8 +42,17 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
   @ReactMethod fun prepareWifiPeer(promise: Promise) = usbGpuPeer.start(promise, wifi = true)
   @ReactMethod fun joinWifiGpu(id: String, filename: String, promise: Promise) {
     android.os.Handler(android.os.Looper.getMainLooper()).post {
-      try { tabletGpu.host("", filename, promise, wifiLan.selected(id)) }
+      try { tabletGpu.host("", filename, promise, listOf(wifiLan.selected(id))) }
       catch(e:Exception) { promise.reject("WIFI_GPU",e) }
+    }
+  }
+  @ReactMethod fun joinWifiGroup(ids: com.facebook.react.bridge.ReadableArray, filename: String, promise: Promise) {
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+      try {
+        require(ids.size() in 1..20) { "보조 기기를 1~20대 선택하세요." }
+        val peers=(0 until ids.size()).map { wifiLan.selected(requireNotNull(ids.getString(it))) }
+        tabletGpu.host("", filename, promise, peers)
+      } catch(e:Exception) { promise.reject("WIFI_GPU",e) }
     }
   }
   private val tabletGpu = TabletGpu(context, usbGpuPeer)
