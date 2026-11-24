@@ -1,0 +1,141 @@
+[
+  {
+    "id": "sdxs",
+    "name": "SDXS DreamShaper",
+    "parameters": "약 315M · UNet",
+    "kind": "image",
+    "license": "Open RAIL++",
+    "source": "https://huggingface.co/skillsafeai/sdxs-512-dreamshaper-onnx-webgpu",
+    "revision": "b23bf8f4f809a0beb6d095bf52b5854e0b66caef",
+    "files": [
+      {
+        "path": "text_encoder.onnx",
+        "remote": "text_encoder.onnx",
+        "bytes": 246275486,
+        "sha256": "73464847bad29badc218bf9f0d285f36b92ddccd6b874643d2a2d31766870e83"
+      },
+      {
+        "path": "unet.onnx",
+        "remote": "unet.onnx",
+        "bytes": 631766742,
+        "sha256": "f81dc16670944fead5561851a06038a21c23779760065249274801f47896ece7"
+      },
+      {
+        "path": "vae_decoder.onnx",
+        "remote": "vae_decoder.onnx",
+        "bytes": 2467568,
+        "sha256": "75c5e431703b1d87bcc44f5610b49f6b73594b09857a2263958123afe0be7190"
+      },
+      {
+        "path": "vocab.json",
+        "remote": "tokenizer/vocab.json",
+        "bytes": 1059962,
+        "sha256": ""
+      },
+      {
+        "path": "merges.txt",
+        "remote": "tokenizer/merges.txt",
+        "bytes": 524619,
+        "sha256": ""
+      }
+    ]
+  },
+  {
+    "id": "sd15",
+    "name": "Stable Diffusion 1.5",
+    "parameters": "약 860M · UNet",
+    "kind": "image",
+    "license": "CreativeML Open RAIL-M",
+    "source": "https://huggingface.co/onnx-community/stable-diffusion-v1-5-ONNX",
+    "revision": "90ff1f14e325544b14919d1ee5abc99f19d4e647",
+    "files": [
+      {
+        "path": "text_encoder.onnx",
+        "remote": "text_encoder/model.onnx",
+        "bytes": 492543235,
+        "sha256": "7c83ed133fd7a397ec1fd25eed7451936c066a9b5c2d06362a13e63ed4bddbf4"
+      },
+      {
+        "path": "unet.onnx",
+        "remote": "unet/model.onnx",
+        "bytes": 1088564,
+        "sha256": "dcc6e47bcd2f9137a0d2fd4bea29dd481f438baccd724b5320c0602d30379a8d"
+      },
+      {
+        "path": "vae_decoder.onnx",
+        "remote": "vae_decoder/model.onnx",
+        "bytes": 198078223,
+        "sha256": "c4b6ca4aebff4a8850e7c92b8982c7afbcfc5c5cdd32ba66389988b92dabb300"
+      },
+      {
+        "path": "weights.pb",
+        "remote": "unet/weights.pb",
+        "bytes": 3438083840,
+        "sha256": "1b6a21409483a0b91b0cc993f6c24f537b673d30a1d0ba4db7ad3a48e1f58f99"
+      },
+      {
+        "path": "vocab.json",
+        "remote": "tokenizer/vocab.json",
+        "bytes": 1109372,
+        "sha256": ""
+      },
+      {
+        "path": "merges.txt",
+        "remote": "tokenizer/merges.txt",
+        "bytes": 573514,
+        "sha256": ""
+      }
+    ]
+  },
+  {
+    "id": "whisper-tiny",
+    "name": "Whisper Tiny",
+    "parameters": "39M",
+    "kind": "voice",
+    "license": "MIT",
+    "source": "https://huggingface.co/ggerganov/whisper.cpp",
+    "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+    "files": [
+      {
+        "path": "whisper.bin",
+        "remote": "ggml-tiny.bin",
+        "bytes": 77691713,
+        "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
+      }
+    ]
+  },
+  {
+    "id": "whisper-base",
+    "name": "Whisper Base",
+    "parameters": "74M",
+    "kind": "voice",
+    "license": "MIT",
+    "source": "https://huggingface.co/ggerganov/whisper.cpp",
+    "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+    "files": [
+      {
+        "path": "whisper.bin",
+        "remote": "ggml-base.bin",
+        "bytes": 147951465,
+        "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+      }
+    ]
+  },
+  {
+    "id": "whisper-small",
+    "name": "Whisper Small",
+    "parameters": "244M",
+    "kind": "voice",
+    "license": "MIT",
+    "source": "https://huggingface.co/ggerganov/whisper.cpp",
+    "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+    "files": [
+      {
+        "path": "whisper.bin",
+        "remote": "ggml-small.bin",
+        "bytes": 487601967,
+        "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
+      }
+    ]
+  }
+]

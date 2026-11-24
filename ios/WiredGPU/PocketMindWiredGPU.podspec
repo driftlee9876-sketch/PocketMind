@@ -10,6 +10,6 @@ Pod::Spec.new do |s|
   s.source_files = 'PocketMindGpu.mm'
   s.vendored_frameworks = 'PocketMindMetalPeer.xcframework', 'PocketMindWifi.xcframework'
   s.resources = 'LLAMA-LICENSE.txt'
-  s.frameworks = 'UIKit', 'Security', 'CoreFoundation', 'SystemConfiguration'
+  s.frameworks = 'UIKit', 'Security', 'CoreFoundation', 'SystemConfiguration', 'AVFoundation'
   s.dependency 'React-Core'
 end

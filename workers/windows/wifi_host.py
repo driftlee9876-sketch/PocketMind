@@ -6,7 +6,7 @@ import queue
 import re
 import socket
 import threading
-import urllib.request
+from desktop_chat import DesktopChat
 
 from wifi_offer import Transport, interfaces
 
@@ -36,18 +36,15 @@ def open_host(root, bundle, executable, model, loaded_model):
     selector = ttk.Combobox(frame,textvariable=choice,values=list(routes),state="readonly")
     selector.pack(fill="x")
     status = tk.StringVar(value="연결할 네트워크를 선택하고 기기를 찾으세요.")
-    ttk.Label(frame,textvariable=status,wraplength=520).pack()
     notices = queue.Queue()
     peers = {}
     peer_keys = []
     session = None
     active = False
-    sending = False
     closed = False
     generation = 0
     zc = browser = pending = None
     stopped = threading.Event()
-    history = []
     try:
         transport = Transport(bundle)
     except Exception as exc:
@@ -170,7 +167,6 @@ def open_host(root, bundle, executable, model, loaded_model):
         bridges = transport.call("bridges",Endpoints=donors)["bridges"]
         stopped.clear()
         active = True
-        history.clear()
         status.set("보조 GPU에 모델 레이어를 올리고 있어요…")
         def run():
             try:
@@ -187,36 +183,6 @@ def open_host(root, bundle, executable, model, loaded_model):
                 notices.put(("ended",None))
         threading.Thread(target=run).start()
 
-    chat = tk.Text(frame,height=10,width=60,state="disabled",wrap="word")
-    prompt = ttk.Entry(frame)
-    def line(who,text):
-        chat.configure(state="normal")
-        chat.insert("end",who+" · "+text+"\n\n")
-        chat.configure(state="disabled")
-        chat.see("end")
-    def send():
-        nonlocal sending
-        text = prompt.get().strip()
-        if not session or sending or stopped.is_set() or not text:
-            return
-        sending = True
-        prompt.delete(0,"end")
-        line("나",text)
-        port,token,_ = session
-        messages = history[-20:]+[{"role":"user","content":text}]
-        def ask():
-            try:
-                req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
-                    data=json.dumps({"model":"pocketmind-wired","messages":messages}).encode(),
-                    headers={"Content-Type":"application/json","Authorization":"Bearer "+token})
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(req,timeout=300) as response:
-                    reply=json.load(response)["choices"][0]["message"]["content"]
-                notices.put(("reply",(token,text,reply)))
-            except Exception as exc:
-                notices.put(("chat_error",(token,str(exc))))
-        threading.Thread(target=ask,daemon=True).start()
-
     def guard(fn):
         def clicked():
             try:
@@ -227,14 +193,21 @@ def open_host(root, bundle, executable, model, loaded_model):
     for title, fn in [("주변 GPU 찾기",browse),("원격 초대 추가",add_remote),("선택한 기기와 페어링",pair),
                       ("상대 코드 입력 · 연결",lambda:vote(True)),("거절",lambda:vote(False)),("모델 시작 / 중지",start)]:
         ttk.Button(frame,text=title,command=guard(fn)).pack(fill="x")
-    chat.pack(fill="both",expand=True)
-    prompt.pack(fill="x")
-    prompt.bind("<Return>",lambda _:send())
-    ttk.Button(frame,text="보내기",command=send).pack(fill="x")
+    def toggle_setup():
+        if frame.winfo_manager():
+            frame.pack_forget()
+        else:
+            frame.pack(before=desktop.frame,fill="x")
+    toolbar=ttk.Frame(window)
+    toolbar.pack(before=frame,fill="x")
+    ttk.Button(toolbar,text="GPU 연결 설정",command=toggle_setup).pack(side="left")
+    ttk.Label(toolbar,textvariable=status,wraplength=450).pack(side="left")
+    window.geometry("760x760")
+    desktop=DesktopChat(window,lambda:session,status)
     selector.bind("<<ComboboxSelected>>",lambda _:guard(browse)())
     last_trust = set()
     def poll():
-        nonlocal pending,active,session,sending,last_trust
+        nonlocal pending,active,session,last_trust
         if closed:
             return
         while not notices.empty():
@@ -249,19 +222,14 @@ def open_host(root, bundle, executable, model, loaded_model):
                 redraw()
             elif kind=="ready":
                 session=data
+                frame.pack_forget()
                 status.set("모델 실행 중 · "+", ".join(data[2]))
-            elif kind=="reply" and session and session[1]==data[0]:
-                history.extend([{"role":"user","content":data[1]},{"role":"assistant","content":data[2]}])
-                line("PocketMind",data[2])
-                sending=False
-            elif kind=="chat_error" and session and session[1]==data[0]:
-                status.set(data[1])
-                sending=False
             elif kind=="error":
                 status.set(data)
             elif kind=="ended":
                 session=None
-                active=sending=False
+                active=False
+                if desktop.task: desktop.task.stop()
                 if stopped.is_set():
                     status.set("모델 실행을 중지했어요.")
         state=transport.call("status")
@@ -289,6 +257,7 @@ def open_host(root, bundle, executable, model, loaded_model):
             status.set("모델과 연결을 정리하는 중…")
             window.after(150,close)
         else:
+            desktop.close()
             window.destroy()
     window.protocol("WM_DELETE_WINDOW",close)
     window.bind("<Destroy>",cleanup)

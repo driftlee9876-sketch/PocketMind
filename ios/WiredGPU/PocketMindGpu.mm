@@ -1,5 +1,7 @@
 #import <React/RCTBridgeModule.h>
+#import <React/RCTUtils.h>
 #import <UIKit/UIKit.h>
+#import <AVFoundation/AVFoundation.h>
 #import <React/RCTBridge.h>
 #include <vector>
 #import <Security/Security.h>
@@ -152,11 +154,18 @@ static BOOL validPin(NSString *s) {
   return s.length==43 && [s rangeOfString:@"^[a-zA-Z0-9_-]{43}$" options:NSRegularExpressionSearch].location!=NSNotFound;
 }
 
-@interface PocketMindMetalPeerModule : NSObject <RCTBridgeModule, NSNetServiceDelegate, NSNetServiceBrowserDelegate>
+@interface PocketMindMetalPeerModule : NSObject <RCTBridgeModule, AVSpeechSynthesizerDelegate, UIDocumentPickerDelegate, NSNetServiceDelegate, NSNetServiceBrowserDelegate>
 @property(nonatomic,weak) RCTBridge *bridge;
 @end
 @implementation PocketMindMetalPeerModule {
   std::shared_ptr<Peer> _peer;
+  AVAudioRecorder *_recorder;
+  AVSpeechSynthesizer *_speech;
+  AVSpeechUtterance *_utterance;
+  RCTPromiseResolveBlock _speechDone;
+  NSUInteger _micEpoch;
+  RCTPromiseResolveBlock _fileResolve;
+  RCTPromiseRejectBlock _fileReject;
   NSNetServiceBrowser *_browser;
   NSMutableDictionary *_resolvers,*_nearby,*_remote;
   dispatch_queue_t _hostQueue;
@@ -222,7 +231,7 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
   _wifiLink = nil; _meshInvite = nil;
 }
 - (void)stopBackground:(NSNotification *)notification {
-  [self endWifi];
+  [self clearVoice];[self endWifi];
   if (_peer) _peer->stop();
 }
 - (void)netService:(NSNetService *)sender didNotPublish:(NSDictionary *)errorDict {
@@ -396,6 +405,78 @@ RCT_EXPORT_METHOD(wiredRequest:(NSString *)request action:(NSString *)action tok
   });
 }
 
+- (void)clearVoice {
+  _micEpoch++;
+  if(_recorder){[_recorder stop];[_recorder deleteRecording];_recorder=nil;[AVAudioSession.sharedInstance setActive:NO error:nullptr];}
+  [_speech stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];_utterance=nil;
+  if(_speechDone)_speechDone(@NO);_speechDone=nil;
+}
+RCT_EXPORT_METHOD(cancelVoice:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  [self clearVoice];resolve(@YES);
+}
+RCT_EXPORT_METHOD(startVoiceRecording:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  [self clearVoice];NSUInteger epoch=_micEpoch;
+  AVAudioSession *audio=AVAudioSession.sharedInstance;
+  [audio requestRecordPermission:^(BOOL granted){dispatch_async(dispatch_get_main_queue(),^{
+    if(!granted || epoch!=_micEpoch || UIApplication.sharedApplication.applicationState!=UIApplicationStateActive){reject(@"MIC",@"마이크 권한과 앱 화면을 확인해 주세요.",nil);return;}
+    NSError *error=nil;
+    NSURL *url=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".wav"]]];
+    if(![audio setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker error:&error] || ![audio setActive:YES error:&error]){reject(@"MIC",error.localizedDescription,error);return;}
+    _recorder=[[AVAudioRecorder alloc] initWithURL:url settings:@{AVFormatIDKey:@(kAudioFormatLinearPCM),AVSampleRateKey:@16000,AVNumberOfChannelsKey:@1,AVLinearPCMBitDepthKey:@16,AVLinearPCMIsFloatKey:@NO,AVLinearPCMIsBigEndianKey:@NO} error:&error];
+    if(![_recorder recordForDuration:30]){[self clearVoice];reject(@"MIC",@"녹음을 시작하지 못했어요.",error);return;}
+    resolve(@YES);
+  });}];
+}
+RCT_EXPORT_METHOD(finishVoiceRecording:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if(!_recorder){reject(@"MIC",@"녹음 중이 아니에요.",nil);return;}
+  [_recorder stop];NSString *path=_recorder.url.path;_recorder=nil;
+  [AVAudioSession.sharedInstance setActive:NO error:nullptr];resolve(path);
+}
+RCT_EXPORT_METHOD(speakReply:(NSString *)text resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  [self clearVoice];
+  [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nullptr];
+  if(!_speech){_speech=[AVSpeechSynthesizer new];_speech.delegate=self;}
+  _utterance=[AVSpeechUtterance speechUtteranceWithString:text];
+  _utterance.voice=[AVSpeechSynthesisVoice voiceWithLanguage:@"ko-KR"];
+  _speechDone=[resolve copy];[_speech speakUtterance:_utterance];
+}
+- (void)speechSynthesizer:(AVSpeechSynthesizer *)s didFinishSpeechUtterance:(AVSpeechUtterance *)u{
+  if(u==_utterance && _speechDone){_speechDone(@YES);_speechDone=nil;_utterance=nil;}
+}
+RCT_EXPORT_METHOD(pickChatDocument:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  UIViewController *presenter=RCTPresentedViewController();
+  if(_fileResolve || !presenter.view.window){reject(@"DOCUMENT",@"파일 선택기를 열 수 없어요.",nil);return;}
+  UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.text",@"public.json",@"public.xml"] inMode:UIDocumentPickerModeOpen];
+  _fileResolve=[resolve copy];_fileReject=[reject copy];picker.delegate=self;picker.modalPresentationStyle=UIModalPresentationFullScreen;
+  [presenter presentViewController:picker animated:YES completion:nil];
+}
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+  if(_fileResolve)_fileResolve(nil);_fileResolve=nil;_fileReject=nil;
+}
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+  RCTPromiseResolveBlock resolve=_fileResolve;RCTPromiseRejectBlock reject=_fileReject;_fileResolve=nil;_fileReject=nil;
+  NSURL *url=urls.firstObject;if(!resolve)return;if(!url){resolve(nil);return;}
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+    BOOL scoped=[url startAccessingSecurityScopedResource];
+    NSError *error=nil;
+    NSFileCoordinator *coordinator=[[NSFileCoordinator alloc] initWithFilePresenter:nil];
+    __block NSString *text=nil;__block BOOL truncated=NO;
+    [coordinator coordinateReadingItemAtURL:url options:0 error:&error byAccessor:^(NSURL *local){
+      NSInputStream *stream=[NSInputStream inputStreamWithURL:local];[stream open];
+      NSMutableData *data=[NSMutableData data];uint8_t buffer[4096];NSInteger n=0;
+      while(data.length<128004 && (n=[stream read:buffer maxLength:MIN(sizeof(buffer),128004-data.length)])>0)[data appendBytes:buffer length:n];
+      [stream close];if(n<0)return;
+      for(NSUInteger cut=0;cut<4 && cut<=data.length;cut++){
+        text=[[NSString alloc] initWithBytes:data.bytes length:data.length-cut encoding:NSUTF8StringEncoding];
+        if(text || data.length<128004)break;
+      }
+      if(text.length>32000){NSUInteger end=32000;if(CFStringIsSurrogateHighCharacter([text characterAtIndex:end-1]))end--;text=[text substringToIndex:end];truncated=YES;}
+    }];
+    if(scoped)[url stopAccessingSecurityScopedResource];
+    if(![text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length || [text containsString:[NSString stringWithFormat:@"%C",(unichar)0]]){reject(@"DOCUMENT",@"UTF-8 텍스트 문서를 선택해 주세요.",error);return;}
+    resolve(@{@"name":url.lastPathComponent ?: @"문서",@"text":text,@"truncated":@(truncated)});
+  });
+}
 RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   NSDictionary *q = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nullptr];
   NSURL *folder = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"wifi-gpu"];
