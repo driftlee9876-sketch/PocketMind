@@ -1,0 +1,23 @@
+name: Pair across separate VPN-connected LANs
+on:
+  push:
+    branches: [test/remote20-routed]
+permissions:
+  contents: read
+jobs:
+  routed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.26.11', cache: false}
+      - name: Build the release transport fixture
+        run: |
+          cp tests/routed/main.go workers/wifi/routedmain.go
+          cd workers/wifi && go build -o "$RUNNER_TEMP/pm-peer" ./routedmain.go
+      - name: Pair and exchange data across two separate routed networks
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y wireguard-tools
+          sudo bash tests/routed/network.sh "$RUNNER_TEMP/pm-peer"
