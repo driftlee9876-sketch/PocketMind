@@ -29,6 +29,7 @@ const meshPort = 47832
 var _, meshSubnet, _ = net.ParseCIDR("100.64.0.0/10")
 
 type Endpoint struct {
+	Group  string
 	Relay  string
 	Mesh   bool
 	Local  string
@@ -75,12 +76,18 @@ func (p Endpoint) validate() error {
 }
 
 type challenge struct {
-	ID   string `json:"id"`
-	Peer string `json:"peer"`
-	Code string `json:"code"`
-	vote chan bool
+	ID        string `json:"id"`
+	Peer      string `json:"peer"`
+	Code      string `json:"code"`
+	expected  string
+	submitted bool
+	vote      chan bool
 }
 type Engine struct {
+	group                 groupKey
+	nearby                net.Listener
+	attached              Backend
+	wanted                int
 	relayBytesTransferred atomic.Uint64
 	relayURL              string
 	relayCancel           context.CancelFunc
@@ -107,6 +114,9 @@ func New(dir string) (*Engine, error) {
 	}
 	e := &Engine{relayURL: publicRelay, dir: dir, cert: cert, id: id, trusted: peers, connections: map[net.Conn]bool{}}
 	e.outboundCtx, e.cancelOutbound = context.WithCancel(context.Background())
+	if err := e.loadGroup(); err != nil {
+		return nil, err
+	}
 	return e, e.loadInvites()
 }
 func (e *Engine) snapshot() map[string]any {
@@ -122,7 +132,7 @@ func (e *Engine) snapshot() map[string]any {
 			internet = append(internet, internetPeer(id, room))
 		}
 	}
-	return map[string]any{"relayBytes": e.relayBytesTransferred.Load(), "internetPeers": internet, "relayInvitation": e.invitation, "internetOffering": e.relayCancel != nil, "id": e.id, "trusted": peers, "pending": e.pending, "offering": e.listener != nil || e.relayCancel != nil, "issue": e.issue}
+	return map[string]any{"group": e.group.tag(), "wantGPU": e.wanted > 0 && e.attached == nil, "attached": e.attached != nil, "relayBytes": e.relayBytesTransferred.Load(), "internetPeers": internet, "relayInvitation": e.invitation, "internetOffering": e.relayCancel != nil, "id": e.id, "trusted": peers, "pending": e.pending, "offering": e.listener != nil || e.relayCancel != nil, "issue": e.issue}
 }
 func (e *Engine) setIssue(gen uint64, err error) {
 	e.mu.Lock()
@@ -150,6 +160,11 @@ func (e *Engine) drop(c net.Conn) { c.Close(); e.mu.Lock(); delete(e.connections
 func (e *Engine) stop() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.nearby != nil {
+		e.nearby.Close()
+		e.nearby = nil
+	}
+	e.attached = nil
 	e.epoch++
 	e.cancelOutbound()
 	e.outboundCtx, e.cancelOutbound = context.WithCancel(context.Background())
@@ -203,11 +218,12 @@ func (e *Engine) saveLocked(p string) error {
 func (e *Engine) vote(id string, yes bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.pending == nil || e.pending.ID != id {
+	if e.pending == nil || e.pending.ID != id || e.pending.submitted || (yes && e.pending.expected != "") {
 		return denied
 	}
 	select {
 	case e.pending.vote <- yes:
+		e.pending.submitted = true
 		return nil
 	default:
 		return denied
@@ -223,7 +239,7 @@ func byteIs(c net.Conn, b byte) error {
 	}
 	return nil
 }
-func (e *Engine) consent(gen uint64, c *tls.Conn, peer string) error {
+func (e *Engine) approve(gen uint64, c *tls.Conn, peer string, client bool) error {
 	state := c.ConnectionState()
 	key, err := state.ExportKeyingMaterial("EXPORTER-PocketMind-GPU-pair-v1", nil, 32)
 	if err != nil {
@@ -233,7 +249,15 @@ func (e *Engine) consent(gen uint64, c *tls.Conn, peer string) error {
 	if _, err = rand.Read(nonce[:]); err != nil {
 		return err
 	}
-	ch := &challenge{ID: base64.RawURLEncoding.EncodeToString(nonce[:]), Peer: peer, Code: fmt.Sprintf("%08d", binary.BigEndian.Uint64(key[:8])%100000000), vote: make(chan bool, 1)}
+	ch := &challenge{ID: base64.RawURLEncoding.EncodeToString(nonce[:]), Peer: peer, vote: make(chan bool, 1)}
+	{
+		local, other := key[:8], key[8:16]
+		if !client {
+			local, other = other, local
+		}
+		ch.Code = fmt.Sprintf("%06d", binary.BigEndian.Uint64(local)%1000000)
+		ch.expected = fmt.Sprintf("%06d", binary.BigEndian.Uint64(other)%1000000)
+	}
 	e.mu.Lock()
 	if e.pending != nil || e.epoch != gen {
 		e.mu.Unlock()
@@ -273,6 +297,19 @@ func (e *Engine) consent(gen uint64, c *tls.Conn, peer string) error {
 		case <-timer.C:
 			return errors.New("연결 승인 시간이 지났어요.")
 		}
+	}
+	e.mu.Lock()
+	if e.epoch != gen {
+		e.mu.Unlock()
+		return denied
+	}
+	e.mu.Unlock()
+	secret, err := state.ExportKeyingMaterial("EXPORTER-PocketMind-group-create", nil, 32)
+	if err != nil {
+		return err
+	}
+	if err = e.join(c, gen, secret); err != nil {
+		return err
 	}
 	e.mu.Lock()
 	if e.epoch != gen {
@@ -343,9 +380,9 @@ func (e *Engine) pair(p Endpoint) error {
 		c, err := e.dial(gen, p)
 		if err == nil {
 			defer e.drop(c)
-			_, err = c.Write([]byte{'P'})
+			_, err = c.Write([]byte{'O'})
 			if err == nil {
-				err = e.consent(gen, c, p.ID)
+				err = e.approve(gen, c, p.ID, true)
 			}
 		}
 		if err != nil {
@@ -384,6 +421,7 @@ func (e *Engine) offer(p Endpoint, backend Backend) (int, error) {
 		l.Close()
 		return 0, errors.New("GPU 연결이 이미 실행 중이에요.")
 	}
+	e.attached = backend
 	e.listener = l
 	gen := e.epoch
 	e.mu.Unlock()
@@ -424,15 +462,23 @@ func (e *Engine) accept(gen uint64, c *tls.Conn, backend Backend) {
 	if _, err := io.ReadFull(c, op[:]); err != nil {
 		return
 	}
-	if op[0] == 'P' {
-		if err := e.consent(gen, c, peer); err != nil {
+	if op[0] == 'O' {
+		if err := e.approve(gen, c, peer, false); err != nil {
 			e.setIssue(gen, err)
 		}
 		return
 	}
-	if op[0] != 'D' || !e.isTrusted(peer) {
+	if op[0] == 'G' {
+		e.mu.Lock()
+		key := e.group
+		e.mu.Unlock()
+		if groupProof(c, key, false) != nil {
+			return
+		}
+	} else if op[0] != 'D' || !e.isTrusted(peer) {
 		return
 	}
+	c.SetDeadline(time.Now().Add(45 * time.Second))
 	b, err := backend()
 	if err != nil {
 		return
@@ -448,14 +494,27 @@ func (e *Engine) accept(gen uint64, c *tls.Conn, backend Backend) {
 	relayBytes(c, b)
 }
 func (e *Engine) connectData(gen uint64, p Endpoint) (net.Conn, error) {
-	if !e.isTrusted(p.ID) {
+	e.mu.Lock()
+	key := e.group
+	e.mu.Unlock()
+	grouped := p.Group != "" && p.Group == key.tag()
+	if !grouped && !e.isTrusted(p.ID) {
 		return nil, denied
 	}
 	c, err := e.dial(gen, p)
 	if err != nil {
 		return nil, err
 	}
-	if _, err = c.Write([]byte{'D'}); err == nil {
+	op := byte('D')
+	if grouped {
+		op = 'G'
+	}
+	_, err = c.Write([]byte{op})
+	if err == nil && grouped {
+		err = groupProof(c, key, true)
+	}
+	if err == nil {
+		c.SetDeadline(time.Now().Add(45 * time.Second))
 		err = byteIs(c, 'K')
 	}
 	if err != nil {
@@ -486,7 +545,7 @@ func (e *Engine) openBridges(peers []Endpoint) ([]string, error) {
 		if err := p.validate(); err != nil {
 			return nil, err
 		}
-		if seen[p.ID] || !e.trusted[p.ID] || p.ID == e.id {
+		if seen[p.ID] || (!e.trusted[p.ID] && (p.Group == "" || p.Group != e.group.tag())) || p.ID == e.id {
 			return nil, denied
 		}
 		seen[p.ID] = true
@@ -547,12 +606,40 @@ func (e *Engine) Command(q Request) (map[string]any, error) {
 	switch q.Op {
 	case "status":
 		return e.snapshot(), nil
+	case "unpresence":
+		e.mu.Lock()
+		if e.nearby != nil {
+			e.nearby.Close()
+			e.nearby = nil
+		}
+		e.mu.Unlock()
+	case "presence":
+		return e.presence(q.Endpoint)
+	case "attach":
+		b, err := localBackend(q.Backend, q.Value)
+		if err != nil {
+			return nil, err
+		}
+		e.mu.Lock()
+		if e.wanted > 0 && e.nearby != nil && len(e.bridges) == 0 {
+			e.attached = b
+		}
+		e.mu.Unlock()
+	case "detach":
+		e.mu.Lock()
+		e.attached = nil
+		e.mu.Unlock()
+	case "enter":
+		return nil, e.enter(q.Challenge, q.Value)
 	case "stop":
 		e.stop()
 	case "forget":
 		e.stop()
 		e.mu.Lock()
-		err := e.saveLocked("")
+		err := e.saveGroupLocked(groupKey{})
+		if err == nil {
+			err = e.saveLocked("")
+		}
 		if err == nil {
 			err = e.saveInviteLocked("", "")
 		}

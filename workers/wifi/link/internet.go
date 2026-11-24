@@ -76,6 +76,7 @@ func (e *Engine) offerInternet(backend Backend) error {
 		return errors.New("GPU 연결이 이미 실행 중이에요.")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	e.attached = backend
 	e.relayCancel = cancel
 	mac := hmac.New(sha256.New, e.cert.PrivateKey.(ed25519.PrivateKey).Seed())
 	mac.Write([]byte("PocketMind outbound relay registration v2"))

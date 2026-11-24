@@ -5,8 +5,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {compareGpu,savedComparison} from './gpuComparison';
 import type {WiredSession} from './wiredInference';
 
-type Peer = {ID: string; name: string; platform?: string};
-type Status = {peers: Peer[]; trusted: string[]; offering: boolean; searching?: boolean; invitation?:string; meshReady?:boolean; internetOffering?:boolean; pending?: {id:string;code:string}; issue?:string};
+type Peer = {ID: string; name: string; platform?: string;Group?:string};
+type Status = {group?:string;wantGPU?:boolean;attached?:boolean;peers: Peer[]; trusted: string[]; offering: boolean; searching?: boolean; invitation?:string; meshReady?:boolean; internetOffering?:boolean; pending?: {id:string;code:string}; issue?:string};
 type Preference = {ids:string[];filename:string};
 const storageKey = 'pocketmind.wifi-gpu.preferred.v1';
 const native = Platform.OS === 'ios' ? NativeModules.PocketMindMetalPeer : NativeModules.PocketMindWorker;
@@ -14,13 +14,18 @@ const initial:Status = {peers:[],trusted:[],offering:false};
 async function command(op:string,args:object={}):Promise<Status> {
   return JSON.parse(await native.wifiGpu(JSON.stringify({op,...args})));
 }
-type Props={running:boolean;visible:boolean;reset:number;filename?:string;session:WiredSession|null;onSession:(v:WiredSession|null)=>void;onMode:(v:boolean)=>void;onClose:()=>void};
+type Props={running:boolean;visible:boolean;reset:number;filename?:string;session:WiredSession|null;onSession:(v:WiredSession|null)=>void;onMode:(v:boolean)=>void;onOpen:()=>void;onClose:()=>void};
 export function WifiGpuPanel(props:Props) {
   const [state,setState]=useState<Status>(initial);
   const [pref,setPref]=useState<Preference|null>(null);
   const [busy,setBusy]=useState('');
   const [selected,setSelected]=useState<string[]>([]);
   const [invite,setInvite]=useState('');
+  const [otp,setOtp]=useState('');
+  useEffect(()=>{setOtp('');},[state.pending?.id]);
+  const member=(p:Peer)=>Boolean(state.group && p.Group===state.group) || state.trusted.includes(p.ID);
+  const groups=new Map<string,Peer[]>();
+  for(const p of state.peers){const id=p.Group || '';groups.set(id,[...(groups.get(id)||[]),p]);}
   const [remoteOpen,setRemoteOpen]=useState(false);
   const measurement=useRef<AbortController|null>(null);
   const [report,setReport]=useState<Awaited<ReturnType<typeof savedComparison>>>(null);
@@ -66,11 +71,11 @@ export function WifiGpuPanel(props:Props) {
   useEffect(()=>{
     if (!props.reset) return;
     remember(null);setError('');
-    command('stop').catch(()=>{});
+    command('stop').then(()=>command('browse')).catch(()=>{});
   },[props.reset]);
-  const watch=Boolean(props.visible || pref);
+  const wakeAfter=useRef(0);
   useEffect(()=>{
-    if(!watch || !foreground || !native) return;
+    if(!foreground || !native) return;
     let live=true, polling=false;
     async function tick(start=false){
       if(polling || !live)return;polling=true;
@@ -78,9 +83,16 @@ export function WifiGpuPanel(props:Props) {
         const s=await command(start?'browse':'status');
         if(!live)return;
         setState(s);
+        if(s.wantGPU && !preparing.current && !current.current.running && !current.current.session && !preference.current && Date.now()>=wakeAfter.current){
+          preparing.current=true;
+          try{if(Platform.OS==='ios')await native.startUsbGpuPeer();else await native.prepareWifiPeer();
+            if(live)await command('attach');
+          }catch(e:any){wakeAfter.current=Date.now()+5000;if(live)setError(e?.message||'GPU를 준비하지 못했어요.');}
+          finally{preparing.current=false;}
+        }
         for(const peer of s.peers) names.current[peer.ID]=peer.name;
         const target=preference.current;
-        if(target && !current.current.running && !s.offering && !current.current.session && !loading.current && target.ids.every(id=>s.trusted.includes(id) && s.peers.some(p=>p.ID===id)) && Date.now()>=nextTry.current){
+        if(target && !current.current.running && !s.offering && !current.current.session && !loading.current && target.ids.every(id=>s.peers.some(p=>p.ID===id && (s.trusted.includes(id) || (!!s.group && s.group===p.Group)))) && Date.now()>=nextTry.current){
           const epoch=generation.current;loading.current=true;setBusy(`보조 GPU ${target.ids.length}대에 모델을 나눠 올리는 중…`);
           try{
             const previous=await savedComparison(target.filename,target.ids);
@@ -95,8 +107,8 @@ export function WifiGpuPanel(props:Props) {
       finally{polling=false;}
     }
     tick(true);const timer=setInterval(()=>tick(),1500);
-    return ()=>{live=false;clearInterval(timer);if(!preference.current)command('stop').catch(()=>{});};
-  },[watch,foreground]);
+    return ()=>{live=false;clearInterval(timer);};
+  },[foreground]);
   async function action(fn:()=>Promise<void>){
     setError('');
     try{await fn();setState(await command('status'));}catch(e:any){setError(e?.message||'연결하지 못했어요.');}
@@ -112,7 +124,7 @@ export function WifiGpuPanel(props:Props) {
   }
   async function toggleOffer(route:"lan"|"internet"|"mesh"="lan"){
     if(preparing.current)return;
-    if(state.offering){await command('stop');await command('browse');return;}
+    if(state.offering || state.attached){await command('stop');await command('browse');return;}
     const epoch=++offerEpoch.current;
     preparing.current=true;setBusy('GPU 제공을 준비하는 중…');
     try {
@@ -138,10 +150,12 @@ export function WifiGpuPanel(props:Props) {
     if(measurement.current){measurement.current.abort();native.stopTabletGpu().catch(()=>{});}
 
     offerEpoch.current++;
-    if(!preference.current)command('stop').catch(()=>{});
+
     props.onClose();
   }
-  return <Modal visible={props.visible} transparent animationType="slide" onRequestClose={close}>
+  return <>{!props.visible && foreground && (state.pending || state.peers.some(p=>p.Group!==undefined)) &&
+    <TouchableOpacity accessibilityRole="button" style={s.nearby} onPress={props.onOpen}><Text style={s.label}>{state.pending?'기기 연결 요청 · 코드 입력':`주변 PocketMind · ${state.peers.filter(p=>p.Group!==undefined).length}대`}</Text></TouchableOpacity>}
+    <Modal visible={props.visible} transparent animationType="slide" onRequestClose={close}>
     <View style={s.overlay}><View style={s.card}><View style={s.header}><Text style={s.title}>Wi-Fi GPU</Text>
       {button('닫기',close)}</View><ScrollView keyboardShouldPersistTaps="handled">
       <Text style={s.detail}>{'이 기기에 설치한 모델을 주변 GPU와 나눠 실행하거나, 이 기기의 GPU를 제공할 수 있어요. 공유 중에는 앱을 열어 두세요.'}</Text>
@@ -158,22 +172,23 @@ export function WifiGpuPanel(props:Props) {
       </View>}
       {!!state.invitation && <View style={s.group}><Text selectable style={s.detail}>{state.invitation}</Text>
         {button('원격 초대 복사',()=>Clipboard.setString(state.invitation!))}</View>}
-      {state.pending && <View style={s.group}><Text style={s.title}>{state.pending.code.slice(0,4)} {state.pending.code.slice(4)}</Text>
-        <Text style={s.detail}>연결할 두 기기에 같은 숫자가 보일 때 양쪽에서 승인하세요.</Text>
-        {button('코드 일치 · 승인',()=>action(async()=>{await command('vote',{id:state.pending!.id,accept:true});}))}
+      {state.pending && <View style={s.group}><Text style={s.title}>{state.pending.code.slice(0,3)} {state.pending.code.slice(3)}</Text>
+        <Text style={s.detail}>내 코드를 상대 기기에 입력하고, 아래에는 상대 화면의 6자리를 입력하세요. 코드는 1분 동안 유효해요.</Text>
+        <TextInput style={s.input} value={otp} onChangeText={v=>setOtp(v.replace(/[^0-9]/g,''))} maxLength={6} keyboardType="number-pad" placeholder="상대 기기 코드 6자리" placeholderTextColor="#ABBAB0"/>
+        {button('코드 입력 · 연결',()=>action(async()=>{await command('enter',{id:state.pending!.id,code:otp});setOtp('');}),otp.length!==6)}
         {button('거절',()=>action(async()=>{await command('vote',{id:state.pending!.id,accept:false});}))}</View>}
       {!state.offering && <View style={s.group}>
-        <Text style={s.heading}>주변 GPU</Text>
-        {!state.peers.length && <Text style={s.detail}>{state.searching ? '기기를 찾는 중… 보조 기기에서 Wi-Fi GPU 제공을 켜 주세요.' : '검색을 준비하고 있어요. Wi-Fi 연결을 확인해 주세요.'}</Text>}
-        {state.peers.map(p=><View key={p.ID+p.name} style={s.peer}><Text style={s.heading}>{p.name}</Text>
-          <Text style={s.detail}>{p.platform || 'GPU'} · {state.trusted.includes(p.ID)?'승인한 기기':'처음 연결'}</Text>
-          {state.trusted.includes(p.ID)?button(selected.includes(p.ID)?'선택 해제':'연산에 추가',()=>{
+        <Text style={s.heading}>주변 기기와 그룹</Text>
+        {!state.peers.length && <Text style={s.detail}>{state.searching ? '기기를 찾는 중… 같은 Wi-Fi의 다른 기기에서 PocketMind를 열어 주세요.' : '검색을 준비하고 있어요. Wi-Fi 연결을 확인해 주세요.'}</Text>}
+        {Array.from(groups,([group,peers])=><View key={group || 'single'}>{!!group && <Text style={s.heading}>{state.group===group?'내 그룹':'주변 그룹'} · {group.slice(0,6)} · 주변 {peers.length}대</Text>}{peers.map(p=><View key={p.ID+p.name} style={s.peer}><Text style={s.heading}>{p.name}</Text>
+          <Text style={s.detail}>{p.platform || 'GPU'} · {member(p)?'연결된 기기':'처음 연결'}</Text>
+          {member(p)?button(selected.includes(p.ID)?'선택 해제':'연산에 추가',()=>{
             setSelected(current=>current.includes(p.ID)?current.filter(id=>id!==p.ID):current.length<20?[...current,p.ID]:current);
           },!!pref||!!busy||!!props.session||(!selected.includes(p.ID)&&selected.length>=20)):
-            button('이 기기와 연결',()=>action(async()=>{await command('pair',{id:p.ID});}),!!state.pending||!!busy||!!props.session)}</View>)}
+            button(p.Group?'이 그룹에 연결':'이 기기와 연결',()=>action(async()=>{await command('pair',{id:p.ID});}),!!state.pending||!!busy||!!props.session)}</View>)}</View>)}
         {!pref && selected.length>0 && button(`선택한 ${selected.length}/20대로 대화 · 자동 재연결`,()=>{
           if(props.filename)remember({ids:[...selected],filename:props.filename});
-        },!props.filename||!!busy||!!props.session||!selected.every(id=>state.trusted.includes(id)&&state.peers.some(p=>p.ID===id)))}
+        },!props.filename||!!busy||!!props.session||!selected.every(id=>state.peers.some(p=>p.ID===id && member(p))))}
         {Platform.OS==='android' && !pref && !!selected.length && button('탭 단독과 속도 비교',benchmark,props.running||!props.filename||!!busy||!!props.session)}
         {report && <View style={s.group}>{report.samples.map(row=><Text key={row.label} style={s.detail}>{row.label} · 준비 {(row.loadMs/1000).toFixed(1)}초 · 첫 토큰 {(row.firstMs/1000).toFixed(2)}초 · {row.rate>0 ? row.rate.toFixed(1)+' tok/s' : '속도 미제공'}</Text>)}
           {report.unavailable.map(value=><Text key={value} style={s.detail}>{value}</Text>)}
@@ -189,11 +204,11 @@ export function WifiGpuPanel(props:Props) {
         {!props.filename && <Text style={s.detail}>함께 실행할 GGUF를 주 기기에 설치하고 선택하세요.</Text>}
         {pref && button('자동 재연결 끄고 연결 해제',()=>action(()=>disconnect(false)))}
       </View>}
-      {(!pref && !props.session) && button(state.offering?'Wi-Fi GPU 제공 중지':'이 기기의 Wi-Fi GPU 제공',()=>action(()=>toggleOffer()),!!busy||!!state.pending)}
+      {(!pref && !props.session) && button((state.offering || state.attached)?'Wi-Fi GPU 제공 중지':'이 기기의 Wi-Fi GPU 제공',()=>action(()=>toggleOffer()),!!busy||!!state.pending)}
       {(state.trusted.length>0 || state.peers.some(p=>p.platform==='Tailscale' || p.platform==='PocketMind')) && button('저장한 Wi-Fi 기기 모두 잊기',()=>action(()=>disconnect(true)))}
       {!!busy && <Text style={s.detail}>{busy}</Text>}
       {!!(error||state.issue) && <Text style={s.error}>{error||state.issue}</Text>}
     </ScrollView></View></View>
-  </Modal>;
+  </Modal></>;
 }
-const s=StyleSheet.create({overlay:{flex:1,backgroundColor:'#0009',justifyContent:'center',alignItems:'center',padding:18},card:{width:'100%',maxWidth:560,maxHeight:'90%',backgroundColor:'#222724',borderRadius:18,padding:18},header:{flexDirection:'row',justifyContent:'space-between',alignItems:'center'},title:{fontSize:22,color:'#fff',fontWeight:'700'},heading:{fontSize:16,color:'#F1F5F2',fontWeight:'600'},detail:{color:'#BAC8C0',fontSize:14,lineHeight:21,marginVertical:7},button:{padding:11,backgroundColor:'#33463E',alignItems:'center',borderRadius:10,marginVertical:4},label:{color:'#CAEFDE',fontWeight:'600'},peer:{marginTop:8,borderRadius:10,padding:10,backgroundColor:'#2A302D'},group:{marginVertical:10},dim:{opacity:.55},error:{color:'#F4C5A9',marginVertical:8}});
+const s=StyleSheet.create({input:{color:"#fff",padding:10},nearby:{position:"absolute",right:14,top:54,zIndex:12,padding:9,backgroundColor:"#33463E",borderRadius:14},overlay:{flex:1,backgroundColor:'#0009',justifyContent:'center',alignItems:'center',padding:18},card:{width:'100%',maxWidth:560,maxHeight:'90%',backgroundColor:'#222724',borderRadius:18,padding:18},header:{flexDirection:'row',justifyContent:'space-between',alignItems:'center'},title:{fontSize:22,color:'#fff',fontWeight:'700'},heading:{fontSize:16,color:'#F1F5F2',fontWeight:'600'},detail:{color:'#BAC8C0',fontSize:14,lineHeight:21,marginVertical:7},button:{padding:11,backgroundColor:'#33463E',alignItems:'center',borderRadius:10,marginVertical:4},label:{color:'#CAEFDE',fontWeight:'600'},peer:{marginTop:8,borderRadius:10,padding:10,backgroundColor:'#2A302D'},group:{marginVertical:10},dim:{opacity:.55},error:{color:'#F4C5A9',marginVertical:8}});

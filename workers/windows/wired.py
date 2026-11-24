@@ -348,10 +348,18 @@ def main():
         if pairing: status.set("PocketMind 모델 선택 → 유선 GPU 연결 → " + pairing.renew())
 
     def poll():
-        nonlocal pairing
+        nonlocal pairing, nearby_pending
         while not events.empty():
             kind, value = events.get()
-            if kind == "ready":
+            if kind=="nearby":
+                pending,count=value
+                if pending!=nearby_pending:
+                    nearby_pending=pending
+
+                    otp.set("")
+                nearby_text.set("내 코드 · "+pending["code"]+"   상대 기기 코드를 입력하세요." if pending else f"주변 PocketMind · {count}대")
+            elif kind=="nearby_error": nearby_text.set(value)
+            elif kind == "ready":
                 pairing = value
                 status.set("PocketMind 모델 선택 → 유선 GPU 연결 → " + pairing.code)
             elif kind == "error": status.set(value)
@@ -382,7 +390,24 @@ def main():
             return
         wifi_window = open_host(root,bundle,for_row[1].get(),for_row[2].get(),loaded_model)
     ttk.Button(form,text="Wi-Fi로 갤탭 GPU 사용 · PC에서 대화", command=host_wifi).grid(row=10,column=0,columnspan=3,sticky="ew")
-    root.protocol("WM_DELETE_WINDOW", lambda: (stopped.set(), root.destroy()))
+    from nearby import presence
+    from wifi_offer import Transport
+    nearby_pending=None
+    nearby_text=tk.StringVar(value="주변 기기 연결 대기 중")
+    otp=tk.StringVar()
+    ttk.Label(form,textvariable=nearby_text).grid(row=11,column=0,columnspan=3)
+    ttk.Entry(form,textvariable=otp,width=10).grid(row=12,column=0)
+    def accept_nearby():
+        if nearby_pending:
+            try:
+                Transport(bundle).call("enter",Challenge=nearby_pending["id"],Value=otp.get())
+                otp.set("")
+            except ValueError as exc:
+                nearby_text.set(str(exc))
+    ttk.Button(form,text="상대 코드 입력 · 연결",command=accept_nearby).grid(row=12,column=1)
+    presence_stop=threading.Event()
+    threading.Thread(target=presence,args=(bundle,events,presence_stop),daemon=True).start()
+    root.protocol("WM_DELETE_WINDOW", lambda: (presence_stop.set(), stopped.set(), root.destroy()))
     poll()
     root.mainloop()
 

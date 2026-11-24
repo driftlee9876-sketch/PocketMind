@@ -163,7 +163,9 @@ static BOOL validPin(NSString *s) {
   std::shared_ptr<HostState> _hostState;
   std::shared_ptr<std::atomic<bool>> _requestCancel;
   NSString *_hostToken,*_requestId;
-  NSNetService *_wifiService;
+  NSNetService *_wifiService,*_presence;
+  NSString *_presenceTag;
+  BOOL _autoGpu,_discoverable;
   NSDictionary *_wifiLink;
   NSString *_wifiError;
   NSString *_meshInvite;
@@ -187,7 +189,29 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
 - (void)background:(NSNotification *)notification {
   if (!_wifiLink && _peer) _peer->stop();
 }
+- (void)endPresence {
+  _presence.delegate=nil;[_presence stop];_presence=nil;_presenceTag=nil;
+}
+- (void)refreshPresence {
+  NSDictionary *link=wifiEndpoint(NO);
+  if (!link){[self endPresence];wifiCall(@{@"Op":@"unpresence"});return;}
+  NSDictionary *r=wifiCall(@{@"Op":@"presence",@"Endpoint":link});
+  if(!r[@"port"])return;
+  NSString *tag=[NSString stringWithFormat:@"%@/%@/%@",link[@"Local"],r[@"port"],r[@"group"]];
+  if ([_presenceTag isEqual:tag])return;
+  [self endPresence];_presenceTag=tag;
+  NSString *group=r[@"group"];
+  NSString *name=[NSString stringWithFormat:@"PocketMind iOS %@ %@",[r[@"id"] substringToIndex:5],[group substringToIndex:MIN((NSUInteger)6,group.length)]];
+  _presence=[[NSNetService alloc] initWithDomain:@"local." type:@"_pmgpu._tcp." name:name port:[r[@"port"] intValue]];
+  NSMutableDictionary *txt=[NSMutableDictionary dictionary];
+  NSDictionary *fields=@{@"ip":link[@"Local"],@"id":r[@"id"],@"platform":@"iOS",@"near":@"1",@"group":r[@"group"]};
+  for(NSString *k in fields)txt[k]=[fields[k] dataUsingEncoding:NSUTF8StringEncoding];
+  [_presence setTXTRecordData:[NSNetService dataFromTXTRecordDictionary:txt]];
+  _presence.delegate=self;[_presence publish];
+}
 - (void)endWifi {
+  _discoverable=NO;[self endPresence];wifiCall(@{@"Op":@"unpresence"});
+  if(_autoGpu){if(_peer)_peer->stop();_autoGpu=NO;wifiCall(@{@"Op":@"detach"});}
   [self endBrowse];
   if (_hostState) { [self stopHost]; wifiCall(@{@"Op":@"stop"}); }
   if (_wifiLink) {
@@ -202,6 +226,7 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
   if (_peer) _peer->stop();
 }
 - (void)netService:(NSNetService *)sender didNotPublish:(NSDictionary *)errorDict {
+  if(sender==_presence){[self endPresence];_wifiError=@"로컬 네트워크 접근을 허용해 주세요.";return;}
   if (sender == _wifiService) {
     _wifiError = @"설정에서 PocketMind의 로컬 네트워크 접근을 허용하고 다시 눌러 주세요.";
     [self endWifi];
@@ -218,7 +243,7 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
   if (_peer) _peer->stop();
 }
 - (void)beginBrowse {
-  if (_browser || _wifiLink) return;
+  if (_browser) return;
   _browser=[NSNetServiceBrowser new];
   _browser.delegate=self;
   [_browser searchForServicesOfType:@"_pmgpu._tcp." inDomain:@"local."];
@@ -258,11 +283,14 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
       if (a->sin_family==AF_INET && inet_ntop(AF_INET,&a->sin_addr,buf,sizeof(buf))) { ip=@(buf); break; }
     }
   }
-  if (ip) _nearby[service.name]=@{@"ID":pin,@"IP":ip,@"Port":@(service.port),@"name":service.name,@"platform":field(@"platform") ?: @"GPU"};
+  if (ip) _nearby[service.name]=@{@"ID":pin,@"IP":ip,@"Port":@(service.port),@"name":service.name,@"Group":field(@"group") ?: @"",@"near":@([field(@"near") isEqual:@"1"]),@"platform":field(@"platform") ?: @"GPU"};
 }
 - (NSArray *)availablePeers {
   NSMutableArray *peers=[NSMutableArray array];
-  for (NSDictionary *p in [_nearby.allValues arrayByAddingObjectsFromArray:_remote.allValues]) {
+  NSArray *ordered=[_nearby.allValues sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){return [b[@"near"] compare:a[@"near"]];}];
+  NSString *own=wifiCall(@{@"Op":@"status"})[@"id"];
+  for (NSDictionary *p in [ordered arrayByAddingObjectsFromArray:_remote.allValues]) {
+    if([p[@"ID"] isEqual:own] || [[peers valueForKey:@"ID"] containsObject:p[@"ID"]])continue;
     NSDictionary *iface=wifiEndpoint([p[@"Mesh"] boolValue]);
     if (!iface) continue;
     NSMutableDictionary *endpoint=[p mutableCopy]; [endpoint addEntriesFromDictionary:iface];
@@ -376,7 +404,7 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
   if (r[@"error"]) {reject(@"WIFI_GPU",r[@"error"],nil); return;}
   NSString *op = q[@"op"];
   if ([op isEqual:@"browse"]) {
-    [self beginBrowse];
+    _discoverable=YES;[self beginBrowse];
   } else if ([op isEqual:@"import"] && [q[@"invite"] hasPrefix:@"pmgpu2|"]) {
     r=wifiCall(@{@"Op":@"importInternet",@"Value":q[@"invite"]});
   } else if ([op isEqual:@"import"]) {
@@ -420,12 +448,22 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
     [self endWifi]; _wifiError = nil;
     if ([op isEqual:@"forget"]) {[_remote removeAllObjects];[[NSUserDefaults standardUserDefaults] removeObjectForKey:@"PocketMindMeshHosts"];}
     r = wifiCall(@{@"Op":op});
+  } else if ([op isEqual:@"attach"]) {
+    if (UIApplication.sharedApplication.applicationState!=UIApplicationStateActive || _hostState || !_peer || _peer->closed.load()){reject(@"GPU",@"GPU를 준비하지 못했어요.",nil);return;}
+    _peer->paired.store(true);_autoGpu=YES;
+    r=wifiCall(@{@"Op":@"attach",@"Backend":@"ios",@"Value":@(_peer->token.c_str())});
+  } else if ([op isEqual:@"enter"]) {
+    r=wifiCall(@{@"Op":op,@"Challenge":q[@"id"] ?: @"",@"Value":q[@"code"] ?: @""});
   } else if ([op isEqual:@"vote"]) {
     r = wifiCall(@{@"Op":op,@"Challenge":q[@"id"] ?: @"",@"Accept":q[@"accept"] ?: @NO});
   } else if (_wifiLink && (!_peer || _peer->closed.load() || (![_wifiLink[@"Internet"] boolValue] && ![_wifiLink isEqual:wifiEndpoint([_wifiLink[@"Mesh"] boolValue])]))) {
     [self endWifi]; _wifiError=@"Wi-Fi 또는 GPU 연결이 종료됐어요.";
   }
   if (r[@"error"]) {reject(@"WIFI_GPU",r[@"error"],nil);return;}
+  if(_discoverable && UIApplication.sharedApplication.applicationState==UIApplicationStateActive){
+    [self refreshPresence];[self beginBrowse];
+    if(_autoGpu && (!_peer || _peer->closed.load())){_autoGpu=NO;wifiCall(@{@"Op":@"detach"});}
+  }
   NSMutableDictionary *state=[wifiCall(@{@"Op":@"status"}) mutableCopy];
   if (_wifiError) state[@"issue"]=_wifiError;
   if (_meshInvite) state[@"invitation"]=_meshInvite;

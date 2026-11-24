@@ -61,11 +61,11 @@ func TestInternetPairAndStream(t *testing.T) {
 		return host.snapshot()["pending"].(*challenge) != nil && donor.snapshot()["pending"].(*challenge) != nil
 	})
 	a, b := host.snapshot()["pending"].(*challenge), donor.snapshot()["pending"].(*challenge)
-	if a.Code != b.Code {
+	if a.expected != b.Code {
 		t.Fatal("pair codes differ")
 	}
-	host.vote(a.ID, true)
-	donor.vote(b.ID, true)
+	host.enter(a.ID, b.Code)
+	donor.enter(b.ID, a.Code)
 	until(func() bool { return host.isTrusted(donor.id) && donor.isTrusted(host.id) })
 	payload := bytes.Repeat([]byte("gpu tensor"), 65536)
 	for i := 0; i < 2; i++ {

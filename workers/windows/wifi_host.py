@@ -60,12 +60,20 @@ def open_host(root, bundle, executable, model, loaded_model):
 
     def redraw():
         chosen = {peer_keys[i] for i in listing.curselection()}
-        peer_keys[:] = list(peers)
+        by_id = {}
+        for key, (_, endpoint) in peers.items():
+            if endpoint["ID"] not in by_id or endpoint.get("near"):
+                by_id[endpoint["ID"]] = key
+        peer_keys[:] = list(by_id.values())
         listing.delete(0,"end")
-        trusted = transport.call("status")["trusted"]
+        state = transport.call("status")
+        trusted = state["trusted"]
         for i, key in enumerate(peer_keys):
             name, endpoint = peers[key]
-            listing.insert("end",f"{name} · {endpoint.get('IP','인터넷')} · " + ("승인됨" if endpoint["ID"] in trusted else "처음 연결"))
+            group = endpoint.get("Group","")
+            if group:
+                name = ("내 그룹" if group==state["group"] else "주변 그룹")+" "+group[:6]+" · "+name
+            listing.insert("end",f"{name} · {endpoint.get('IP','인터넷')} · " + ("승인됨" if endpoint["ID"] in trusted or (state["group"] and state["group"]==endpoint.get("Group")) else "처음 연결"))
             if key in chosen:
                 listing.selection_set(i)
 
@@ -90,6 +98,7 @@ def open_host(root, bundle, executable, model, loaded_model):
         if local.get("Mesh") or local.get("Internet"):
             status.set("갤탭의 원격 GPU 초대를 붙여넣고 추가하세요.")
             return
+        own=transport.call("status")["id"]
         epoch = generation
         class Listener(ServiceListener):
             def remove_service(self, client, kind, name):
@@ -99,18 +108,18 @@ def open_host(root, bundle, executable, model, loaded_model):
                 if not info:
                     return
                 pin = info.properties.get(b"id",b"").decode("ascii",errors="ignore")
-                if not re.fullmatch(r"[A-Za-z0-9_-]{43}",pin):
+                if pin==own or not re.fullmatch(r"[A-Za-z0-9_-]{43}",pin):
                     return
                 network = ipaddress.ip_network(f"{local['Local']}/{local['Prefix']}",strict=False)
                 for addr in info.parsed_addresses(IPVersion.V4Only):
                     if ipaddress.ip_address(addr) in network:
-                        endpoint = dict(local,IP=addr,ID=pin,Port=info.port)
+                        endpoint = dict(local,IP=addr,ID=pin,Port=info.port,Group=info.properties.get(b"group",b"").decode("ascii",errors="ignore"),near=b"near" in info.properties)
                         notices.put(("found",(epoch,name,endpoint)))
                         return
             update_service = add_service
         zc = Zeroconf(interfaces=[local["Local"]],ip_version=IPVersion.V4Only)
         browser = ServiceBrowser(zc,SERVICE,Listener())
-        status.set("갤탭에서 Wi-Fi GPU 제공을 켜세요.")
+        status.set("같은 Wi-Fi에서 PocketMind가 열린 기기와 그룹을 찾고 있어요.")
 
     def add_remote():
         if active:
@@ -132,9 +141,16 @@ def open_host(root, bundle, executable, model, loaded_model):
             raise ValueError("처음 연결할 기기 한 대를 선택하세요.")
         transport.call("pair",Endpoint=donors[0])
 
+    otp=tk.StringVar()
+    ttk.Entry(frame,textvariable=otp).pack(fill="x")
+
     def vote(accept):
         if pending:
-            transport.call("vote",Challenge=pending["id"],Accept=accept)
+            if accept:
+                transport.call("enter",Challenge=pending["id"],Value=otp.get())
+            else:
+                transport.call("vote",Challenge=pending["id"],Accept=False)
+            otp.set("")
 
     def start():
         nonlocal active,model
@@ -209,7 +225,7 @@ def open_host(root, bundle, executable, model, loaded_model):
                 status.set(str(exc))
         return clicked
     for title, fn in [("주변 GPU 찾기",browse),("원격 초대 추가",add_remote),("선택한 기기와 페어링",pair),
-                      ("코드 일치 · 승인",lambda:vote(True)),("거절",lambda:vote(False)),("모델 시작 / 중지",start)]:
+                      ("상대 코드 입력 · 연결",lambda:vote(True)),("거절",lambda:vote(False)),("모델 시작 / 중지",start)]:
         ttk.Button(frame,text=title,command=guard(fn)).pack(fill="x")
     chat.pack(fill="both",expand=True)
     prompt.pack(fill="x")
@@ -251,7 +267,7 @@ def open_host(root, bundle, executable, model, loaded_model):
         state=transport.call("status")
         pending=state.get("pending")
         if pending:
-            status.set("두 기기에서 코드를 확인하세요 · "+pending["code"])
+            status.set("내 코드 · "+pending["code"])
         elif state.get("issue"):
             status.set(state["issue"])
         if last_trust!=set(state["trusted"]):

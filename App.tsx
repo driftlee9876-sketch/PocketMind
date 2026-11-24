@@ -2048,7 +2048,7 @@ function PocketMindChatGPTScreen() {
         </View>
       </Modal>
 
-      <WifiGpuPanel running={isGenerating} visible={wifiOpen} reset={wifiReset} filename={installedModelIds.includes(primaryModelId) ? safeCatalog.find(m=>m.id===primaryModelId)?.filename : undefined}
+      <WifiGpuPanel onOpen={()=>setWifiOpen(true)} running={isGenerating} visible={wifiOpen} reset={wifiReset} filename={installedModelIds.includes(primaryModelId) ? safeCatalog.find(m=>m.id===primaryModelId)?.filename : undefined}
         session={wiredSession} onMode={setWifiMode} onSession={setWiredSession} onClose={()=>setWifiOpen(false)}/>
       <Modal visible={wiredOpen} transparent animationType="slide" onRequestClose={closePairing}>
         <View style={styles.bottomSheetOverlay}><View style={styles.bottomSheetCard}>
