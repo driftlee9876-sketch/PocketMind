@@ -1,10 +1,10 @@
-import { DeviceEventEmitter, NativeModules } from 'react-native';
+import { DeviceEventEmitter, NativeModules, Platform } from 'react-native';
 import type { PlanMessage } from './chatGPTPlan';
 
 let sequence = 0;
 async function request(action: 'pair' | 'models' | 'chat' | 'stream', token: string, body: unknown, signal: AbortSignal, onText?:(value:string)=>void) {
   if (signal.aborted) throw new Error('요청을 취소했어요.');
-  const native = NativeModules.PocketMindWorker;
+  const native = action==='stream' && Platform.OS==='ios' ? NativeModules.PocketMindMetalPeer : NativeModules.PocketMindWorker;
   const id = String(++sequence);
   const listener = onText ? DeviceEventEmitter.addListener('PocketMindGpuText',(event:{id:string;text:string})=>{if(event.id===id && !signal.aborted) onText(event.text);}) : null;
   const cancel = () => native.cancelWiredRequest(id);

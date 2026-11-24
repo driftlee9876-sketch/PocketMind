@@ -20,3 +20,19 @@ test('an unavailable cable cannot silently send the prompt elsewhere', async () 
   expect(request).toHaveBeenCalledTimes(1);
   expect(request.mock.calls[0][1]).toBe('chat');
 });
+
+test('iPhone Wi-Fi conversations use the Metal host session', async () => {
+  const {Platform} = require('react-native');
+  const original = Platform.OS;
+  const previous = NativeModules.PocketMindMetalPeer;
+  const wiredRequest = jest.fn().mockResolvedValue(JSON.stringify({text:'태블릿 GPU 답변'}));
+  try {
+    Platform.OS = 'ios';
+    NativeModules.PocketMindMetalPeer = {wiredRequest};
+    await expect(runWiredInference({...session, tablet:true, wifi:true}, [], '안녕', signal)).resolves.toBe('태블릿 GPU 답변');
+    expect(wiredRequest.mock.calls[0].slice(1,3)).toEqual(['stream',session.token]);
+  } finally {
+    Platform.OS = original;
+    NativeModules.PocketMindMetalPeer = previous;
+  }
+});

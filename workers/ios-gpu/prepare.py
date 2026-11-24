@@ -27,3 +27,48 @@ source, original = checked("ggml-rpc.cpp", "dbd7dd4677092a8b68f9f24fa60168393d95
 # The portable function is defined in this translation unit. Link Metal in the final framework.
 inc = pathlib.Path(__file__).with_name("backend.inc").read_text()
 source.write_text('#include "ggml-metal.h"\n' + original + '\n' + inc)
+
+client = pathlib.Path(__file__).with_name("client.inc").read_text()
+path = folder / "transport.cpp"
+path.write_text(path.read_text().replace("socket_ptr socket_t::connect(const char *, int) { return nullptr; }", client))
+# On a phone the host shares a process with the UI. Signal transport loss to
+# the active load/decode and drain queued messages while the session unwinds.
+s = source.read_text()
+s = s.replace("void rpc_dispatcher::work() {", 'extern "C" void pm_host_rpc_failed();\nvoid rpc_dispatcher::work() {\n    bool failed = false;')
+a = s.index("void rpc_dispatcher::work() {")
+b = s.index("rpc_dispatcher::~rpc_dispatcher()", a)
+s = s[:a] + s[a:b].replace("bool status = send_rpc_cmd", "bool status = !failed && send_rpc_cmd") + s[b:]
+s = s.replace("RPC_STATUS_ASSERT(status);", """if (!status) {
+                    failed = true;
+                    pm_host_rpc_failed();
+                    if (msg_ptr->output) {
+                        memset(msg_ptr->output, 0, msg_ptr->output_size);
+                        if (msg_ptr->cmd == RPC_CMD_GET_ALIGNMENT)
+                            static_cast<rpc_msg_get_alignment_rsp *>(msg_ptr->output)->alignment = 64;
+                    }
+                }""")
+source.write_text(s)
+for file, before, after in [
+    ("src/llama.cpp", "size_t llama_max_devices(void) {\n    return 16;", "size_t llama_max_devices(void) {\n    return 32;"),
+    ("ggml/include/ggml-rpc.h", "GGML_RPC_MAX_SERVERS       16", "GGML_RPC_MAX_SERVERS       20"),
+    ("ggml/src/ggml-backend.cpp", "#define GGML_SCHED_MAX_BACKENDS 16", "#define GGML_SCHED_MAX_BACKENDS 32"),
+]:
+    path = upstream / file
+    s = path.read_text()
+    if s.count(before) != 1:
+        raise RuntimeError("Unexpected device limit in " + file)
+    path.write_text(s.replace(before, after))
+
+# Verify the real per-device model buffers before the app reports a session.
+model_source = upstream / "src/llama-model.cpp"
+with model_source.open("a") as f:
+    f.write("""
+extern "C" bool pm_model_has_weights(const llama_model *model, ggml_backend_dev_t device) {
+    for (const auto & [type, bytes] : model->memory_breakdown()) {
+        auto owner = ggml_backend_buft_get_device(type);
+        if (!owner) owner = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (owner == device && bytes > 0) return true;
+    }
+    return false;
+}
+""")

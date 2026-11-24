@@ -1,5 +1,7 @@
 #import <React/RCTBridgeModule.h>
 #import <UIKit/UIKit.h>
+#import <React/RCTBridge.h>
+#include <vector>
 #import <Security/Security.h>
 #import <PocketMindMetalPeer/PocketMindMetalPeer.h>
 #include <arpa/inet.h>
@@ -141,10 +143,26 @@ struct Peer {
 };
 }
 
-@interface PocketMindMetalPeerModule : NSObject <RCTBridgeModule, NSNetServiceDelegate>
+struct HostState {
+  std::atomic<bool> stopped{false};
+  pm_host *model=nullptr;
+  void release() { if (model) { pm_host_free(model); model=nullptr; } }
+};
+static BOOL validPin(NSString *s) {
+  return s.length==43 && [s rangeOfString:@"^[a-zA-Z0-9_-]{43}$" options:NSRegularExpressionSearch].location!=NSNotFound;
+}
+
+@interface PocketMindMetalPeerModule : NSObject <RCTBridgeModule, NSNetServiceDelegate, NSNetServiceBrowserDelegate>
+@property(nonatomic,weak) RCTBridge *bridge;
 @end
 @implementation PocketMindMetalPeerModule {
   std::shared_ptr<Peer> _peer;
+  NSNetServiceBrowser *_browser;
+  NSMutableDictionary *_resolvers,*_nearby,*_remote;
+  dispatch_queue_t _hostQueue;
+  std::shared_ptr<HostState> _hostState;
+  std::shared_ptr<std::atomic<bool>> _requestCancel;
+  NSString *_hostToken,*_requestId;
   NSNetService *_wifiService;
   NSDictionary *_wifiLink;
   NSString *_wifiError;
@@ -155,6 +173,9 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
 - (dispatch_queue_t)methodQueue { return dispatch_get_main_queue(); }
 - (instancetype)init {
   if ((self = [super init])) {
+    _hostQueue=dispatch_queue_create("org.pocketmind.gpu.host",DISPATCH_QUEUE_SERIAL);
+    _nearby=[NSMutableDictionary dictionary]; _resolvers=[NSMutableDictionary dictionary];
+    _remote=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"PocketMindMeshHosts"] mutableCopy] ?: [NSMutableDictionary dictionary];
     NSNotificationCenter *n = NSNotificationCenter.defaultCenter;
     [n addObserver:self selector:@selector(background:) name:UIApplicationWillResignActiveNotification object:nil];
     [n addObserver:self selector:@selector(stopBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
@@ -167,6 +188,8 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
   if (!_wifiLink && _peer) _peer->stop();
 }
 - (void)endWifi {
+  [self endBrowse];
+  if (_hostState) { [self stopHost]; wifiCall(@{@"Op":@"stop"}); }
   if (_wifiLink) {
     _wifiService.delegate = nil; [_wifiService stop]; _wifiService = nil;
     wifiCall(@{@"Op":@"stop"});
@@ -194,6 +217,154 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
   [self endWifi];
   if (_peer) _peer->stop();
 }
+- (void)beginBrowse {
+  if (_browser || _wifiLink) return;
+  _browser=[NSNetServiceBrowser new];
+  _browser.delegate=self;
+  [_browser searchForServicesOfType:@"_pmgpu._tcp." inDomain:@"local."];
+}
+- (void)endBrowse {
+  _browser.delegate=nil; [_browser stop]; _browser=nil;
+  for (NSNetService *service in _resolvers.allValues) { service.delegate=nil; [service stop]; }
+  [_resolvers removeAllObjects]; [_nearby removeAllObjects];
+}
+- (void)netServiceBrowser:(NSNetServiceBrowser *)browser didNotSearch:(NSDictionary *)error {
+  if (browser==_browser) { [self endBrowse]; _wifiError=@"Wi-Fi 및 설정의 로컬 네트워크 접근 권한을 확인하세요."; }
+}
+- (void)netServiceBrowser:(NSNetServiceBrowser *)browser didFindService:(NSNetService *)service moreComing:(BOOL)more {
+  if (browser!=_browser) return;
+  _resolvers[service.name]=service;
+  service.delegate=self; [service resolveWithTimeout:8];
+}
+- (void)netServiceBrowser:(NSNetServiceBrowser *)browser didRemoveService:(NSNetService *)service moreComing:(BOOL)more {
+  if (browser!=_browser) return;
+  NSNetService *old=_resolvers[service.name]; old.delegate=nil; [old stop];
+  [_resolvers removeObjectForKey:service.name]; [_nearby removeObjectForKey:service.name];
+}
+- (void)netServiceDidResolveAddress:(NSNetService *)service {
+  if (_resolvers[service.name]!=service || service.port<1 || service.port>65535) return;
+  NSDictionary *txt=[NSNetService dictionaryFromTXTRecordData:service.TXTRecordData ?: [NSData data]];
+  NSString *(^field)(NSString *)=^NSString *(NSString *k){ return [[NSString alloc] initWithData:txt[k] ?: [NSData data] encoding:NSUTF8StringEncoding]; };
+  NSString *pin=field(@"id");
+  if (!validPin(pin)) return;
+  NSString *ip=field(@"ip");
+  struct in_addr addr;
+  if (!ip || inet_pton(AF_INET,ip.UTF8String,&addr)!=1) {
+    ip=nil;
+    for (NSData *record in service.addresses) {
+      if (record.length<sizeof(sockaddr_in)) continue;
+      const sockaddr_in *a=(const sockaddr_in *)record.bytes;
+      char buf[INET_ADDRSTRLEN];
+      if (a->sin_family==AF_INET && inet_ntop(AF_INET,&a->sin_addr,buf,sizeof(buf))) { ip=@(buf); break; }
+    }
+  }
+  if (ip) _nearby[service.name]=@{@"ID":pin,@"IP":ip,@"Port":@(service.port),@"name":service.name,@"platform":field(@"platform") ?: @"GPU"};
+}
+- (NSArray *)availablePeers {
+  NSMutableArray *peers=[NSMutableArray array];
+  for (NSDictionary *p in [_nearby.allValues arrayByAddingObjectsFromArray:_remote.allValues]) {
+    NSDictionary *iface=wifiEndpoint([p[@"Mesh"] boolValue]);
+    if (!iface) continue;
+    NSMutableDictionary *endpoint=[p mutableCopy]; [endpoint addEntriesFromDictionary:iface];
+    [peers addObject:endpoint];
+  }
+  return peers;
+}
+- (NSDictionary *)endpoint:(NSString *)pin {
+  for (NSDictionary *p in [self availablePeers]) if ([p[@"ID"] isEqual:pin]) return p;
+  return nil;
+}
+- (void)stopHost {
+  if (!_hostState) return;
+  auto old=_hostState;
+  _hostState.reset(); _hostToken=nil; _requestId=nil;
+  old->stopped=true;
+  if (_requestCancel) _requestCancel->store(true);
+  _requestCancel.reset();
+  // Keep transports alive during normal model teardown. Commands on the host
+  // queue cannot race destruction with a pending load or decode.
+  dispatch_async(_hostQueue, ^{ old->release(); });
+}
+RCT_EXPORT_METHOD(stopTabletGpu:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  [self stopHost]; wifiCall(@{@"Op":@"stop"}); resolve(@YES);
+}
+RCT_EXPORT_METHOD(stopTabletSession:(NSString *)token resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if ([_hostToken isEqual:token]) { [self stopHost]; wifiCall(@{@"Op":@"stop"}); }
+  resolve(@YES);
+}
+RCT_EXPORT_METHOD(tabletGpuStatus:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  resolve(@{@"hosting":@(_hostState && _hostToken && pm_host_healthy())});
+}
+RCT_EXPORT_METHOD(calibratedGpuGroup:(NSArray<NSString *> *)ids filename:(NSString *)filename policy:(NSString *)policy
+                  resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (_hostState || _wifiLink || !ids.count || ids.count>20 || ![filename isEqual:filename.lastPathComponent] ||
+      ![filename.pathExtension.lowercaseString isEqual:@"gguf"]) { reject(@"GPU",@"모델과 보조 GPU를 다시 선택하세요.",nil); return; }
+  NSURL *folder=[[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+  NSString *path=[folder URLByAppendingPathComponent:filename].path;
+  if (![[NSFileManager defaultManager] isReadableFileAtPath:path]) {reject(@"GPU",@"이 아이폰에 GGUF 모델을 먼저 설치하세요.",nil);return;}
+  NSMutableArray *endpoints=[NSMutableArray array];
+  for (NSString *pin in ids) {
+    NSDictionary *p=[self endpoint:pin];
+    if (!p) {reject(@"GPU",@"선택한 기기의 네트워크 연결을 확인하세요.",nil);return;}
+    [endpoints addObject:p];
+  }
+  NSDictionary *reply=wifiCall(@{@"Op":@"bridges",@"Endpoints":endpoints});
+  if (reply[@"error"]) {reject(@"GPU",reply[@"error"],nil);return;}
+  NSArray *bridges=reply[@"bridges"];
+  auto session=std::make_shared<HostState>(); _hostState=session;
+  dispatch_async(_hostQueue,^{
+    std::vector<const char *> routes;
+    for (NSString *b in bridges) routes.push_back(b.UTF8String);
+    session->model=pm_host_load(path.fileSystemRepresentation,routes.data(),(int)routes.size(),&session->stopped);
+    dispatch_async(dispatch_get_main_queue(),^{
+      if (session!=_hostState || !session->model || session->stopped.load()) {
+        if (session==_hostState) { [self stopHost]; wifiCall(@{@"Op":@"stop"}); }
+        reject(@"GPU",@"모델을 나눠 올리지 못했어요. 모델 크기와 보조 GPU 연결을 확인하세요.",nil);return;
+      }
+      _hostToken=NSUUID.UUID.UUIDString;
+      resolve(@{@"tablet":@YES,@"wifi":@YES,@"token":_hostToken,@"model":filename,@"device":[[endpoints valueForKey:@"name"] componentsJoinedByString:@", "]});
+    });
+  });
+}
+RCT_EXPORT_METHOD(cancelWiredRequest:(NSString *)request) {
+  if ([_requestId isEqual:request] && _requestCancel) _requestCancel->store(true);
+}
+RCT_EXPORT_METHOD(wiredRequest:(NSString *)request action:(NSString *)action token:(NSString *)token body:(NSString *)body
+                  resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  NSDictionary *q=[NSJSONSerialization JSONObjectWithData:[body dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nullptr];
+  NSArray *messages=q[@"messages"];
+  if (![action isEqual:@"stream"] || ![_hostToken isEqual:token] || !_hostState || _requestId || ![messages isKindOfClass:NSArray.class]) {
+    reject(@"GPU",@"연결된 GPU 세션을 확인하세요.",nil); return;
+  }
+  for (NSDictionary *m in messages) {
+    if (![m isKindOfClass:NSDictionary.class] || ![m[@"role"] isKindOfClass:NSString.class] || ![m[@"content"] isKindOfClass:NSString.class]) {
+      reject(@"GPU",@"대화 내용을 읽지 못했어요.",nil);return;
+    }
+  }
+  auto session=_hostState; auto cancel=std::make_shared<std::atomic<bool>>(false);
+  _requestId=request; _requestCancel=cancel;
+  dispatch_async(_hostQueue,^{
+    std::vector<const char *> roles,contents;
+    for (NSDictionary *m in messages) {roles.push_back([m[@"role"] UTF8String]);contents.push_back([m[@"content"] UTF8String]);}
+    __block NSMutableData *bytes=[NSMutableData data];
+    void (^emit)(const char *,int)=^(const char *piece,int n){
+      [bytes appendBytes:piece length:n];
+      NSString *text=[[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding];
+      if (text) [self.bridge enqueueJSCall:@"RCTDeviceEventEmitter" method:@"emit" args:@[@"PocketMindGpuText",@{@"id":request,@"text":text}] completion:nil];
+    };
+    const char *e=pm_host_chat(session->model,roles.data(),contents.data(),(int)roles.size(),cancel.get(),
+      [](const char *s,int n,void *u){ ((void (^)(const char *,int))(__bridge id)u)(s,n); },(__bridge void *)emit);
+    NSString *error=e ? @(e) : nil;
+    NSString *text=[[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding] ?: @"";
+    dispatch_async(dispatch_get_main_queue(),^{
+      if ([_requestId isEqual:request]) { _requestId=nil; _requestCancel.reset(); }
+      if (error || cancel->load() || !text.length) {reject(@"GPU",error ?: @"답변 생성이 종료됐어요.",nil);return;}
+      NSData *data=[NSJSONSerialization dataWithJSONObject:@{@"text":text} options:0 error:nullptr];
+      resolve([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]);
+    });
+  });
+}
+
 RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   NSDictionary *q = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nullptr];
   NSURL *folder = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"wifi-gpu"];
@@ -201,7 +372,24 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
   [folder setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nullptr];
   if (r[@"error"]) {reject(@"WIFI_GPU",r[@"error"],nil); return;}
   NSString *op = q[@"op"];
-  if ([op isEqual:@"offer"]) {
+  if ([op isEqual:@"browse"]) {
+    [self beginBrowse];
+  } else if ([op isEqual:@"import"]) {
+    NSArray *parts=[q[@"invite"] componentsSeparatedByString:@"|"];
+    struct in_addr ip;
+    if (parts.count!=3 || ![parts[0] isEqual:@"pmgpu1"] || !validPin(parts[2]) ||
+        inet_pton(AF_INET,[parts[1] UTF8String],&ip)!=1 || (ntohl(ip.s_addr)>>22)!=401 || !wifiEndpoint(YES)) {
+      reject(@"GPU",@"Tailscale 연결과 원격 초대를 확인하세요.",nil);return;
+    }
+    _remote[parts[2]]=@{@"ID":parts[2],@"IP":parts[1],@"Port":@47832,@"Mesh":@YES,@"name":parts[1],@"platform":@"Tailscale"};
+    [[NSUserDefaults standardUserDefaults] setObject:_remote forKey:@"PocketMindMeshHosts"];
+  } else if ([op isEqual:@"pair"]) {
+    NSDictionary *endpoint=[self endpoint:q[@"id"]];
+    if (!endpoint) {reject(@"GPU",@"기기를 다시 검색하세요.",nil);return;}
+    r=wifiCall(@{@"Op":@"pair",@"Endpoint":endpoint});
+  } else if ([op isEqual:@"offer"]) {
+    if (_hostState) {reject(@"GPU",@"실행 중인 모델 연결을 먼저 종료하세요.",nil);return;}
+    [self endBrowse];
     BOOL remote = [q[@"mesh"] boolValue];
     NSDictionary *link = wifiEndpoint(remote);
     if (!link || !_peer || _peer->closed.load() || _peer->paired.exchange(true)) {
@@ -222,6 +410,7 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
     } else { _peer->stop(); }
   } else if ([op isEqual:@"stop"] || [op isEqual:@"forget"]) {
     [self endWifi]; _wifiError = nil;
+    if ([op isEqual:@"forget"]) {[_remote removeAllObjects];[[NSUserDefaults standardUserDefaults] removeObjectForKey:@"PocketMindMeshHosts"];}
     r = wifiCall(@{@"Op":op});
   } else if ([op isEqual:@"vote"]) {
     r = wifiCall(@{@"Op":op,@"Challenge":q[@"id"] ?: @"",@"Accept":q[@"accept"] ?: @NO});
@@ -233,7 +422,7 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
   if (_wifiError) state[@"issue"]=_wifiError;
   if (_meshInvite) state[@"invitation"]=_meshInvite;
   state[@"meshReady"]=@(wifiEndpoint(YES)!=nil);
-  state[@"peers"]=@[];
+  state[@"peers"]=[self availablePeers]; state[@"searching"]=@(_browser!=nil);
   NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:nullptr];
   resolve([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]);
 }

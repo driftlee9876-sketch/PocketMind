@@ -37,7 +37,7 @@ def private_peers(value):
     return peers
 
 
-def select_devices(listing, peers):
+def select_devices(listing, peers, allow_remote_only=False):
     local = []
     remote = {}
     for line in listing.splitlines():
@@ -50,9 +50,9 @@ def select_devices(listing, peers):
                 remote.setdefault(description.strip(), name)
         elif re.match(r"^(CUDA|Vulkan|ROCm|HIP|Metal|SYCL|OpenCL|CANN|MUSA)", name, re.I):
             local.append(name)
-    if not local or any(peer not in remote for peer in peers):
+    if (not local and not (peers and allow_remote_only)) or any(peer not in remote for peer in peers):
         raise ValueError("PC GPU 또는 지정한 보조 장치를 llama.cpp에서 찾지 못했어요.")
-    return [local[0], *(remote[peer] for peer in peers)]
+    return [*local[:1], *(remote[peer] for peer in peers)]
 
 
 def rpc_options(peers):
@@ -65,7 +65,7 @@ def allocated_device(line, devices, peers):
         return None
     # Remote buffer names use the index on the peer. Local device names use a global index.
     if match[2]:
-        return dict(zip(peers, devices[1:])).get(match[2]) if match[1].startswith("RPC") else None
+        return dict(zip(peers, devices[-len(peers):])).get(match[2]) if match[1].startswith("RPC") else None
     return match[1] if match[1] in devices else None
 
 
@@ -160,34 +160,11 @@ def remove_mapping(adb, serial, remote_port, host_port):
         pass
 
 
-def start_host(adb, executable, model, raw_peers, tablet_code, apple_code, iproxy, stopped, events):
-    peers = private_peers(raw_peers)
-    if tablet_code and not re.fullmatch(r"[0-9]{8}", tablet_code):
-        raise ValueError("태블릿에 표시된 GPU 제공 코드 8자리를 입력하세요.")
-    serial = command([adb, "-d", "get-serialno"]).strip()
-    if not serial or serial == "unknown":
-        raise ValueError("USB로 연결한 Android 기기 한 대를 확인하세요.")
+@contextlib.contextmanager
+def loaded_model(executable, model, peers, stopped, allow_remote_only=False):
     with contextlib.ExitStack() as cleanup:
-        if tablet_code:
-            target = "localabstract:pocketmind_gpu_" + tablet_code
-            allocated_port = command([adb, "-s", serial, "forward", "tcp:0", target]).strip()
-            if not allocated_port.isdecimal():
-                raise RuntimeError("태블릿 GPU에 전용 USB 통로를 열 수 없어요.")
-            def remove_forward():
-                try:
-                    entries = command([adb, "-s", serial, "forward", "--list"]).splitlines()
-                    if any(line.split() == [serial, "tcp:" + allocated_port, target] for line in entries):
-                        command([adb, "-s", serial, "forward", "--remove", "tcp:" + allocated_port])
-                except (OSError, RuntimeError, subprocess.TimeoutExpired):
-                    pass
-            cleanup.callback(remove_forward)
-            peers.append(f"127.0.0.1:{allocated_port}")
-        if apple_code:
-            if not iproxy or not Path(iproxy).is_file():
-                raise ValueError("iPhone용 libusbmuxd의 iproxy.exe를 선택하세요.")
-            peers.append(apple_endpoint(iproxy, apple_code, stopped, cleanup, stop_process))
         args = [executable, *rpc_options(peers), "--list-devices"]
-        devices = select_devices(command(args, timeout=25), peers)
+        devices = select_devices(command(args, timeout=25), peers, allow_remote_only)
         folder = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="pocketmind-wired-")))
         key_file = folder / "session.key"
         token = secrets.token_urlsafe(32)
@@ -228,12 +205,42 @@ def start_host(adb, executable, model, raw_peers, tablet_code, apple_code, iprox
             except (OSError, ValueError):
                 continue
         if stopped.is_set():
-            return
+            raise InterruptedError("모델 실행을 중지했어요.")
         if not gpu_loaded.wait(2):
             raise RuntimeError("실제 GPU 레이어 적재를 확인할 수 없어요.")
         with allocation_lock:
             if peers and not set(devices).issubset(allocated):
                 raise RuntimeError("모든 보조 장치에서 모델 분할 적재를 확인할 수 없어요.")
+        yield port,token,devices,process
+
+
+def start_host(adb, executable, model, raw_peers, tablet_code, apple_code, iproxy, stopped, events):
+    peers = private_peers(raw_peers)
+    if tablet_code and not re.fullmatch(r"[0-9]{8}", tablet_code):
+        raise ValueError("태블릿에 표시된 GPU 제공 코드 8자리를 입력하세요.")
+    serial = command([adb, "-d", "get-serialno"]).strip()
+    if not serial or serial == "unknown":
+        raise ValueError("USB로 연결한 Android 기기 한 대를 확인하세요.")
+    with contextlib.ExitStack() as cleanup:
+        if tablet_code:
+            target = "localabstract:pocketmind_gpu_" + tablet_code
+            allocated_port = command([adb, "-s", serial, "forward", "tcp:0", target]).strip()
+            if not allocated_port.isdecimal():
+                raise RuntimeError("태블릿 GPU에 전용 USB 통로를 열 수 없어요.")
+            def remove_forward():
+                try:
+                    entries = command([adb, "-s", serial, "forward", "--list"]).splitlines()
+                    if any(line.split() == [serial, "tcp:" + allocated_port, target] for line in entries):
+                        command([adb, "-s", serial, "forward", "--remove", "tcp:" + allocated_port])
+                except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                    pass
+            cleanup.callback(remove_forward)
+            peers.append(f"127.0.0.1:{allocated_port}")
+        if apple_code:
+            if not iproxy or not Path(iproxy).is_file():
+                raise ValueError("iPhone용 libusbmuxd의 iproxy.exe를 선택하세요.")
+            peers.append(apple_endpoint(iproxy, apple_code, stopped, cleanup, stop_process))
+        port,token,devices,process = cleanup.enter_context(loaded_model(executable,model,peers,stopped))
         pairing = Pairing(token, Path(model).stem, devices)
         server = ThreadingHTTPServer((LOOPBACK, 0), pairing_handler(pairing))
         cleanup.callback(server.server_close)
@@ -357,6 +364,14 @@ def main():
             open_wifi(root, bundle)
             wifi_window = root.winfo_children()[-1]
     ttk.Button(form, text="Wi-Fi로 이 PC의 GPU 제공", command=wifi).grid(row=9, column=0, columnspan=3, sticky="ew", pady=8)
+    from wifi_host import open_host
+    def host_wifi():
+        nonlocal wifi_window
+        if wifi_window and wifi_window.winfo_exists():
+            wifi_window.lift()
+            return
+        wifi_window = open_host(root,bundle,for_row[1].get(),for_row[2].get(),loaded_model)
+    ttk.Button(form,text="Wi-Fi로 갤탭 GPU 사용 · PC에서 대화", command=host_wifi).grid(row=10,column=0,columnspan=3,sticky="ew")
     root.protocol("WM_DELETE_WINDOW", lambda: (stopped.set(), root.destroy()))
     poll()
     root.mainloop()

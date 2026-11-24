@@ -2,7 +2,7 @@ name: Build PocketMind Wired for Windows
 on:
   workflow_dispatch:
   push:
-    branches: [ feat/pocketmind-foundation ]
+    branches: [ feat/pocketmind-foundation, feat/iphone-windows-gpu-host ]
     paths: [ 'workers/windows/*.py', 'workers/wifi/**', '.github/workflows/windows-wired.yml' ]
 permissions:
   contents: read

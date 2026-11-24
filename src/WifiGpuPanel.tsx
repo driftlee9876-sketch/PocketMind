@@ -50,7 +50,7 @@ export function WifiGpuPanel(props:Props) {
     let mounted=true;
     const epoch=generation.current;
     AsyncStorage.getItem(storageKey).then(raw=>{
-      if(!mounted || !raw || epoch!==generation.current || Platform.OS!=='android')return;
+      if(!mounted || !raw || epoch!==generation.current)return;
       const saved=JSON.parse(raw);
       const ids=Array.isArray(saved.ids)?saved.ids:[saved.id];
       if (ids.length<=20 && new Set(ids).size===ids.length &&
@@ -75,7 +75,7 @@ export function WifiGpuPanel(props:Props) {
     async function tick(start=false){
       if(polling || !live)return;polling=true;
       try{
-        const s=await command(start && Platform.OS==='android'?'browse':'status');
+        const s=await command(start?'browse':'status');
         if(!live)return;
         setState(s);
         for(const peer of s.peers) names.current[peer.ID]=peer.name;
@@ -108,11 +108,11 @@ export function WifiGpuPanel(props:Props) {
     remember(null);
     if(forget)setSelected([]);
     if(current.current.session?.wifi || loading.current){await native.stopTabletGpu();current.current.onSession(null);}
-    await command(forget?'forget':'stop');if(Platform.OS==='android')await command('browse');setState(await command('status'));
+    await command(forget?'forget':'stop');await command('browse');setState(await command('status'));
   }
   async function toggleOffer(mesh=false){
     if(preparing.current)return;
-    if(state.offering){await command('stop');if(Platform.OS==='android')await command('browse');return;}
+    if(state.offering){await command('stop');await command('browse');return;}
     const epoch=++offerEpoch.current;
     preparing.current=true;setBusy('GPU 제공을 준비하는 중…');
     try {
@@ -144,12 +144,12 @@ export function WifiGpuPanel(props:Props) {
   return <Modal visible={props.visible} transparent animationType="slide" onRequestClose={close}>
     <View style={s.overlay}><View style={s.card}><View style={s.header}><Text style={s.title}>Wi-Fi GPU</Text>
       {button('닫기',close)}</View><ScrollView keyboardShouldPersistTaps="handled">
-      <Text style={s.detail}>{Platform.OS==='ios'?'같은 Wi-Fi의 갤럭시탭에 이 기기의 Metal GPU를 제공해요. 공유하는 동안 앱을 열어 두세요.':'같은 Wi-Fi에서 GPU 제공을 켠 Android, iPhone·iPad, Windows PC를 찾습니다.'}</Text>
+      <Text style={s.detail}>{'이 기기에 설치한 모델을 주변 GPU와 나눠 실행하거나, 이 기기의 GPU를 제공할 수 있어요. 공유 중에는 앱을 열어 두세요.'}</Text>
       {button(remoteOpen?'원격 연결 안내 접기':'다른 Wi-Fi에서 연결',()=>setRemoteOpen(!remoteOpen))}
       {remoteOpen && <View style={s.group}>
-        <Text style={s.detail}>각 기기에서 Tailscale을 같은 개인 네트워크에 연결하세요. 보조 기기에서 원격 제공을 켜고, 초대를 갤럭시탭에 붙여넣으세요.</Text>
+        <Text style={s.detail}>각 기기에서 Tailscale을 같은 개인 네트워크에 연결하세요. 보조 기기에서 원격 제공을 켜고, 초대를 모델이 있는 기기에 붙여넣으세요.</Text>
         <Text style={s.detail}>{state.meshReady?'Tailscale 주소 확인됨':'이 기기에서 Tailscale 연결을 기다리는 중'}</Text>
-        {Platform.OS==='android' && !state.offering && <>
+        {!state.offering && <>
           <TextInput value={invite} onChangeText={setInvite} maxLength={128} autoCapitalize="none" autoCorrect={false} style={s.label} placeholderTextColor="#ABBAB0" placeholder="보조 기기의 초대 붙여넣기"/>
           {button('원격 기기 추가',()=>action(async()=>{await command('import',{invite:invite.trim()});setInvite('');}),!invite.trim()||!state.meshReady)}
         </>}
@@ -161,7 +161,7 @@ export function WifiGpuPanel(props:Props) {
         <Text style={s.detail}>연결할 두 기기에 같은 숫자가 보일 때 양쪽에서 승인하세요.</Text>
         {button('코드 일치 · 승인',()=>action(async()=>{await command('vote',{id:state.pending!.id,accept:true});}))}
         {button('거절',()=>action(async()=>{await command('vote',{id:state.pending!.id,accept:false});}))}</View>}
-      {Platform.OS==='android' && !state.offering && <View style={s.group}>
+      {!state.offering && <View style={s.group}>
         <Text style={s.heading}>주변 GPU</Text>
         {!state.peers.length && <Text style={s.detail}>{state.searching ? '기기를 찾는 중… 보조 기기에서 Wi-Fi GPU 제공을 켜 주세요.' : '검색을 준비하고 있어요. Wi-Fi 연결을 확인해 주세요.'}</Text>}
         {state.peers.map(p=><View key={p.ID+p.name} style={s.peer}><Text style={s.heading}>{p.name}</Text>
@@ -173,7 +173,7 @@ export function WifiGpuPanel(props:Props) {
         {!pref && selected.length>0 && button(`선택한 ${selected.length}/20대로 대화 · 자동 재연결`,()=>{
           if(props.filename)remember({ids:[...selected],filename:props.filename});
         },!props.filename||!!busy||!!props.session||!selected.every(id=>state.trusted.includes(id)&&state.peers.some(p=>p.ID===id)))}
-        {!pref && !!selected.length && button('탭 단독과 속도 비교',benchmark,props.running||!props.filename||!!busy||!!props.session)}
+        {Platform.OS==='android' && !pref && !!selected.length && button('탭 단독과 속도 비교',benchmark,props.running||!props.filename||!!busy||!!props.session)}
         {report && <View style={s.group}>{report.samples.map(row=><Text key={row.label} style={s.detail}>{row.label} · 준비 {(row.loadMs/1000).toFixed(1)}초 · 첫 토큰 {(row.firstMs/1000).toFixed(2)}초 · {row.rate>0 ? row.rate.toFixed(1)+' tok/s' : '속도 미제공'}</Text>)}
           {report.unavailable.map(value=><Text key={value} style={s.detail}>{value}</Text>)}
           {!!report.samples.some(row=>row.rate>0 && row.label!=='탭 단독') && <Text style={s.detail}>선택된 분배 · {report.policy==='equal'?'균등':'여유 메모리 기준'}</Text>}</View>}
@@ -181,7 +181,7 @@ export function WifiGpuPanel(props:Props) {
           <Text style={s.detail}>{missing.length?'다시 연결 대기 · '+missing.map(id=>names.current[id] || id.slice(0,8)).join(', '):'선택한 기기의 응답을 기다리는 중…'}</Text>
           {pref.ids.length>1 && pref.ids.map(id=>button((names.current[id]||id.slice(0,8))+' 제외',()=>{const ids=pref.ids.filter(peer=>peer!==id);setSelected(ids);remember({...pref,ids});},!!busy))}
           {button('현재 연결된 기기로 계속',()=>{const ids=pref.ids.filter(id=>!missing.includes(id));setSelected(ids);remember({...pref,ids});},!missing.length||missing.length===pref.ids.length||!!busy)}
-          {button('탭 단독으로 전환',()=>{remember({...pref,ids:[]});setSelected([]);},!!busy)}
+          {Platform.OS==='android' && button('탭 단독으로 전환',()=>{remember({...pref,ids:[]});setSelected([]);},!!busy)}
         </View>}
         {!pref && selected.length>0 && button('선택 초기화',()=>setSelected([]),!!busy)}
         {pref && <Text style={s.detail}>{`보조 GPU ${pref.ids.length}대 · ${props.session?.wifi?'모델 실행 중':'자동 연결 대기 중'}`}</Text>}

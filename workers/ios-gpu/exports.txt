@@ -1,2 +1,6 @@
 _pm_gpu_available
 _pm_gpu_serve
+_pm_host_load
+_pm_host_free
+_pm_host_chat
+_pm_host_healthy
