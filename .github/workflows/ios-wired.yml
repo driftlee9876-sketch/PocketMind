@@ -2,7 +2,7 @@ name: Build PocketMind iOS with Metal GPU peer
 on:
   workflow_dispatch:
   push:
-    branches: [ feat/pocketmind-foundation ]
+    branches: [ feat/pocketmind-foundation, feat/iphone-windows-gpu-host ]
     paths: [ 'ios/**', 'workers/ios-gpu/**', 'workers/wifi/**', '.github/workflows/ios-wired.yml', 'App.tsx', 'src/**' ]
 permissions:
   contents: read
@@ -42,7 +42,9 @@ jobs:
           go-version: '1.26.11'
           cache: false
       - name: Build Wi-Fi pairing and transport
-        run: bash workers/wifi/build-native.sh ios
+        run: |
+          (cd workers/wifi && go test ./link)
+          bash workers/wifi/build-native.sh ios
       - name: Install application dependencies
         run: |
           npm install --legacy-peer-deps
