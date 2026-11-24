@@ -52,10 +52,13 @@ import {
   getIntegrationCatalog,
   chatIntegrationRequest,
   isIntegrationUsable,
-  submitIntegrationAction,
+  submitIntegrationAction, issuePersonalKey,
   approveIntegrationAction,
   rejectIntegrationAction,
 } from './src/integrationActions';
+import {attachmentPrompt} from './src/attachmentPrompt';
+import {AssistantBody} from './src/AssistantBody';
+import {DriveAttachmentSheet, type DriveAttachment} from './src/DriveAttachmentSheet';
 import { WifiGpuPanel } from './src/WifiGpuPanel';
 import { TabletGpuPanel } from './src/TabletGpuPanel';
 import { integrationReply } from './src/integrationPresentation';
@@ -164,6 +167,7 @@ class AppCrashGuard extends Component<CrashGuardProps, CrashGuardState> {
 // 메인 ChatGPT 스타일 화면
 // ============================================================================
 interface ChatMessage {
+  attachment?: DriveAttachment;
   id: string;
   role: 'user' | 'assistant';
   text: string;
@@ -241,6 +245,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
       {message.role === 'user' ? (
         <View style={styles.userMessageColumn}>
           <View style={styles.userBubble}>
+            {message.attachment && <Text style={styles.attachmentName}>▤  {message.attachment.name}</Text>}
             <Text selectable style={[styles.userBubbleText, largeText && styles.largeChatText]}>{message.text}</Text>
           </View>
           <View style={styles.messageActionRow}>
@@ -301,7 +306,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
                 {details.length > 0 && <Text selectable style={styles.integrationDetail}>{details.join('\n')}</Text>}
               </View>;
             })}
-          </View> : Boolean(message.text) && <Text selectable style={[styles.assistantBodyText, largeText && styles.largeChatText]}>{message.text}</Text>}
+          </View> : Boolean(message.text) && <AssistantBody text={message.text} large={largeText}/>}
           {message.issue && <View style={styles.replyIssue}>
             <Text selectable style={styles.replyIssueText}>{message.issue}</Text>
             {message.issueCode === 'subscription_sharing_usage_limit_exceeded' &&
@@ -369,6 +374,9 @@ function PocketMindChatGPTScreen() {
   const [deviceMetrics, setDeviceMetrics] = useState<DeviceMetrics | null>(null);
   const [connectionSettingsReady, setConnectionSettingsReady] = useState(false);
 
+  const [drivePicker,setDrivePicker] = useState(false);
+  const [attachment,setAttachment] = useState<DriveAttachment|null>(null);
+  useEffect(()=>{setAttachment(null);setDrivePicker(false);},[activeSessionId]);
   const [inputText, setInputText] = useState('');
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const [preferences, setPreferences] = useState(defaultChatPreferences);
@@ -393,6 +401,7 @@ function PocketMindChatGPTScreen() {
   }, [preferences, preferencesReady]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [liveStatus, setLiveStatus] = useState('');
+  const partialMessage = useRef<null | (()=>void)>(null);
   const [streamingText, setStreamingText] = useState('');
 
   // 설치된 모델 및 기본 선택 모델
@@ -437,7 +446,7 @@ function PocketMindChatGPTScreen() {
     const timer = setInterval(async () => {
       try { if (!(await gpuPeer.tabletGpuStatus()).hosting && mounted) setWiredSession(null); } catch {}
     }, 2000);
-    return () => { mounted = false; clearInterval(timer); gpuPeer.stopTabletGpu().catch(() => {}); };
+    return () => { mounted = false; clearInterval(timer); gpuPeer.stopTabletSession(wiredSession.token).catch(()=>{}); };
   }, [wiredSession]);
   const [wifiOpen,setWifiOpen] = useState(false);
   const [wifiMode,setWifiMode] = useState(false);
@@ -951,11 +960,17 @@ function PocketMindChatGPTScreen() {
     return true;
   }, [installedModelIds.length, remotePC.enabled, remotePC.serverUrl, useChatGPTPlan, chatGPTStatus.connected, chatGPTModelId, wiredSession, wifiMode]);
 
-  const runAssistantGeneration = useCallback(async (prompt: string, context: ChatMessage[]) => {
+  const runAssistantGeneration = useCallback(async (question: string, context: ChatMessage[], file?: DriveAttachment|null) => {
+    const prompt = file ? attachmentPrompt(question,file,Boolean(wiredSession) || !useChatGPTPlan) : question;
     if (!prompt.trim() || generationAbortRef.current || isGenerating || !ensureGenerationAvailable(prompt)) return;
     const controller = new AbortController();
     generationAbortRef.current = controller;
 
+    let partialAnswer = '';
+    const progress = (value:string) => {if(!controller.signal.aborted){partialAnswer=value;setStreamingText(value);}};
+    partialMessage.current=()=>{if(partialAnswer.trim())updateActiveSessionMessages(previous=>[...previous,{
+      id:'partial-'+Date.now(),role:'assistant',text:partialAnswer,timestamp:formatNowTime(),issue:'생성을 중지했어요.',
+    }]);};
     setGeneratingSession(activeSession.id);
     setIsGenerating(true);
     setLiveStatus('생각 중...');
@@ -963,7 +978,7 @@ function PocketMindChatGPTScreen() {
 
     try {
       if (useChatGPTPlan || wiredSession) {
-        const plugins = await runAutonomousPlugins(prompt, enabledPluginIds);
+        const plugins = file ? [] : await runAutonomousPlugins(prompt, enabledPluginIds);
         if (controller.signal.aborted) return;
         if (plugins.length && /^\/[a-z0-9-]+(?:\s|$)/i.test(prompt)) {
           updateActiveSessionMessages(previous => [...previous, {
@@ -975,10 +990,8 @@ function PocketMindChatGPTScreen() {
           (message.role === 'user' || !message.pipelineSteps?.length)).map(message => ({ role: message.role, content: message.text }));
         setLiveStatus(wiredSession ? '연결한 GPU에서 답변을 생성하고 있어요…' : 'ChatGPT에서 답변을 생성하고 있어요…');
         const result = wiredSession
-          ? { text: await runWiredInference(wiredSession, history, prompt, controller.signal), issue: undefined, code: undefined }
-          : await chatWithChatGPTPlan(chatGPTModelId, history, prompt, partial => {
-            if (!controller.signal.aborted) setStreamingText(partial);
-          });
+          ? { text: await runWiredInference(wiredSession, history, prompt, controller.signal, progress), issue: undefined, code: undefined }
+          : await chatWithChatGPTPlan(chatGPTModelId, history, prompt, progress);
         if (controller.signal.aborted) return;
         updateActiveSessionMessages(previous => [...previous, {
           id: `a-${Date.now()}`, role: 'assistant', text: result.text, timestamp: formatNowTime(),
@@ -989,19 +1002,18 @@ function PocketMindChatGPTScreen() {
       }
       const response = await multiModelOrchestrator.executeAutonomousPipeline({
         userPrompt: prompt,
+        documentAttached: Boolean(file),
         installedModelIds,
         primaryModelId,
         autoMultiModelEnabled: autoMultiModel,
-        enabledPluginIds,
+        enabledPluginIds: file ? [] : enabledPluginIds,
         remotePC,
         signal: controller.signal,
         callbacks: {
           onStatusUpdate: (status) => {
             if (!controller.signal.aborted) setLiveStatus(status);
           },
-          onTokenStream: (partial) => {
-            if (!controller.signal.aborted) setStreamingText(partial);
-          },
+          onTokenStream: progress,
         },
       });
       if (controller.signal.aborted) return;
@@ -1017,10 +1029,14 @@ function PocketMindChatGPTScreen() {
       updateActiveSessionMessages((previous) => [...previous, assistantMsg]);
     } catch (error: any) {
       if (controller.signal.aborted) return;
+      if (wiredSession?.tablet && wiredSession.wifi) {
+        await gpuPeer.stopTabletSession(wiredSession.token).catch(()=>{});
+        setWiredSession(current=>current?.token===wiredSession.token?null:current);
+      }
       const errMsg: ChatMessage = {
         id: `err-${Date.now()}`,
         role: 'assistant',
-        text: '', issue: error?.message || '요청을 처리하지 못했어요. 다시 시도해 주세요.',
+        text: partialAnswer, issue: error?.message || '요청을 처리하지 못했어요. 다시 시도해 주세요.',
         source: wiredSession ? (wiredSession.wifi ? 'Wi-Fi GPU' : '유선 GPU') : useChatGPTPlan ? chatGPTModelId : 'PocketMind',
         timestamp: formatNowTime(),
       };
@@ -1028,6 +1044,7 @@ function PocketMindChatGPTScreen() {
     } finally {
       if (generationAbortRef.current === controller) {
         generationAbortRef.current = null;
+        partialMessage.current=null;
         setIsGenerating(false);
         setLiveStatus('');
         setStreamingText('');
@@ -1052,7 +1069,8 @@ function PocketMindChatGPTScreen() {
   const handleSendMessage = async (overridePrompt?: string) => {
     const trimmed = (overridePrompt !== undefined ? overridePrompt : inputText).trim();
     if (!trimmed || generationAbortRef.current || isGenerating) return;
-    const request = chatIntegrationRequest(trimmed);
+    if (!attachment && /^@(drive|드라이브)(?:\s+첨부)?$/i.test(trimmed)) {setInputText('');setDrivePicker(true);return;}
+    const request = attachment ? null : chatIntegrationRequest(trimmed);
     if (request) {
       const app = CONNECTED_APP_CATALOG.find(item => item.id === request.id)!;
       if (request.action === 'read') {
@@ -1092,13 +1110,14 @@ function PocketMindChatGPTScreen() {
     const userMsg: ChatMessage = {
       id: `u-${Date.now()}`,
       role: 'user',
-      text: trimmed,
+      text: trimmed, attachment: attachment ?? undefined,
       timestamp: formatNowTime(),
     };
 
     updateActiveSessionMessages((prev) => [...prev, userMsg]);
     setInputText('');
-    await runAssistantGeneration(trimmed, messages);
+    setAttachment(null);
+    await runAssistantGeneration(trimmed, messages, attachment);
   };
 
   const handleCopyMessage = useCallback((message: ChatMessage) => {
@@ -1122,7 +1141,7 @@ function PocketMindChatGPTScreen() {
     );
     setMessageEditTargetId(null);
     setMessageEditText('');
-    await runAssistantGeneration(prompt, messages.slice(0, messages.findIndex(item => item.id === messageEditTarget.id)));
+    await runAssistantGeneration(prompt, messages.slice(0, messages.findIndex(item => item.id === messageEditTarget.id)), messageEditTarget.attachment);
   };
 
   const handleRegenerateMessage = useCallback(async (message: ChatMessage) => {
@@ -1131,11 +1150,12 @@ function PocketMindChatGPTScreen() {
     if (!prepared || !ensureGenerationAvailable(prepared.prompt)) return;
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     updateActiveSessionMessages(() => prepared.messages);
-    await runAssistantGeneration(prepared.prompt, prepared.messages.slice(0, -1));
+    await runAssistantGeneration(prepared.prompt, prepared.messages.slice(0, -1), prepared.messages.at(-1)?.attachment);
   }, [ensureGenerationAvailable, isGenerating, messages, runAssistantGeneration, updateActiveSessionMessages]);
 
   const handleStopGeneration = useCallback(() => {
     generationAbortRef.current?.abort();
+    partialMessage.current?.();partialMessage.current=null;
     if (useChatGPTPlan) stopChatGPTPlan().catch(() => {});
     generationAbortRef.current = null;
     multiModelOrchestrator.cancelActive().catch(() => {});
@@ -1479,9 +1499,10 @@ function PocketMindChatGPTScreen() {
         }} />}
       <ChatSettingsSheet visible={settingsOpen} values={preferences} onChange={savePreferences} onClose={() => setSettingsOpen(false)} />
 
+      {drivePicker && <DriveAttachmentSheet endpoint={remotePC.serverUrl} token={remotePC.apiKey || ''} onClose={()=>setDrivePicker(false)} onAttach={file=>{setAttachment(file);setDrivePicker(false);}}/>}
       {/* ================= ChatGPT 상단 헤더 ================= */}
       <View style={styles.topHeader}>
-        <TouchableOpacity style={styles.iconBtn} onPress={() => setSidebarOpen(true)}>
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="대화 목록 열기" style={styles.iconBtn} onPress={() => setSidebarOpen(true)}>
           <Text style={styles.iconBtnText}>☰</Text>
         </TouchableOpacity>
 
@@ -1498,7 +1519,7 @@ function PocketMindChatGPTScreen() {
           <Text style={styles.modelPillChevron}>⌄</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.iconBtn} onPress={handleNewChat}>
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="새 채팅" style={styles.iconBtn} onPress={handleNewChat}>
           <Text style={styles.iconBtnText}>✎</Text>
         </TouchableOpacity>
       </View>
@@ -1545,21 +1566,13 @@ function PocketMindChatGPTScreen() {
         onContentSizeChange={() => { if (preferences.autoScroll) scrollRef.current?.scrollToEnd({ animated: true }); }}
         ListEmptyComponent={(
           <View style={styles.welcomeHero}>
-            <View style={styles.logoCircle}>
-              <Text style={styles.logoSymbol}>✦</Text>
-            </View>
             <Text style={styles.welcomeTitle}>무엇을 도와드릴까요?</Text>
-            <Text style={styles.welcomeSub}>
-              질문하고, 생각을 정리하고, 필요한 작업을 이어가세요.
-            </Text>
-
             {!keyboardVisible && <View style={styles.suggestionGrid}>
               <TouchableOpacity
                 style={styles.suggestionCard}
                 onPress={() => setInputText('최근 메일 보여줘')}
               >
                 <Text style={styles.suggestionTitle}>최근 메일</Text>
-                <Text style={styles.suggestionDesc}>Gmail에서 받은 메일 확인</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1567,7 +1580,6 @@ function PocketMindChatGPTScreen() {
                 onPress={() => setInputText('드라이브 파일 보여줘')}
               >
                 <Text style={styles.suggestionTitle}>드라이브 파일</Text>
-                <Text style={styles.suggestionDesc}>최근 수정한 파일 보기</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1575,7 +1587,6 @@ function PocketMindChatGPTScreen() {
                 onPress={() => setInputText('이 코드의 문제를 찾아서 수정 방법을 알려줘: ')}
               >
                 <Text style={styles.suggestionTitle}>코딩 도움</Text>
-                <Text style={styles.suggestionDesc}>코드 작성과 오류 해결하기</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1583,7 +1594,6 @@ function PocketMindChatGPTScreen() {
                 onPress={() => { setWorkerModelIds(installedModelIds); setAndroidWorkerOpen(true); }}
               >
                 <Text style={styles.suggestionTitle}>기기 연결</Text>
-                <Text style={styles.suggestionDesc}>사용 가능한 연산 기기 확인하기</Text>
               </TouchableOpacity>
             </View>}
           </View>
@@ -1617,9 +1627,10 @@ function PocketMindChatGPTScreen() {
 
       {/* ================= ChatGPT 하단 캡슐 입력창 ================= */}
       <View style={styles.composerOuter}>
+        {attachment && <TouchableOpacity accessibilityLabel="첨부 제거" onPress={()=>setAttachment(null)}><Text style={styles.attachmentName}>▤  {attachment.name}{attachment.truncated ? ' · 발췌' : ''}   ×</Text></TouchableOpacity>}
         <View style={styles.composerPill}>
           <TouchableOpacity
-            style={styles.plusBtn}
+            accessibilityLabel="첨부 및 도구" accessibilityRole="button" style={styles.plusBtn}
             onPress={() => setQuickPlusOpen(true)}
           >
             <Text style={styles.plusBtnText}>+</Text>
@@ -1639,7 +1650,7 @@ function PocketMindChatGPTScreen() {
             }}
             value={inputText}
             onChangeText={setInputText}
-            placeholder="PocketMind에게 메시지 보내기..."
+            placeholder={attachment ? "첨부한 파일에 대해 질문하세요" : "무엇이든 물어보세요"}
             placeholderTextColor="#8E8EA0"
             multiline
           />
@@ -1647,19 +1658,19 @@ function PocketMindChatGPTScreen() {
           <TouchableOpacity
             style={[
               styles.sendCircleBtn,
-              (!inputText.trim() || isGenerating) && styles.sendCircleDisabled,
+              (!inputText.trim() && !isGenerating) && styles.sendCircleDisabled,
             ]}
-            onPress={() => handleSendMessage()}
-            accessibilityRole="button" accessibilityLabel="메시지 보내기"
-            disabled={!inputText.trim() || isGenerating}
+            onPress={() => isGenerating ? handleStopGeneration() : handleSendMessage()}
+            accessibilityRole="button" accessibilityLabel={isGenerating ? "응답 중지" : "메시지 보내기"}
+            disabled={!inputText.trim() && !isGenerating}
           >
             <Text
               style={[
                 styles.sendArrowText,
-                (!inputText.trim() || isGenerating) && styles.sendArrowDisabled,
+                (!inputText.trim() && !isGenerating) && styles.sendArrowDisabled,
               ]}
             >
-              ↑
+              {isGenerating ? '■' : '↑'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -2037,7 +2048,7 @@ function PocketMindChatGPTScreen() {
         </View>
       </Modal>
 
-      <WifiGpuPanel visible={wifiOpen} reset={wifiReset} filename={installedModelIds.includes(primaryModelId) ? safeCatalog.find(m=>m.id===primaryModelId)?.filename : undefined}
+      <WifiGpuPanel running={isGenerating} visible={wifiOpen} reset={wifiReset} filename={installedModelIds.includes(primaryModelId) ? safeCatalog.find(m=>m.id===primaryModelId)?.filename : undefined}
         session={wiredSession} onMode={setWifiMode} onSession={setWiredSession} onClose={()=>setWifiOpen(false)}/>
       <Modal visible={wiredOpen} transparent animationType="slide" onRequestClose={closePairing}>
         <View style={styles.bottomSheetOverlay}><View style={styles.bottomSheetCard}>
@@ -2144,6 +2155,7 @@ function PocketMindChatGPTScreen() {
               </TouchableOpacity>
             </View>
 
+            <TouchableOpacity style={styles.quickActionCard} onPress={()=>{setQuickPlusOpen(false);setDrivePicker(true);}}><Text style={styles.quickActionLabel}>Drive 파일 첨부</Text></TouchableOpacity>
             <View style={styles.quickActionRow}>
               <TouchableOpacity
                 style={styles.quickActionCard}
@@ -2594,7 +2606,7 @@ function PocketMindChatGPTScreen() {
               placeholderTextColor="#8E8EA0"
             />
 
-            <Text style={styles.inputFieldLabel}>Coordinator API 토큰 (작업 제출·앱 연결용)</Text>
+            <Text style={styles.inputFieldLabel}>개인 Coordinator 키 (작업 제출·앱 연결용)</Text>
             <TextInput
               style={styles.modalInput}
               value={remotePC.apiKey || ''}
@@ -2604,6 +2616,15 @@ function PocketMindChatGPTScreen() {
               secureTextEntry
               autoCapitalize="none"
             />
+
+            <TouchableOpacity style={styles.sheetSecondaryBtn} onPress={async()=>{
+              try {
+                const key=await issuePersonalKey(remotePC.serverUrl,remotePC.apiKey || '');
+                Alert.alert('개인 키 발급 완료','받는 사람의 PocketMind 설정에 이 키를 입력하면 별도의 Drive 계정과 작업 기록이 생겨요.',[
+                  {text:'복사',onPress:()=>Clipboard.setString(key)},{text:'닫기',style:'cancel'},
+                ]);
+              } catch(error){Alert.alert('개인 키 발급',error instanceof Error?error.message:'서버를 확인하세요.');}
+            }}><Text style={styles.sheetSecondaryBtnText}>관리자 · 새 사용자 키 발급</Text></TouchableOpacity>
 
             <TouchableOpacity
               style={styles.sheetPrimaryBtn}
@@ -2846,6 +2867,7 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
   },
   chatContentContainer: {
+    width:"100%",maxWidth:800,alignSelf:"center",
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 24,
@@ -2870,9 +2892,9 @@ const styles = StyleSheet.create({
   },
   welcomeTitle: {
     color: '#ECECEC',
-    fontSize: 22,
-    fontWeight: '700',
-    marginBottom: 6,
+    fontSize: 29,
+    fontWeight: '600',
+    marginBottom: 24,
   },
   welcomeSub: {
     color: '#9B9B9B',
@@ -2887,12 +2909,11 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   suggestionCard: {
-    width: '47%',
-    backgroundColor: '#2A2A2A',
+    backgroundColor: 'transparent',
     borderWidth: 1,
     borderColor: '#383838',
-    borderRadius: 16,
-    padding: 14,
+    borderRadius: 24,
+    paddingHorizontal: 18, paddingVertical: 10,
   },
   suggestionTitle: {
     color: '#ECECEC',
@@ -3037,7 +3058,9 @@ const styles = StyleSheet.create({
   },
 
   // Bottom Composer Pill
+  attachmentName:{color:"#dedede",fontSize:14,padding:10},
   composerOuter: {
+    alignSelf:"center",width:"100%",maxWidth:800,
     paddingHorizontal: 14,
     paddingTop: 6,
     paddingBottom: Platform.OS === 'ios' ? 14 : 12,

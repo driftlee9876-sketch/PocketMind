@@ -57,6 +57,7 @@ export const CONNECTED_APP_CATALOG: ConnectedAppDefinition[] = [
     webhookKey: 'google-drive',
     actions: [
       READ('search_files', '파일 검색', 'Drive 파일을 검색합니다.'),
+      READ('read_content', '파일 본문 읽기', 'Google 문서·PDF·텍스트 본문을 읽습니다.'),
       READ('get_file', '파일 정보 읽기', '파일 메타데이터를 조회합니다.'),
       WRITE('upload_file', '파일 업로드', 'Drive에 파일을 업로드합니다.'),
       SENSITIVE('delete_file', '파일 삭제', '파일을 영구 삭제할 수 있습니다.'),

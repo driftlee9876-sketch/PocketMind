@@ -1,11 +1,12 @@
-import { NativeModules } from 'react-native';
+import { DeviceEventEmitter, NativeModules } from 'react-native';
 import type { PlanMessage } from './chatGPTPlan';
 
 let sequence = 0;
-async function request(action: 'pair' | 'models' | 'chat', token: string, body: unknown, signal: AbortSignal) {
+async function request(action: 'pair' | 'models' | 'chat' | 'stream', token: string, body: unknown, signal: AbortSignal, onText?:(value:string)=>void) {
   if (signal.aborted) throw new Error('요청을 취소했어요.');
   const native = NativeModules.PocketMindWorker;
   const id = String(++sequence);
+  const listener = onText ? DeviceEventEmitter.addListener('PocketMindGpuText',(event:{id:string;text:string})=>{if(event.id===id && !signal.aborted) onText(event.text);}) : null;
   const cancel = () => native.cancelWiredRequest(id);
   signal.addEventListener('abort', cancel);
   try { return JSON.parse(await native.wiredRequest(id, action, token, JSON.stringify(body))); }
@@ -13,9 +14,9 @@ async function request(action: 'pair' | 'models' | 'chat', token: string, body: 
     if (error?.code === 'WIRED_403' && action === 'pair') throw new Error('연결 코드가 틀렸거나 만료됐어요. PC에서 새 코드를 확인하세요.');
     if (error?.code === 'WIRED_401') throw new Error('PC에서 새 연결 코드를 발급받아 주세요.');
     throw error;
-  } finally { signal.removeEventListener('abort', cancel); }
+  } finally { listener?.remove(); signal.removeEventListener('abort', cancel); }
 }
-export interface WiredSession { token: string; model: string; device: string; tablet?: boolean; wifi?: boolean }
+export interface WiredSession { token: string; model: string; device: string; tablet?: boolean; wifi?: boolean; split?:string }
 
 export async function pairWiredHost(code: string, signal: AbortSignal): Promise<WiredSession> {
   if (!/^\d{8}$/.test(code)) throw new Error('Windows에 표시된 8자리 코드를 입력해 주세요.');
@@ -31,7 +32,13 @@ export async function pairWiredHost(code: string, signal: AbortSignal): Promise<
   return { token: session.token, model: session.model, device: session.device };
 }
 
-export async function runWiredInference(session: WiredSession, history: PlanMessage[], prompt: string, signal: AbortSignal): Promise<string> {
+export async function runWiredInference(session: WiredSession, history: PlanMessage[], prompt: string, signal: AbortSignal, onText?:(value:string)=>void): Promise<string> {
+  if (session.tablet) {
+    const result = await request('stream',session.token,{model:'pocketmind-wired',stream:true,messages:[
+      {role:'system',content:'사용자의 언어로 명확하게 답하세요.'},...history.slice(-20),{role:'user',content:prompt},
+    ]},signal,onText);
+    return result.text;
+  }
   const response = await request('chat', session.token, { model: 'pocketmind-wired', stream: false, messages: [
     { role: 'system', content: '사용자의 언어로 명확하게 답하세요. 외부 작업은 실제 실행 결과가 있을 때만 완료했다고 말하세요.' },
     ...history.slice(-20).map(item => ({ ...item, content: item.content.slice(0, 20000) })), { role: 'user', content: prompt },
@@ -39,4 +46,9 @@ export async function runWiredInference(session: WiredSession, history: PlanMess
   const output = response.choices?.[0]?.message?.content;
   if (typeof output !== 'string' || !output.trim()) throw new Error('유선 모델에서 답변을 받지 못했어요.');
   return output.trim();
+}
+
+export async function measureGpu(session:WiredSession, signal:AbortSignal):Promise<{firstMs:number;rate:number}> {
+  return request('stream',session.token,{model:'pocketmind-wired',stream:true,stream_options:{include_usage:true},temperature:0,seed:17,max_tokens:48,
+    messages:[{role:'user',content:'Write the numbers from one to fifty in English, in order.'}]},signal);
 }

@@ -11,7 +11,9 @@
 
 const http = require('node:http');
 const crypto = require('node:crypto');
-const fs = require('node:fs/promises');
+const {AsyncLocalStorage} = require('node:async_hooks');
+const {stateStorage} = require('./state-storage');
+const {readDriveContent} = require('./drive-content');
 const path = require('node:path');
 
 const PORT = Number(process.env.PORT || 8787);
@@ -148,9 +150,37 @@ if ((GOOGLE_OAUTH_CLIENT_ID || GOOGLE_OAUTH_CLIENT_SECRET) && !BUILTIN_GOOGLE_EN
 }
 
 const state = { workers: {}, tasks: {}, actions: {}, oauthConnections: {}, oauthStates: {} };
+const storage = stateStorage(DATA_FILE, process.env.DATABASE_URL);
+const ownerContext = new AsyncLocalStorage();
+const owner = () => ownerContext.getStore() || 'legacy';
+const keyOwners = new Map();
+const keyDigest = token => crypto.createHash('sha256').update(token).digest('hex');
+const userTokens = Object.entries(JSON.parse(process.env.POCKETMIND_USER_TOKENS_JSON || '{}'));
+for (const [id, token] of userTokens) {
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id) || ['legacy','constructor','__proto__','prototype'].includes(id) ||
+      typeof token !== 'string' || token.length < 32 || token === API_TOKEN || token === ENROLLMENT_TOKEN ||
+      userTokens.filter(entry => entry[1] === token).length !== 1) throw Error('Invalid personal coordinator credential');
+}
+state.accounts = {};
+function personal() {
+  if (owner() === 'legacy') return state;
+  return state.accounts[owner()] ??= {oauthConnections:{}, oauthStates:{}, actions:{}};
+}
+function requestOwner(req) {
+  const token = bearer(req);
+  if (token) return keyOwners.get(keyDigest(token)) || 'legacy';
+  const url = new URL(req.url, 'http://localhost');
+  if (/^\/v1\/oauth\/(google|github|microsoft)\/callback$/.test(url.pathname)) {
+    const nonce = url.searchParams.get('state');
+    if (nonce && /^[A-Za-z0-9_-]{43}$/.test(nonce)) {
+      return Object.entries(state.accounts).find(([, account]) => Object.hasOwn(account.oauthStates,nonce))?.[0] || 'legacy';
+    }
+  }
+  return 'legacy';
+}
 const direct = directProviders({
   env: process.env, baseUrl: validPublicBaseUrl() && TOKEN_ENCRYPTION_SECRET.length >= 32 ? PUBLIC_BASE_URL : null,
-  connections: () => state.oauthConnections, pending: () => state.oauthStates, persist,
+  connections: () => personal().oauthConnections, pending: () => personal().oauthStates, persist,
   encrypt: encryptSecret, decrypt: decryptSecret, ttl: OAUTH_STATE_TTL_MS,
 });
 // Prefer explicitly configured adapters over newly available built-in providers.
@@ -185,7 +215,8 @@ function bearer(req) {
 }
 
 function authenticateApi(req) {
-  return tokenMatches(bearer(req), API_TOKEN);
+  const token = bearer(req);
+  return tokenMatches(token, API_TOKEN) || (owner() !== 'legacy' && keyOwners.get(keyDigest(token)) === owner());
 }
 
 function authenticateEnrollment(req) {
@@ -205,7 +236,7 @@ function findWorkerByToken(token) {
 const INTEGRATION_ACTION_RISKS = {
   'google-gmail': { search_messages: 'read', get_message: 'read', create_draft: 'write', send_message: 'sensitive' },
   'google-calendar': { list_events: 'read', create_event: 'write', update_event: 'sensitive' },
-  'google-drive': { search_files: 'read', get_file: 'read', upload_file: 'write', delete_file: 'sensitive' },
+  'google-drive': { search_files: 'read', get_file: 'read', read_content: 'read', upload_file: 'write', delete_file: 'sensitive' },
   'microsoft-outlook': { search_messages: 'read', create_draft: 'write', send_message: 'sensitive' },
   'microsoft-calendar': { list_events: 'read', create_event: 'write', cancel_event: 'sensitive' },
   dropbox: { list_files: 'read', download_file: 'read', upload_file: 'write', delete_file: 'sensitive' },
@@ -301,19 +332,15 @@ async function readBody(req) {
 
 function persist() {
   const snapshot = JSON.stringify(state);
-  saveChain = saveChain.then(async () => {
-    await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
-    const temp = DATA_FILE + '.tmp';
-    await fs.writeFile(temp, snapshot, { mode: 0o600 });
-    await fs.rename(temp, DATA_FILE);
-  });
+  saveChain = saveChain.catch(() => {}).then(() => storage.save(snapshot));
   return saveChain;
 }
 
 async function load() {
   try {
-    const raw = JSON.parse(await fs.readFile(DATA_FILE, 'utf8'));
+    const raw = await storage.load();
     if (raw && typeof raw === 'object') {
+      state.accounts = raw.accounts || {};
       state.workers = raw.workers || {};
       state.tasks = raw.tasks || {};
       state.actions = raw.actions || {};
@@ -354,7 +381,7 @@ function googleAuthorizationUrl(integrationId) {
   const integration = GOOGLE_INTEGRATIONS[integrationId];
   if (!integration) throw Object.assign(new Error('Built-in Google integration is not supported.'), { status: 404 });
   const nonce = crypto.randomBytes(32).toString('base64url');
-  state.oauthStates[nonce] = { integrationId, expiresAt: Date.now() + OAUTH_STATE_TTL_MS };
+  personal().oauthStates[nonce] = { integrationId, expiresAt: Date.now() + OAUTH_STATE_TTL_MS };
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   url.search = new URLSearchParams({
     client_id: GOOGLE_OAUTH_CLIENT_ID,
@@ -386,7 +413,7 @@ async function googleTokenRequest(parameters) {
 }
 
 async function googleAccessToken(integrationId) {
-  const connection = state.oauthConnections[integrationId];
+  const connection = personal().oauthConnections[integrationId];
   const label = GOOGLE_INTEGRATIONS[integrationId]?.label || 'Google account';
   if (!connection?.refreshToken) throw Object.assign(new Error(`${label} is not connected.`), { status: 409 });
   if (connection.accessToken && Number(connection.accessTokenExpiresAt || 0) > Date.now() + 60_000) {
@@ -438,8 +465,8 @@ function html(res, status, title, message, redirectUrl) {
 
 async function handleGoogleCallback(url, res) {
   const nonce = url.searchParams.get('state') || '';
-  const pending = state.oauthStates[nonce];
-  delete state.oauthStates[nonce];
+  const pending = personal().oauthStates[nonce];
+  delete personal().oauthStates[nonce];
   await persist();
   const integration = pending && GOOGLE_INTEGRATIONS[pending.integrationId];
   if (!pending || !integration || pending.expiresAt < Date.now()) {
@@ -458,7 +485,8 @@ async function handleGoogleCallback(url, res) {
   if (typeof token.refresh_token !== 'string') {
     return html(res, 409, `${integration.label} 연결 실패`, 'Google이 새로고침 토큰을 보내지 않았습니다. 계정 접근 권한을 해제한 뒤 다시 연결해 주세요.');
   }
-  state.oauthConnections[pending.integrationId] = {
+  personal().oauthConnections[pending.integrationId] = {
+    generation: crypto.randomUUID(),
     refreshToken: encryptSecret(token.refresh_token),
     accessToken: encryptSecret(token.access_token),
     accessTokenExpiresAt: Date.now() + Math.max(60, Number(token.expires_in || 3600)) * 1000,
@@ -468,7 +496,7 @@ async function handleGoogleCallback(url, res) {
   };
   try {
     const profile = await googleApi(pending.integrationId, 'https://openidconnect.googleapis.com/v1/userinfo');
-    state.oauthConnections[pending.integrationId].accountLabel = typeof profile.email === 'string' ? profile.email.slice(0, 120) : null;
+    personal().oauthConnections[pending.integrationId].accountLabel = typeof profile.email === 'string' ? profile.email.slice(0, 120) : null;
   } catch {}
   await persist();
   const returnUrl = `pocketmind://integrations/callback?integrationId=${encodeURIComponent(pending.integrationId)}&status=connected`;
@@ -510,7 +538,7 @@ function builtinGoogle(id) {
 }
 
 function canUseHub(id) {
-  return HUB_URL && Object.hasOwn(INTEGRATION_ACTION_RISKS, id) && !builtinGoogle(id) && !builtinDirect(id) &&
+  return owner() === 'legacy' && HUB_URL && Object.hasOwn(INTEGRATION_ACTION_RISKS, id) && !builtinGoogle(id) && !builtinDirect(id) &&
     !CONNECTOR_WEBHOOKS[id] && !CONNECTOR_DEFINITIONS[id];
 }
 
@@ -528,7 +556,7 @@ async function connectorStatus(id) {
   }
   if (builtinGoogle(id)) {
     const actions = GOOGLE_INTEGRATIONS[id].actions;
-    const connection = state.oauthConnections[id];
+    const connection = personal().oauthConnections[id];
     if (!connection?.refreshToken) return { id, configured: true, connectable: true, connected: false, mode: 'oauth', actions };
     try {
       await googleAccessToken(id);
@@ -697,6 +725,11 @@ async function dispatchBuiltinGoogleAction(action) {
       const q = query ? `name contains '${query.replaceAll("'", "\\'")}' and trashed = false` : 'trashed = false';
       return googleApi(action.integrationId, `https://www.googleapis.com/drive/v3/files?pageSize=20&orderBy=modifiedTime%20desc&fields=files(id,name,mimeType,modifiedTime,webViewLink,size)&q=${encodeURIComponent(q)}`);
     }
+    if (action.action === 'read_content') {
+      const id = requiredField(input, prompt, 'fileId', ['파일 ID'], '파일을 선택하세요.');
+      const meta = await googleApi(action.integrationId, 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(id) + '?fields=id,name,mimeType');
+      return readDriveContent(meta, await googleAccessToken(action.integrationId));
+    }
     if (action.action === 'get_file') {
       const fileId = requiredField(input, prompt, 'fileId', ['파일 ID', 'file id'], '읽을 파일 ID가 필요합니다.');
       return googleApi(action.integrationId, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,modifiedTime,webViewLink,size,description`);
@@ -789,9 +822,11 @@ async function dispatchBuiltinGoogleAction(action) {
 async function dispatchIntegrationAction(action) {
   if (builtinGoogle(action.integrationId) || builtinDirect(action.integrationId)) {
     try {
+      if (builtinGoogle(action.integrationId) && action.accountGeneration !== personal().oauthConnections[action.integrationId]?.generation)
+        throw Error('연결한 계정이 바뀌었어요. 새 작업을 요청하세요.');
       const result = builtinDirect(action.integrationId) ? await direct.run(action) : await dispatchBuiltinGoogleAction(action);
       action.status = 'completed';
-      action.result = JSON.stringify(result).slice(0, 20_000);
+      action.result = action.action === 'read_content' ? JSON.stringify(result) : JSON.stringify(result).slice(0, 20_000);
       action.lastError = null;
       action.updatedAt = Date.now();
     } catch (error) {
@@ -899,9 +934,9 @@ function pruneStoredRecords() {
       delete state.tasks[taskId];
     }
   }
-  for (const [actionId, action] of Object.entries(state.actions)) {
+  for (const [actionId, action] of Object.entries(personal().actions)) {
     if (['completed', 'failed', 'rejected', 'not_configured'].includes(action.status) && action.updatedAt < cutoff) {
-      delete state.actions[actionId];
+      delete personal().actions[actionId];
     }
     if (action.status === 'awaiting_approval' && action.createdAt < cutoff) {
       action.status = 'rejected';
@@ -920,14 +955,14 @@ function pruneStoredRecords() {
       delete state.tasks[taskId];
     }
   }
-  const actionEntries = Object.entries(state.actions);
+  const actionEntries = Object.entries(personal().actions);
   if (actionEntries.length > MAX_STORED_RECORDS) {
     const removable = actionEntries
       .filter(([, action]) => ['completed', 'failed', 'rejected', 'not_configured'].includes(action.status))
       .sort((a, b) => a[1].updatedAt - b[1].updatedAt);
-    while (Object.keys(state.actions).length > MAX_STORED_RECORDS && removable.length) {
+    while (Object.keys(personal().actions).length > MAX_STORED_RECORDS && removable.length) {
       const [actionId] = removable.shift();
-      delete state.actions[actionId];
+      delete personal().actions[actionId];
     }
   }
 }
@@ -998,6 +1033,17 @@ async function handle(req, res) {
     return json(res, 200, { status: 'ok', service: 'pocketmind-worker-coordinator', version: 1, now: Date.now() });
   }
 
+  if (req.method === 'POST' && url.pathname === '/v1/accounts') {
+    if (!tokenMatches(bearer(req), API_TOKEN)) return json(res,403,{error:'관리자 키가 필요합니다.'});
+    if (Object.keys(state.accounts).length >= 1000) return json(res,409,{error:'계정 한도에 도달했어요.'});
+    const id = crypto.randomUUID();
+    const token = 'pm_' + crypto.randomBytes(32).toString('base64url');
+    const keyHash = keyDigest(token);
+    state.accounts[id] = {keyHash, oauthConnections:{}, oauthStates:{}, actions:{}};
+    await persist();
+    keyOwners.set(keyHash,id);
+    return json(res,201,{id,token});
+  }
   if (req.method === 'GET' && parts.length === 4 && parts[0] === 'v1' && parts[1] === 'oauth' &&
       ['microsoft', 'github'].includes(parts[2]) && parts[3] === 'callback') {
     try {
@@ -1141,14 +1187,14 @@ async function handle(req, res) {
   if (req.method === 'GET' && url.pathname === '/v1/integrations') {
     if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
     const ids = [...new Set([
-      ...Object.keys(CONNECTOR_WEBHOOKS),
-      ...Object.keys(CONNECTOR_DEFINITIONS),
+      ...(owner() === 'legacy' ? Object.keys(CONNECTOR_WEBHOOKS) : []),
+      ...(owner() === 'legacy' ? Object.keys(CONNECTOR_DEFINITIONS) : []),
       ...(BUILTIN_GOOGLE_ENABLED ? Object.keys(GOOGLE_INTEGRATIONS) : []),
       ...direct.ids().filter(builtinDirect),
     ])];
     const integrations = await Promise.all(ids.map(connectorStatus));
     let hubUnavailable = false;
-    if (HUB_URL) {
+    if (HUB_URL && owner() === 'legacy') {
       try {
         for (const [id, status] of await hubCatalog()) {
           if (canUseHub(id)) integrations.push(status);
@@ -1166,6 +1212,7 @@ async function handle(req, res) {
     const definition = shared ? { connectUrl: HUB_URL, statusUrl: HUB_URL, actionUrl: HUB_URL, disconnectUrl: HUB_URL } : CONNECTOR_DEFINITIONS[integrationId];
     const google = builtinGoogle(integrationId);
     const provider = builtinDirect(integrationId);
+    if (owner() !== 'legacy' && !google && !provider) return json(res,404,{error:'Personal connector unavailable'});
     if (!definition && !google && !provider) return json(res, 404, { error: 'One-tap connector is not configured' });
     await readBody(req);
 
@@ -1182,7 +1229,7 @@ async function handle(req, res) {
         await persist();
         return json(res, 200, { integrationId, authorizationUrl });
       }
-      const connection = state.oauthConnections[integrationId];
+      const connection = personal().oauthConnections[integrationId];
       if (connection?.refreshToken) {
         const token = decryptSecret(connection.refreshToken);
         fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, {
@@ -1192,7 +1239,7 @@ async function handle(req, res) {
           signal: AbortSignal.timeout(8_000),
         }).catch(() => {});
       }
-      delete state.oauthConnections[integrationId];
+      delete personal().oauthConnections[integrationId];
       await persist();
       return json(res, 200, await connectorStatus(integrationId));
     }
@@ -1240,6 +1287,7 @@ async function handle(req, res) {
     const google = builtinGoogle(body.integrationId);
     const viaHub = Boolean(canUseHub(body.integrationId));
     const provider = builtinDirect(body.integrationId);
+    if (owner() !== 'legacy' && !google && !provider) return json(res,404,{error:'Personal connector unavailable'});
     if (!viaHub && !CONNECTOR_WEBHOOKS[body.integrationId] && !google && !provider) {
       return json(res, 409, { error: 'Integration is not configured on the coordinator' });
     }
@@ -1251,7 +1299,7 @@ async function handle(req, res) {
     const action = {
       actionId: crypto.randomUUID(),
       viaHub,
-      accountGeneration: provider ? state.oauthConnections[body.integrationId]?.generation : undefined,
+      accountGeneration: provider || google ? personal().oauthConnections[body.integrationId]?.generation : undefined,
       integrationId: body.integrationId,
       action: body.action,
       risk: body.risk,
@@ -1263,7 +1311,7 @@ async function handle(req, res) {
       result: null,
       lastError: null,
     };
-    state.actions[action.actionId] = action;
+    personal().actions[action.actionId] = action;
     await persist();
     if (action.risk === 'read') await dispatchIntegrationAction(action);
     return json(res, 201, safeAction(action));
@@ -1271,7 +1319,7 @@ async function handle(req, res) {
 
   if (req.method === 'GET' && parts.length === 4 && parts[0] === 'v1' && parts[1] === 'integrations' && parts[2] === 'actions') {
     if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
-    const action = state.actions[parts[3]];
+    const action = personal().actions[parts[3]];
     if (!action) return json(res, 404, { error: 'Integration action not found' });
     return json(res, 200, safeAction(action));
   }
@@ -1280,7 +1328,7 @@ async function handle(req, res) {
       parts[1] === 'integrations' && parts[2] === 'actions' &&
       ['approve', 'reject'].includes(parts[4])) {
     if (!authenticateApi(req)) return json(res, 401, { error: 'Invalid API token' });
-    const action = state.actions[parts[3]];
+    const action = personal().actions[parts[3]];
     if (!action) return json(res, 404, { error: 'Integration action not found' });
     if (action.status !== 'awaiting_approval') return json(res, 409, { error: 'Action is not awaiting approval' });
     await readBody(req);
@@ -1344,7 +1392,7 @@ async function handle(req, res) {
     };
     const taskId = crypto.randomUUID();
     state.tasks[taskId] = {
-      taskId, modelId: body.modelId, payload: body.payload,
+      taskId, owner: owner(), modelId: body.modelId, payload: body.payload,
       requirements,
       status: 'pending', createdAt: Date.now(), updatedAt: Date.now(),
       attempts: 0, workerId: null, leaseId: null, leaseExpiresAt: null,
@@ -1355,14 +1403,14 @@ async function handle(req, res) {
 
   if (req.method === 'GET' && parts.length === 3 && parts[0] === 'v1' && parts[1] === 'tasks') {
     const task = state.tasks[parts[2]];
-    if (!task) return json(res, 404, { error: 'Task not found' });
+    if (!task || (task.owner || 'legacy') !== owner()) return json(res, 404, { error: 'Task not found' });
     const { leaseId, payload, ...publicTask } = task;
     return json(res, 200, publicTask);
   }
 
   if (req.method === 'POST' && parts.length === 4 && parts[0] === 'v1' && parts[1] === 'tasks' && parts[3] === 'cancel') {
     const task = state.tasks[parts[2]];
-    if (!task) return json(res, 404, { error: 'Task not found' });
+    if (!task || (task.owner || 'legacy') !== owner()) return json(res, 404, { error: 'Task not found' });
     if (['completed', 'failed', 'cancelled'].includes(task.status)) return json(res, 409, { error: 'Task already finished' });
     task.status = 'cancelled';
     task.updatedAt = Date.now();
@@ -1375,17 +1423,22 @@ async function handle(req, res) {
 
 async function main() {
   await load();
+  for (const [id,token] of userTokens) keyOwners.set(keyDigest(token),id);
+  for (const [id,record] of Object.entries(state.accounts)) {
+    if (record.keyHash) keyOwners.set(record.keyHash,id);
+  }
   const server = http.createServer((req, res) => {
-    Promise.resolve(handle(req, res)).catch(error => {
+    Promise.resolve().then(() => ownerContext.run(requestOwner(req), () => handle(req, res))).catch(error => {
       console.error('Request failed:', error.message);
       if (!res.headersSent) json(res, error.status || 500, { error: error.status ? error.message : 'Internal server error' });
       else res.destroy();
     });
   });
-  server.listen(PORT, HOST, () => console.log(`PocketMind coordinator listening on ${HOST}:${PORT}`));
+  server.listen(PORT, HOST, () => console.log(`PocketMind coordinator listening on ${HOST}:${server.address().port}`));
   const shutdown = async () => {
     server.close();
     await saveChain;
+    await storage.close();
     process.exit(0);
   };
   process.on('SIGINT', shutdown);

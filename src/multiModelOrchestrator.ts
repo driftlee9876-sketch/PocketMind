@@ -428,6 +428,7 @@ class MultiModelOrchestratorEngine {
   }
 
   public async executeAutonomousPipeline(params: {
+    documentAttached?: boolean;
     userPrompt: string;
     installedModelIds: string[];
     primaryModelId: string;
@@ -451,11 +452,11 @@ class MultiModelOrchestratorEngine {
     throwIfAborted(signal);
 
     const catalog = getSafeCatalog();
-    const { cleanPrompt, requestedModelIds } = this.parseExplicitDirectives(userPrompt);
+    const { cleanPrompt, requestedModelIds } = params.documentAttached ? {cleanPrompt:userPrompt,requestedModelIds:[]} : this.parseExplicitDirectives(userPrompt);
     const intent = this.analyzeIntent(cleanPrompt);
 
     callbacks?.onStatusUpdate?.('🧩 활성화된 전체 플러그인 검사 및 자동 실행 중...');
-    const pluginOutputs = await runAutonomousPlugins(cleanPrompt, enabledPluginIds);
+    const pluginOutputs = params.documentAttached ? [] : await runAutonomousPlugins(cleanPrompt, enabledPluginIds);
     const pluginContext =
       pluginOutputs.length > 0
         ? `\n\n[실시간 플러그인 실행 데이터]\n${pluginOutputs

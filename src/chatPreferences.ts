@@ -7,7 +7,7 @@ export interface ChatPreferences {
 }
 
 export const defaultChatPreferences: ChatPreferences = {
-  enterMode: 'newline', showMetrics: true, autoScroll: true, largeText: false,
+  enterMode: 'newline', showMetrics: false, autoScroll: true, largeText: false,
 };
 
 export function restoreChatPreferences(raw: string | null): ChatPreferences {
@@ -15,7 +15,7 @@ export function restoreChatPreferences(raw: string | null): ChatPreferences {
   try { saved = raw ? JSON.parse(raw) ?? {} : {}; } catch { saved = {}; }
   return {
     enterMode: saved.enterMode === 'send' || saved.enterMode === 'blankLine' ? saved.enterMode : 'newline',
-    showMetrics: saved.showMetrics !== false,
+    showMetrics: saved.showMetrics === true,
     autoScroll: saved.autoScroll !== false,
     largeText: saved.largeText === true,
   };

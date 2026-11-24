@@ -6,8 +6,9 @@ ENV PORT=8787
 ENV POCKETMIND_DATA_FILE=/app/data/pocketmind-state.json
 
 WORKDIR /app
-COPY package.json ./package.json
-COPY server.js integration-hub.js direct-providers.js ./
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY server.js integration-hub.js direct-providers.js state-storage.js drive-content.js ./
 
 RUN addgroup -S pocketmind && adduser -S pocketmind -G pocketmind \
     && mkdir -p /app/data \
