@@ -1,3 +1,4 @@
+#import <CommonCrypto/CommonDigest.h>
 #import <React/RCTBridgeModule.h>
 #import <React/RCTUtils.h>
 #import <UIKit/UIKit.h>
@@ -414,6 +415,31 @@ RCT_EXPORT_METHOD(wiredRequest:(NSString *)request action:(NSString *)action tok
 RCT_EXPORT_METHOD(cancelVoice:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   [self clearVoice];resolve(@YES);
 }
+RCT_EXPORT_METHOD(hashMediaFile:(NSString *)path resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    NSInputStream *input = [NSInputStream inputStreamWithFileAtPath:path];
+    [input open];
+    CC_SHA256_CTX context;
+    CC_SHA256_Init(&context);
+    uint8_t block[65536];
+    NSInteger length;
+    while ((length = [input read:block maxLength:sizeof(block)]) > 0) {
+      CC_SHA256_Update(&context, block, (CC_LONG)length);
+    }
+    NSError *error = input.streamError;
+    [input close];
+    if (length < 0 || error) {
+      reject(@"MODEL_READ", @"모델 파일을 읽지 못했어요.", error);
+      return;
+    }
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256_Final(digest, &context);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (unsigned char byte : digest) [hex appendFormat:@"%02x", byte];
+    resolve(hex);
+  });
+}
+
 RCT_EXPORT_METHOD(startVoiceRecording:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   [self clearVoice];NSUInteger epoch=_micEpoch;
   AVAudioSession *audio=AVAudioSession.sharedInstance;

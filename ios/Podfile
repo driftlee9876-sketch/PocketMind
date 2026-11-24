@@ -16,6 +16,7 @@ end
 
 target 'PocketMind' do
   config = use_native_modules!
+  pod 'onnxruntime-c', '1.24.3'
   pod 'PocketMindWiredGPU', :path => './WiredGPU' if File.directory?(File.join(__dir__, 'WiredGPU/PocketMindMetalPeer.xcframework'))
 
   use_react_native!(

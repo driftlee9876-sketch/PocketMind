@@ -1,6 +1,6 @@
 import {forkMessage,switchVersion,type Versioned} from '../chatBranches';
 import {conversationContext,recentTurns} from '../chatContext';
-type M=Versioned<M>&{text:string};
+interface M extends Versioned<M> {text:string}
 test('restores old follow-ups when a different reply version is selected after restart',()=>{
   const old:M[]=['question','first','follow-up'].map(text=>({text}));
   let now=forkMessage(old,1,{text:'second'});now.push({text:'new follow-up'});

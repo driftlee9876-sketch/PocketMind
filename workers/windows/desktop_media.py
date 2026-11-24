@@ -69,7 +69,7 @@ def speak(text):
 
 def open_media(parent,bundle,base,kind,on_image,on_voice):
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import messagebox, ttk
     runtime=Path(bundle)/"media"
     models=[m for m in json.loads((runtime/"catalog.json").read_text(encoding="utf-8")) if m["kind"]==kind]
     window=tk.Toplevel(parent)
@@ -80,7 +80,20 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
     frame.pack(fill="both",expand=True)
     labels=[f"{m['name']} · {m['parameters']} · {sum(f['bytes'] for f in m['files'])/1e6:.0f} MB" for m in models]
     selection=ttk.Combobox(frame,values=labels,state="readonly",width=54)
-    selection.current(0)
+    pref = base / ("preferred-" + kind + "-model.txt")
+    try:
+        preferred = pref.read_text(encoding="utf-8").strip()
+    except OSError:
+        preferred = None
+    selection.current(next((i for i, m in enumerate(models) if m["id"] == preferred), 0))
+    def choose(_):
+        try:
+            pref.parent.mkdir(parents=True, exist_ok=True)
+            pref.write_text(models[selection.current()]["id"], encoding="utf-8")
+            state.set("")
+        except OSError as e:
+            state.set(str(e))
+    selection.bind("<<ComboboxSelected>>", choose)
     selection.pack(fill="x")
     prompt=tk.Text(frame,height=4,width=48)
     if kind=="image":
@@ -94,6 +107,26 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
     alias="pm"+uuid.uuid4().hex
     events=queue.Queue()
     cancelled=threading.Event()
+
+    readiness = {}
+    def model_ready(model):
+        directory = model_folder(base / "media-models", model)
+        try:
+            return ((directory / "ready").read_text(encoding="ascii") == model["revision"]
+                    and all((directory / f["path"]).stat().st_size == f["bytes"] for f in model["files"]))
+        except OSError:
+            return False
+
+    def ready(model):
+        if model["id"] not in readiness:
+            readiness[model["id"]] = model_ready(model)
+        return readiness[model["id"]]
+
+    def remove():
+        model = models[selection.current()]
+        if busy or recording or not messagebox.askyesno("모델 삭제", model["name"] + " 모델을 기기에서 삭제할까요?", parent=window):
+            return
+        work(lambda: shutil.rmtree(model_folder(base / "media-models", model)))
 
     def mic(command):
         code=ctypes.windll.winmm.mciSendStringW(command,None,0,None)
@@ -119,7 +152,7 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
             return
         model=models[selection.current()]
         directory=model_folder(base/"media-models",model)
-        if not (directory/"ready").is_file():
+        if not ready(model):
             work(lambda:download(base/"media-models",model,cancelled,lambda s:events.put(("status",s))))
             return
         if kind=="image":
@@ -189,20 +222,25 @@ def open_media(parent,bundle,base,kind,on_image,on_voice):
 
     action=ttk.Button(frame,command=run)
     action.pack(fill="x")
+    delete = ttk.Button(frame,text="모델 삭제",command=remove)
+    delete.pack(fill="x")
     ttk.Button(frame,text="닫기",command=close).pack(fill="x")
     def poll():
         nonlocal busy
         if closing:return
         while not events.empty():
             op,value=events.get_nowait()
-            if op=="done":busy=False
+            if op=="done":
+                busy=False
+                readiness.clear()
             elif op=="image":on_image(*value);close();return
             elif op=="voice":on_voice(value);close();return
             else:state.set(value)
         selection.configure(state="disabled" if busy or recording else "readonly")
         model=models[selection.current()]
-        ready=(model_folder(base/"media-models",model)/"ready").is_file()
-        label="선택한 모델 다운로드" if not ready else "이미지 생성" if kind=="image" else "녹음 종료하고 보내기" if recording else "말하기"
+        available = ready(model)
+        delete.configure(state="normal" if available and not busy and not recording else "disabled")
+        label="선택한 모델 다운로드" if not available else "이미지 생성" if kind=="image" else "녹음 종료하고 보내기" if recording else "말하기"
         action.configure(text=label,state="disabled" if busy else "normal")
         window.after(120,poll)
     window.protocol("WM_DELETE_WINDOW",close)
