@@ -66,15 +66,18 @@ jobs:
           ref: fb1379425b16e58dcbdda7be0f8604a7f5cdce78
           path: build/pocketmind-spirv
           persist-credentials: false
+      - name: Install pinned NDK for Android native builds
+        run: |
+          if [ ! -x "$ANDROID_HOME/ndk/27.1.12297006/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang" ]; then
+            sdk_manager=$(find "$ANDROID_HOME" -type f -path '*/bin/sdkmanager' | sort -V | tail -1)
+            "$sdk_manager" "ndk;27.1.12297006"
+          fi
+
       - name: Build Vulkan GPU peer for trusted USB connections
         if: steps.gpu-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y glslc ninja-build
-          if [ ! -d "$ANDROID_HOME/ndk/27.1.12297006" ]; then
-            sdk_manager=$(find "$ANDROID_HOME" -type f -path '*/bin/sdkmanager' | sort -V | tail -1)
-            "$sdk_manager" "ndk;27.1.12297006"
-          fi
           ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.1.12297006" bash workers/android-gpu/build.sh
 
       - uses: actions/setup-go@v5

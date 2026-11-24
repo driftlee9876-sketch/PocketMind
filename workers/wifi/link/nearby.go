@@ -72,6 +72,11 @@ func (e *Engine) join(c *tls.Conn, gen uint64, session []byte) error {
 	if _, err := io.ReadFull(c, other[:]); err != nil {
 		return err
 	}
+	var receivedTag [16]byte
+	copy(receivedTag[:], other.tag())
+	if receivedTag != peerTag {
+		return denied
+	}
 	switch {
 	case key == (groupKey{}) && other == (groupKey{}):
 		copy(key[:], session)
