@@ -1,6 +1,7 @@
 package link
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"pocketmind/wifi/relay"
 	"strconv"
 	"sync"
 	"time"
@@ -26,6 +28,7 @@ const meshPort = 47832
 var _, meshSubnet, _ = net.ParseCIDR("100.64.0.0/10")
 
 type Endpoint struct {
+	Relay  string
 	Mesh   bool
 	Local  string
 	Prefix int
@@ -48,6 +51,12 @@ func (p Endpoint) network() (*net.IPNet, error) {
 	return &net.IPNet{IP: ip.Mask(net.CIDRMask(p.Prefix, 32)), Mask: net.CIDRMask(p.Prefix, 32)}, nil
 }
 func (p Endpoint) validate() error {
+	if p.Relay != "" {
+		if !relay.ValidKey(p.Relay) || !relay.ValidKey(p.ID) {
+			return denied
+		}
+		return nil
+	}
 	subnet, err := p.network()
 	if err != nil {
 		return err
@@ -71,16 +80,22 @@ type challenge struct {
 	vote chan bool
 }
 type Engine struct {
-	mu          sync.Mutex
-	dir, id     string
-	cert        tls.Certificate
-	trusted     map[string]bool
-	pending     *challenge
-	issue       string
-	listener    net.Listener
-	bridges     []net.Listener
-	connections map[net.Conn]bool
-	epoch       uint64
+	relayURL       string
+	relayCancel    context.CancelFunc
+	invitation     string
+	invites        map[string]string
+	outboundCtx    context.Context
+	cancelOutbound context.CancelFunc
+	mu             sync.Mutex
+	dir, id        string
+	cert           tls.Certificate
+	trusted        map[string]bool
+	pending        *challenge
+	issue          string
+	listener       net.Listener
+	bridges        []net.Listener
+	connections    map[net.Conn]bool
+	epoch          uint64
 }
 
 func New(dir string) (*Engine, error) {
@@ -88,7 +103,9 @@ func New(dir string) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Engine{dir: dir, cert: cert, id: id, trusted: peers, connections: map[net.Conn]bool{}}, nil
+	e := &Engine{relayURL: publicRelay, dir: dir, cert: cert, id: id, trusted: peers, connections: map[net.Conn]bool{}}
+	e.outboundCtx, e.cancelOutbound = context.WithCancel(context.Background())
+	return e, e.loadInvites()
 }
 func (e *Engine) snapshot() map[string]any {
 	e.mu.Lock()
@@ -97,7 +114,13 @@ func (e *Engine) snapshot() map[string]any {
 	for k := range e.trusted {
 		peers = append(peers, k)
 	}
-	return map[string]any{"id": e.id, "trusted": peers, "pending": e.pending, "offering": e.listener != nil, "issue": e.issue}
+	internet := []map[string]any{}
+	for id, room := range e.invites {
+		if relay.ValidKey(id) && relay.ValidKey(room) {
+			internet = append(internet, internetPeer(id, room))
+		}
+	}
+	return map[string]any{"internetPeers": internet, "relayInvitation": e.invitation, "internetOffering": e.relayCancel != nil, "id": e.id, "trusted": peers, "pending": e.pending, "offering": e.listener != nil || e.relayCancel != nil, "issue": e.issue}
 }
 func (e *Engine) setIssue(gen uint64, err error) {
 	e.mu.Lock()
@@ -126,6 +149,13 @@ func (e *Engine) stop() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.epoch++
+	e.cancelOutbound()
+	e.outboundCtx, e.cancelOutbound = context.WithCancel(context.Background())
+	if e.relayCancel != nil {
+		e.relayCancel()
+		e.relayCancel = nil
+	}
+	e.invitation = ""
 	if e.listener != nil {
 		e.listener.Close()
 		e.listener = nil
@@ -262,8 +292,20 @@ func (e *Engine) dial(gen uint64, p Endpoint) (*tls.Conn, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
-	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(p.Local)}, Timeout: 6 * time.Second}
-	raw, err := d.Dial("tcp4", net.JoinHostPort(p.IP, strconv.Itoa(p.Port)))
+	var raw net.Conn
+	var err error
+	if p.Relay != "" {
+		e.mu.Lock()
+		ctx, valid := e.outboundCtx, e.epoch == gen
+		e.mu.Unlock()
+		if !valid {
+			return nil, denied
+		}
+		raw, err = relay.Connect(ctx, e.relayURL, p.Relay)
+	} else {
+		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(p.Local)}, Timeout: 6 * time.Second}
+		raw, err = d.Dial("tcp4", net.JoinHostPort(p.IP, strconv.Itoa(p.Port)))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +349,7 @@ func (e *Engine) pair(p Endpoint) error {
 	}()
 	return nil
 }
-func relay(a, b net.Conn) {
+func relayBytes(a, b net.Conn) {
 	done := make(chan struct{})
 	go func() { io.Copy(a, b); a.Close(); b.Close(); close(done) }()
 	io.Copy(b, a)
@@ -332,7 +374,7 @@ func (e *Engine) offer(p Endpoint, backend Backend) (int, error) {
 		return 0, err
 	}
 	e.mu.Lock()
-	if e.listener != nil || len(e.bridges) != 0 {
+	if e.listener != nil || e.relayCancel != nil || len(e.bridges) != 0 {
 		e.mu.Unlock()
 		l.Close()
 		return 0, errors.New("GPU 연결이 이미 실행 중이에요.")
@@ -340,7 +382,7 @@ func (e *Engine) offer(p Endpoint, backend Backend) (int, error) {
 	e.listener = l
 	gen := e.epoch
 	e.mu.Unlock()
-	cfg := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{e.cert}, ClientAuth: tls.RequireAnyClientCert, NextProtos: []string{protocol}}
+	cfg := e.serverConfig()
 	go func() {
 		for {
 			raw, err := l.Accept()
@@ -358,6 +400,9 @@ func (e *Engine) offer(p Endpoint, backend Backend) (int, error) {
 		}
 	}()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+func (e *Engine) serverConfig() *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{e.cert}, ClientAuth: tls.RequireAnyClientCert, NextProtos: []string{protocol}}
 }
 func (e *Engine) accept(gen uint64, c *tls.Conn, backend Backend) {
 	defer e.drop(c)
@@ -395,7 +440,7 @@ func (e *Engine) accept(gen uint64, c *tls.Conn, backend Backend) {
 		return
 	}
 	c.SetDeadline(time.Time{})
-	relay(c, b)
+	relayBytes(c, b)
 }
 func (e *Engine) connectData(gen uint64, p Endpoint) (net.Conn, error) {
 	if !e.isTrusted(p.ID) {
@@ -428,7 +473,7 @@ func (e *Engine) openBridges(peers []Endpoint) ([]string, error) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if len(e.bridges) > 0 || e.listener != nil {
+	if len(e.bridges) > 0 || e.listener != nil || e.relayCancel != nil {
 		return nil, denied
 	}
 	seen := map[string]bool{}
@@ -479,7 +524,7 @@ func (e *Engine) serveBridge(l net.Listener, p Endpoint, gen uint64) {
 					return
 				}
 				defer e.drop(b)
-				relay(a, b)
+				relayBytes(a, b)
 			}()
 		}
 	}()
@@ -503,6 +548,9 @@ func (e *Engine) Command(q Request) (map[string]any, error) {
 		e.stop()
 		e.mu.Lock()
 		err := e.saveLocked("")
+		if err == nil {
+			err = e.saveInviteLocked("", "")
+		}
 		e.mu.Unlock()
 		return nil, err
 	case "vote":
@@ -515,6 +563,14 @@ func (e *Engine) Command(q Request) (map[string]any, error) {
 	case "bridge":
 		name, err := e.openBridge(q.Endpoint)
 		return map[string]any{"bridge": name}, err
+	case "importInternet":
+		return e.importInternet(q.Value)
+	case "offerInternet":
+		backend, err := localBackend(q.Backend, q.Value)
+		if err != nil {
+			return nil, err
+		}
+		return nil, e.offerInternet(backend)
 	case "offer":
 		backend, err := localBackend(q.Backend, q.Value)
 		if err != nil {
