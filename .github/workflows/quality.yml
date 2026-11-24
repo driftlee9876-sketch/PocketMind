@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [ main, master ]
   push:
-    branches: [ feat/pocketmind-foundation ]
+    branches: [ feat/pocketmind-foundation, feat/pocketmind-chat-upgrade ]
 
 permissions:
   contents: read
@@ -50,6 +50,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: npm ci --omit=dev
+        working-directory: worker-server
       - name: Check coordinator JavaScript syntax
         working-directory: worker-server
         run: node --check server.js

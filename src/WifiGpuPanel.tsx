@@ -2,6 +2,7 @@ import React, {useEffect, useRef, useState} from 'react';
 import {AppState, Modal, NativeModules, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View} from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {compareGpu,savedComparison} from './gpuComparison';
 import type {WiredSession} from './wiredInference';
 
 type Peer = {ID: string; name: string; platform?: string};
@@ -21,6 +22,15 @@ export function WifiGpuPanel(props:Props) {
   const [selected,setSelected]=useState<string[]>([]);
   const [invite,setInvite]=useState('');
   const [remoteOpen,setRemoteOpen]=useState(false);
+  const measurement=useRef<AbortController|null>(null);
+  const [report,setReport]=useState<Awaited<ReturnType<typeof savedComparison>>>(null);
+  const names=useRef<Record<string,string>>({});
+  const missing=pref?.ids.filter(id=>!state.peers.some(peer=>peer.ID===id)) || [];
+  useEffect(()=>{
+    let live=true;setReport(null);
+    if(props.filename && selected.length) savedComparison(props.filename,selected).then(value=>{if(live)setReport(value);}).catch(()=>{});
+    return ()=>{live=false;};
+  },[props.filename,selected]);
   const [error,setError]=useState('');
   const [foreground,setForeground]=useState(AppState.currentState!=='background');
   const current=useRef(props);current.current=props;
@@ -43,7 +53,7 @@ export function WifiGpuPanel(props:Props) {
       if(!mounted || !raw || epoch!==generation.current || Platform.OS!=='android')return;
       const saved=JSON.parse(raw);
       const ids=Array.isArray(saved.ids)?saved.ids:[saved.id];
-      if (ids.length>=1 && ids.length<=20 && new Set(ids).size===ids.length &&
+      if (ids.length<=20 && new Set(ids).size===ids.length &&
           ids.every((id:unknown)=>typeof id==='string' && /^[A-Za-z0-9_-]{43}$/.test(id)) && typeof saved.filename==='string'){
         const value={ids,filename:saved.filename};
         setSelected(ids);
@@ -68,11 +78,13 @@ export function WifiGpuPanel(props:Props) {
         const s=await command(start && Platform.OS==='android'?'browse':'status');
         if(!live)return;
         setState(s);
+        for(const peer of s.peers) names.current[peer.ID]=peer.name;
         const target=preference.current;
         if(target && !s.offering && !current.current.session && !loading.current && target.ids.every(id=>s.trusted.includes(id) && s.peers.some(p=>p.ID===id)) && Date.now()>=nextTry.current){
           const epoch=generation.current;loading.current=true;setBusy(`보조 GPU ${target.ids.length}대에 모델을 나눠 올리는 중…`);
           try{
-            const result=await native.joinWifiGroup(target.ids,target.filename);
+            const previous=await savedComparison(target.filename,target.ids);
+            const result=await native.calibratedGpuGroup(target.ids,target.filename,previous?.policy || 'memory');
             if(!live || epoch!==generation.current){await native.stopTabletGpu();return;}
             failures.current=0;setError('');current.current.onSession(result);
           } catch(e:any){
@@ -111,7 +123,20 @@ export function WifiGpuPanel(props:Props) {
     }catch(e){await native.stopUsbGpuPeer();throw e;}
     finally{preparing.current=false;setBusy('');}
   }
+  async function benchmark(){
+    if(!props.filename || !selected.length || loading.current || measurement.current)return;
+    const ctl=new AbortController();
+    measurement.current=ctl;loading.current=true;setError('');
+    try {
+      const result=await compareGpu(props.filename,selected,ctl.signal,
+        (ids,file,policy)=>native.calibratedGpuGroup(ids,file,policy),()=>native.stopTabletGpu(),setBusy);
+      setReport(result);
+    }catch(e){if(!ctl.signal.aborted)setError(e instanceof Error?e.message:'측정 실패');}
+    finally{measurement.current=null;loading.current=false;setBusy('');}
+  }
   function close(){
+    if(measurement.current){measurement.current.abort();native.stopTabletGpu().catch(()=>{});}
+
     offerEpoch.current++;
     if(!preference.current)command('stop').catch(()=>{});
     props.onClose();
@@ -148,7 +173,16 @@ export function WifiGpuPanel(props:Props) {
         {!pref && selected.length>0 && button(`선택한 ${selected.length}/20대로 대화 · 자동 재연결`,()=>{
           if(props.filename)remember({ids:[...selected],filename:props.filename});
         },!props.filename||!!busy||!!props.session||!selected.every(id=>state.trusted.includes(id)&&state.peers.some(p=>p.ID===id)))}
-        {!pref && selected.length>0 && button('선택 초기화',()=>setSelected([]))}
+        {!pref && !!selected.length && button('탭 단독과 속도 비교',benchmark,!props.filename||!!busy||!!props.session)}
+        {report && <View style={s.group}>{report.samples.map(row=><Text key={row.label} style={s.detail}>{row.label} · 준비 {(row.loadMs/1000).toFixed(1)}초 · 첫 토큰 {(row.firstMs/1000).toFixed(2)}초 · {row.rate>0 ? row.rate.toFixed(1)+' tok/s' : '속도 미제공'}</Text>)}
+          {report.unavailable.map(value=><Text key={value} style={s.detail}>{value}</Text>)}
+          {!!report.samples.some(row=>row.rate>0 && row.label!=='탭 단독') && <Text style={s.detail}>선택된 분배 · {report.policy==='equal'?'균등':'여유 메모리 기준'}</Text>}</View>}
+        {pref && !props.session && missing.length>0 && <View style={s.group}>
+          <Text style={s.detail}>다시 연결 대기 · {missing.map(id=>names.current[id] || id.slice(0,8)).join(', ')}</Text>
+          {button('현재 연결된 기기로 계속',()=>{const ids=pref.ids.filter(id=>!missing.includes(id));setSelected(ids);remember({...pref,ids});},missing.length===pref.ids.length||!!busy)}
+          {button('탭 단독으로 전환',()=>{remember({...pref,ids:[]});setSelected([]);},!!busy)}
+        </View>}
+        {!pref && selected.length>0 && button('선택 초기화',()=>setSelected([]),!!busy)}
         {pref && <Text style={s.detail}>{`보조 GPU ${pref.ids.length}대 · ${props.session?.wifi?'모델 실행 중':'자동 연결 대기 중'}`}</Text>}
         {!props.filename && <Text style={s.detail}>함께 실행할 GGUF를 주 기기에 설치하고 선택하세요.</Text>}
         {pref && button('자동 재연결 끄고 연결 해제',()=>action(()=>disconnect(false)))}

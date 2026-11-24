@@ -55,16 +55,29 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
       } catch(e:Exception) { promise.reject("WIFI_GPU",e) }
     }
   }
+  @ReactMethod fun calibratedGpuGroup(ids: com.facebook.react.bridge.ReadableArray, filename: String, policy: String, promise: Promise) {
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+      try {
+        require(ids.size() in 0..20 && policy in listOf("memory","equal"))
+        val peers = (0 until ids.size()).map { wifiLan.selected(requireNotNull(ids.getString(it))) }
+        tabletGpu.host("", filename, promise, peers, policy)
+      } catch (error: Exception) { promise.reject("WIFI_GPU", error) }
+    }
+  }
   private val tabletGpu = TabletGpu(context, usbGpuPeer)
   @ReactMethod fun prepareTabletPeer(promise: Promise) = usbGpuPeer.start(promise, true)
   @ReactMethod fun offerTabletGpu(promise: Promise) { tabletGpu.provide(promise) }
   @ReactMethod fun joinTabletGpu(invitation: String, filename: String, promise: Promise) { tabletGpu.host(invitation, filename, promise) }
+  @ReactMethod fun stopTabletSession(token:String,promise:Promise) {tabletGpu.stopToken(token);promise.resolve(true)}
   @ReactMethod fun stopTabletGpu(promise: Promise) { tabletGpu.stop(); promise.resolve(true) }
   @ReactMethod fun tabletGpuStatus(promise: Promise) { promise.resolve(tabletGpu.status()) }
   private val cableQr = CableQr(context)
   @ReactMethod fun scanCableQr(promise: Promise) = cableQr.scan(promise)
   @ReactMethod fun showCableQr(value: String, promise: Promise) = cableQr.image(value, promise)
-  private val wiredHttp = WiredHttp()
+  private val wiredHttp = WiredHttp { id, text ->
+    if (context.hasActiveReactInstance()) context.getJSModule(com.facebook.react.modules.core.DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+      .emit("PocketMindGpuText", Arguments.createMap().apply { putString("id",id); putString("text",text) })
+  }
   @ReactMethod fun wiredRequest(id: String, action: String, token: String, body: String, promise: Promise) =
     wiredHttp.request(id, action, token, body, promise)
   @ReactMethod fun cancelWiredRequest(id: String) = wiredHttp.cancel(id)

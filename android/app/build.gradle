@@ -72,6 +72,8 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+def testSigning = project.findProperty("pocketmindTestSigning") == "true"
+def releaseStore = System.getenv("POCKETMIND_RELEASE_STORE")
 android {
     sourceSets.main.jniLibs.srcDir(layout.buildDirectory.dir("wifi/jniLibs").get().asFile)
     sourceSets.main.jniLibs.srcDir(layout.buildDirectory.dir("wired/jniLibs").get().asFile)
@@ -88,10 +90,18 @@ android {
         applicationId "com.pocketmind"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1"
     }
     signingConfigs {
+        if (releaseStore) {
+            production {
+                storeFile file(releaseStore)
+                storePassword System.getenv("POCKETMIND_STORE_PASSWORD")
+                keyAlias System.getenv("POCKETMIND_KEY_ALIAS")
+                keyPassword System.getenv("POCKETMIND_KEY_PASSWORD")
+            }
+        }
         debug {
             storeFile file('debug.keystore')
             storePassword 'android'
@@ -104,9 +114,8 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            if (testSigning) signingConfig signingConfigs.debug
+            else if (releaseStore) signingConfig signingConfigs.production
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
@@ -124,5 +133,11 @@ dependencies {
         implementation("com.facebook.react:hermes-android")
     } else {
         implementation jscFlavor
+    }
+}
+
+gradle.taskGraph.whenReady { graph ->
+    if (!testSigning && !releaseStore && graph.allTasks.any { it.project == project && it.name in ['assembleRelease','bundleRelease','packageRelease','installRelease'] }) {
+        throw new GradleException("Provide production signing credentials or explicitly enable pocketmindTestSigning for an internal APK.")
     }
 }

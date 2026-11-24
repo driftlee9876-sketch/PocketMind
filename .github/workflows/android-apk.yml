@@ -2,9 +2,15 @@ name: Build PocketMind Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      production:
+        description: Sign with the production keystore
+        default: false
+        type: boolean
   push:
     branches:
       - feat/pocketmind-foundation
+      - feat/pocketmind-chat-upgrade
 
 jobs:
   build-android:
@@ -152,30 +158,30 @@ jobs:
           print("PocketMind Android launcher icons generated successfully.")
           EOF
 
-      - name: Ensure Fixed Signing Keystore
+      - name: Configure signing for this build
+        env:
+          PRODUCTION: ${{ inputs.production || false }}
+          STORE_BASE64: ${{ secrets.POCKETMIND_RELEASE_KEYSTORE }}
         run: |
-          if [ ! -f android/app/debug.keystore ]; then
-            keytool -genkeypair -v -noprompt -storetype PKCS12 \
-              -keystore android/app/debug.keystore \
-              -alias androiddebugkey \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass android -keypass android \
-              -dname "CN=Android Debug,O=Android,C=US"
+          if [[ "$PRODUCTION" == true ]]; then
+            test -n "$STORE_BASE64"
+            umask 077
+            echo "$STORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "POCKETMIND_RELEASE_STORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
           fi
 
-      - name: Build arm64-v8a Release APK (Fixed Signature)
+      - name: Build arm64-v8a APK
+        env:
+          PRODUCTION: ${{ inputs.production || false }}
+          POCKETMIND_STORE_PASSWORD: ${{ secrets.POCKETMIND_STORE_PASSWORD }}
+          POCKETMIND_KEY_ALIAS: ${{ secrets.POCKETMIND_KEY_ALIAS }}
+          POCKETMIND_KEY_PASSWORD: ${{ secrets.POCKETMIND_KEY_PASSWORD }}
         run: |
           chmod +x android/gradlew
           cd android
-          ./gradlew assembleRelease \
-            -PreactNativeArchitectures=arm64-v8a \
-            -Pandroid.injected.signing.store.file=$(pwd)/app/debug.keystore \
-            -Pandroid.injected.signing.store.password=android \
-            -Pandroid.injected.signing.key.alias=androiddebugkey \
-            -Pandroid.injected.signing.key.password=android \
-            -x lint \
-            --no-daemon \
-            --max-workers=2
+          signing=()
+          if [[ "$PRODUCTION" != true ]]; then signing+=("-PpocketmindTestSigning=true"); fi
+          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a "${signing[@]}" -x lint --no-daemon --max-workers=2
 
       - name: Verify the arm64 GPU peer in the signed APK
         run: |
@@ -205,6 +211,6 @@ jobs:
       - name: Upload PocketMind APK
         uses: actions/upload-artifact@v4
         with:
-          name: PocketMind-GalaxyTab-APK
+          name: PocketMind-GalaxyTab-${{ inputs.production && 'Production' || 'Test' }}-APK
           path: android/app/build/outputs/apk/release/app-release.apk
           retention-days: 14

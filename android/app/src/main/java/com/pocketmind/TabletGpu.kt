@@ -46,6 +46,7 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
         if (donor) peer.stop()
         donor = false
     }
+    @Synchronized fun stopToken(token:String) { if (token.isNotEmpty() && hostToken == token) stop() }
     fun status() = Arguments.createMap().apply { putString("invitation", offer); putBoolean("hosting", hostToken.isNotEmpty()) }
     private fun monitor(session: TabletCable, link: CableAddress, wifi: Boolean = false, live: () -> Boolean) {
         thread(isDaemon = true) {
@@ -91,7 +92,7 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
         } catch (_: Exception) { false } finally { connection.disconnect() }
     }
 
-    fun host(invitation: String, filename: String, promise: Promise, wifi: List<JSONObject>? = null) = thread(isDaemon = true) {
+    fun host(invitation: String, filename: String, promise: Promise, wifi: List<JSONObject>? = null, policy: String = "memory") = thread(isDaemon = true) {
         var session: TabletCable? = null
         try {
             check(Build.VERSION.SDK_INT >= 28)
@@ -105,6 +106,8 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
                 val (bridge, link) = cable.join(context, invitation)
                 monitor(cable, link) { true }
                 listOf(bridge)
+            } else if (wifi.isEmpty()) {
+                emptyList()
             } else {
                 require(wifi.size in 1..20)
                 val networks = wifi.groupBy { it.optBoolean("Mesh") }.map { (mesh, peers) ->
@@ -118,7 +121,7 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
                 (0 until names.length()).map(names::getString)
             }
             val endpoints = bridges.indices.map { "127.0.0.1:${50052 + it}" }
-            val rpc = listOf("--rpc", endpoints.joinToString(","))
+            val rpc = if (endpoints.isEmpty()) emptyList() else listOf("--rpc", endpoints.joinToString(","))
             val probe = process(cable, binary, bridges, rpc + "--list-devices")
             val listing = StringBuffer()
             val reader = thread { probe.inputStream.bufferedReader().useLines { lines ->
@@ -133,13 +136,19 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
             }
             val local = Regex("""(?m)^\s*(Vulkan\d+):""").find(devices)?.groupValues?.get(1) ?: error("태블릿 Vulkan GPU를 확인할 수 없어요.")
             val selected = listOf(local) + remote
+            val weights = selected.map { id ->
+                val line = devices.lineSequence().firstOrNull { it.trimStart().startsWith("$id:") }.orEmpty()
+                Regex("""(\d+) MiB free""").find(line)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+            }
+            val split = if (policy == "memory" && weights.all { it > 0 }) weights else selected.map { 1L }
+
             val token = randomKey()
             val key = File.createTempFile("tablet-gpu-", ".key", context.cacheDir)
             cable.own(Closeable { key.delete() })
             key.writeText(token)
             val proc = process(cable, binary, bridges, rpc + listOf("-lv","4","-m", model.path,"--host","127.0.0.1","--port","18789",
                 "--api-key-file",key.path,"--alias","pocketmind-wired","--ctx-size","2048","--n-gpu-layers","99",
-                "--device",selected.joinToString(","),"--split-mode","layer","--tensor-split",selected.joinToString(",") { "1" }))
+                "--device",selected.joinToString(","),"--split-mode","layer","--tensor-split",split.joinToString(",")))
             val allocatedLocal = AtomicBoolean()
             val allocatedRemote = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
             val offloaded = AtomicBoolean()
@@ -156,14 +165,14 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
                     } }
                 } finally { stopIf(cable) }
             }
-            val deadline = android.os.SystemClock.elapsedRealtime() + 240000L + 30000L * (bridges.size - 1)
+            val deadline = android.os.SystemClock.elapsedRealtime() + 240000L + 30000L * (bridges.size - 1).coerceAtLeast(0)
             while (!cable.closed && android.os.SystemClock.elapsedRealtime() < deadline) {
                 if (offloaded.get() && allocatedLocal.get() && allocatedRemote.containsAll(endpoints) && ready(token)) break
                 Thread.sleep(400)
             }
             check(!cable.closed && offloaded.get() && allocatedLocal.get() && allocatedRemote.containsAll(endpoints) && ready(token)) { "선택한 모든 GPU에 모델을 배치하지 못했어요. 보조 기기 수를 줄이거나 모델과 연결을 확인하세요." }
             synchronized(this) { check(active === cable); hostToken = token }
-            promise.resolve(Arguments.createMap().apply { putString("token", token); putString("model", model.nameWithoutExtension); putString("device", if (wifi == null) "태블릿 Vulkan + 유선 Vulkan" else "태블릿 Vulkan + 보조 GPU ${bridges.size}대"); putBoolean("wifi", wifi != null); putBoolean("tablet", true) })
+            promise.resolve(Arguments.createMap().apply { putString("token", token); putString("model", model.nameWithoutExtension); putString("split",split.joinToString(",")); putString("device", if (bridges.isEmpty()) "태블릿 Vulkan" else if (wifi == null) "태블릿 Vulkan + 유선 Vulkan" else "태블릿 Vulkan + 보조 GPU ${bridges.size}대"); putBoolean("wifi", wifi != null); putBoolean("tablet", true) })
         } catch (error: Exception) { session?.let(::stopIf); promise.reject("TABLET_GPU", error) }
     }
     override fun onHostResume() {}
