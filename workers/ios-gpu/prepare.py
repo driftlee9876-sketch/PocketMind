@@ -35,7 +35,9 @@ path.write_text(path.read_text().replace("socket_ptr socket_t::connect(const cha
 # the active load/decode and drain queued messages while the session unwinds.
 s = source.read_text()
 s = s.replace("void rpc_dispatcher::work() {", 'extern "C" void pm_host_rpc_failed();\nvoid rpc_dispatcher::work() {\n    bool failed = false;')
-s = s.replace("bool status = send_rpc_cmd", "bool status = !failed && send_rpc_cmd")
+a = s.index("void rpc_dispatcher::work() {")
+b = s.index("rpc_dispatcher::~rpc_dispatcher()", a)
+s = s[:a] + s[a:b].replace("bool status = send_rpc_cmd", "bool status = !failed && send_rpc_cmd") + s[b:]
 s = s.replace("RPC_STATUS_ASSERT(status);", """if (!status) {
                     failed = true;
                     pm_host_rpc_failed();
