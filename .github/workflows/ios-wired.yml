@@ -2,7 +2,7 @@ name: Build PocketMind iOS with Metal GPU peer
 on:
   workflow_dispatch:
   push:
-    branches: [ feat/pocketmind-foundation ]
+    branches: [ build/ios-3c2fba6 ]
     paths: [ 'ios/**', 'workers/ios-gpu/**', 'workers/wifi/**', '.github/workflows/ios-wired.yml', 'App.tsx', 'src/**' ]
 permissions:
   contents: read
@@ -12,6 +12,9 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 3c2fba6806854ddc564d76a44b23382644b42921
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
