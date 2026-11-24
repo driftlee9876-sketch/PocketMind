@@ -268,6 +268,9 @@ RCT_EXPORT_MODULE(PocketMindMetalPeer)
     NSMutableDictionary *endpoint=[p mutableCopy]; [endpoint addEntriesFromDictionary:iface];
     [peers addObject:endpoint];
   }
+  for (NSDictionary *p in wifiCall(@{@"Op":@"status"})[@"internetPeers"]) {
+    if (![[peers valueForKey:@"ID"] containsObject:p[@"ID"]]) [peers addObject:p];
+  }
   return peers;
 }
 - (NSDictionary *)endpoint:(NSString *)pin {
@@ -374,6 +377,8 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
   NSString *op = q[@"op"];
   if ([op isEqual:@"browse"]) {
     [self beginBrowse];
+  } else if ([op isEqual:@"import"] && [q[@"invite"] hasPrefix:@"pmgpu2|"]) {
+    r=wifiCall(@{@"Op":@"importInternet",@"Value":q[@"invite"]});
   } else if ([op isEqual:@"import"]) {
     NSArray *parts=[q[@"invite"] componentsSeparatedByString:@"|"];
     struct in_addr ip;
@@ -391,15 +396,18 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
     if (_hostState) {reject(@"GPU",@"실행 중인 모델 연결을 먼저 종료하세요.",nil);return;}
     [self endBrowse];
     BOOL remote = [q[@"mesh"] boolValue];
-    NSDictionary *link = wifiEndpoint(remote);
+    BOOL internet=[q[@"internet"] boolValue];
+    NSDictionary *link = internet ? @{@"Internet":@YES} : wifiEndpoint(remote);
     if (!link || !_peer || _peer->closed.load() || _peer->paired.exchange(true)) {
       reject(@"WIFI_GPU",remote ? @"Tailscale VPN 연결과 GPU 제공 상태를 확인하세요." : @"Wi-Fi에 연결하고 GPU 제공을 다시 시작해 주세요.",nil);return;
     }
-    r = wifiCall(@{@"Op":@"offer",@"Endpoint":link,@"Backend":@"ios",@"Value":@(_peer->token.c_str())});
+    r = wifiCall(@{@"Op":internet ? @"offerInternet" : @"offer",@"Endpoint":link,@"Backend":@"ios",@"Value":@(_peer->token.c_str())});
     if (!r[@"error"]) {
       _wifiError = nil;
       _wifiLink = link;
-      if (remote) {
+      if (internet) {
+        _meshInvite=nil;
+      } else if (remote) {
         _meshInvite = [NSString stringWithFormat:@"pmgpu1|%@|%@",link[@"Local"],r[@"id"]];
       } else {
       _wifiService = [[NSNetService alloc] initWithDomain:@"local." type:@"_pmgpu._tcp." name:@"PocketMind iOS" port:[r[@"port"] intValue]];
@@ -414,13 +422,14 @@ RCT_EXPORT_METHOD(wifiGpu:(NSString *)json resolver:(RCTPromiseResolveBlock)reso
     r = wifiCall(@{@"Op":op});
   } else if ([op isEqual:@"vote"]) {
     r = wifiCall(@{@"Op":op,@"Challenge":q[@"id"] ?: @"",@"Accept":q[@"accept"] ?: @NO});
-  } else if (_wifiLink && (!_peer || _peer->closed.load() || ![_wifiLink isEqual:wifiEndpoint([_wifiLink[@"Mesh"] boolValue])])) {
+  } else if (_wifiLink && (!_peer || _peer->closed.load() || (![_wifiLink[@"Internet"] boolValue] && ![_wifiLink isEqual:wifiEndpoint([_wifiLink[@"Mesh"] boolValue])]))) {
     [self endWifi]; _wifiError=@"Wi-Fi 또는 GPU 연결이 종료됐어요.";
   }
   if (r[@"error"]) {reject(@"WIFI_GPU",r[@"error"],nil);return;}
   NSMutableDictionary *state=[wifiCall(@{@"Op":@"status"}) mutableCopy];
   if (_wifiError) state[@"issue"]=_wifiError;
   if (_meshInvite) state[@"invitation"]=_meshInvite;
+  if ([_wifiLink[@"Internet"] boolValue]) state[@"invitation"]=state[@"relayInvitation"];
   state[@"meshReady"]=@(wifiEndpoint(YES)!=nil);
   state[@"peers"]=[self availablePeers]; state[@"searching"]=@(_browser!=nil);
   NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:nullptr];

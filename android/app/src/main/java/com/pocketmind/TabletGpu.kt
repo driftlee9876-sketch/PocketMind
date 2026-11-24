@@ -110,7 +110,7 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
                 emptyList()
             } else {
                 require(wifi.size in 1..20)
-                val networks = wifi.groupBy { it.optBoolean("Mesh") }.map { (mesh, peers) ->
+                val networks = wifi.filterNot { it.has("Relay") }.groupBy { it.optBoolean("Mesh") }.map { (mesh, peers) ->
                     val link = gpuNetwork(context,mesh)
                     check(link != null && peers.all { it.getString("Local")==link.ip.hostAddress }) { "기기 네트워크가 바뀌었어요. 다시 연결하세요." }
                     mesh to link

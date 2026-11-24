@@ -65,6 +65,7 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
     private var offeredOn: CableAddress? = null
     private var scannedOn: CableAddress? = null
     private var issue = ""
+    private var internetOffer = false
     private var meshOffer = false
     private var invitation = ""
     private val invites = context.getSharedPreferences("wifi-mesh-peers",Context.MODE_PRIVATE)
@@ -79,7 +80,8 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
         invites.edit().putString(fields[2],fields[1]).apply()
     }
     private fun available(): List<JSONObject> {
-        val local = found.values.toList()
+        val saved = WifiCore.call("status").getJSONArray("internetPeers")
+        val local = (found.values + (0 until saved.length()).map(saved::getJSONObject)).distinctBy { it.getString("ID") }
         if (gpuNetwork(context,true)==null) return local
         val remote = invites.all.map { (id,ip) -> JSONObject().put("ID",id).put("IP",ip).put("Port",47832)
             .put("Mesh",true).put("name","원격 GPU · $ip").put("platform","Tailscale") }
@@ -141,6 +143,7 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
     }
     private fun endpoint(id: String): JSONObject {
         val peer = available().firstOrNull { it.optString("ID")==id } ?: error("기기를 다시 검색해 주세요.")
+        if (peer.has("Relay")) return peer
         val link = gpuNetwork(context,peer.optBoolean("Mesh")) ?: error("기기 네트워크에 연결해 주세요.")
         return JSONObject(peer.toString()).put("Local",link.ip.hostAddress).put("Prefix",link.prefix)
     }
@@ -157,17 +160,22 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
                 "browse" -> { enabled=true; issue=""; wifiAddress(context)?.let(::discover) }
                 "status" -> {
                     val link=wifiAddress(context)
-                    if (ownGpu && (offeredOn!=gpuNetwork(context,meshOffer) || gpu.status().isEmpty())) stopOffer()
+                    if (ownGpu && ((!internetOffer && offeredOn!=gpuNetwork(context,meshOffer)) || gpu.status().isEmpty())) stopOffer()
                     if (enabled && scannedOn!=link) {endBrowse();link?.let(::discover)}
                 }
                 "offer" -> {
                     check(context.lifecycleState==LifecycleState.RESUMED && !ownGpu)
                     meshOffer=q.optBoolean("mesh")
-                    val link=gpuNetwork(context,meshOffer) ?: error(if (meshOffer) "Tailscale VPN을 먼저 연결하세요." else "Wi-Fi에 연결해 주세요.")
+                    internetOffer=q.optBoolean("internet")
+                    val link=if (internetOffer) null else gpuNetwork(context,meshOffer) ?: error("기기 네트워크를 확인하세요.")
                     val code=gpu.status()
                     check(code.isNotEmpty()) { "GPU 제공을 먼저 시작해 주세요." }
                     ownGpu=true;offeredOn=link
                     try {
+                        if (internetOffer) {
+                            WifiCore.call("offerInternet", JSONObject().put("Backend","android").put("Value",code))
+                        } else {
+                        requireNotNull(link)
                         val r=WifiCore.call("offer",JSONObject().put("Backend","android").put("Value",code)
                             .put("Endpoint",JSONObject().put("Local",link.ip.hostAddress).put("Prefix",link.prefix).put("Mesh",meshOffer)))
                         if (meshOffer) {
@@ -186,9 +194,13 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
                         }
                         registration=cb;nsd.registerService(service,NsdManager.PROTOCOL_DNS_SD,cb)
                         }
+                        }
                     } catch(e:Exception){stopOffer();throw e}
                 }
-                "import" -> addInvite(q.getString("invite"))
+                "import" -> {
+                    val value=q.getString("invite").trim()
+                    if (value.startsWith("pmgpu2|")) WifiCore.call("importInternet",JSONObject().put("Value",value)) else addInvite(value)
+                }
                 "pair" -> WifiCore.call("pair",JSONObject().put("Endpoint",endpoint(q.getString("id"))))
                 "vote" -> WifiCore.call("vote",JSONObject().put("Challenge",q.getString("id")).put("Accept",q.getBoolean("accept")))
                 "stop" -> {enabled=false;endBrowse();stopOffer();WifiCore.call("stop");issue=""}
@@ -196,7 +208,7 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
                 else -> error("지원하지 않는 작업이에요.")
             }
             val result=WifiCore.call("status").put("peers",JSONArray(available()))
-                .put("searching", browsing != null).put("invitation",invitation).put("meshReady",gpuNetwork(context,true)!=null)
+                .put("searching", browsing != null).put("invitation",if (internetOffer) WifiCore.call("status").optString("relayInvitation") else invitation).put("meshReady",gpuNetwork(context,true)!=null)
             if(issue.isNotEmpty())result.put("issue",issue)
             promise.resolve(result.toString())
         } catch(e:Throwable){promise.reject("WIFI_GPU",e.message ?: "Wi-Fi GPU를 사용할 수 없어요.",e)}
@@ -205,7 +217,7 @@ internal class WifiLan(private val context: ReactApplicationContext, private val
         val old=registration; registration=null
         if(old!=null)runCatching{nsd.unregisterService(old)}
         if(ownGpu){WifiCore.call("stop");gpu.stop()}
-        ownGpu=false;offeredOn=null;meshOffer=false;invitation=""
+        ownGpu=false;offeredOn=null;internetOffer=false;meshOffer=false;invitation=""
     }
     override fun onHostPause(){main.post{enabled=false;endBrowse();stopOffer();runCatching{WifiCore.call("stop")}}}
     override fun onHostResume(){}

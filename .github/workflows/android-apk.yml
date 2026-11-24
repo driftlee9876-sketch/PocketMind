@@ -11,6 +11,7 @@ on:
     branches:
       - feat/pocketmind-foundation
       - feat/pocketmind-chat-upgrade
+      - feat/pocketmind-internet-gpu
 
 jobs:
   build-android:

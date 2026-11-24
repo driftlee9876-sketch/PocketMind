@@ -6,7 +6,7 @@ import {compareGpu,savedComparison} from './gpuComparison';
 import type {WiredSession} from './wiredInference';
 
 type Peer = {ID: string; name: string; platform?: string};
-type Status = {peers: Peer[]; trusted: string[]; offering: boolean; searching?: boolean; invitation?:string; meshReady?:boolean; pending?: {id:string;code:string}; issue?:string};
+type Status = {peers: Peer[]; trusted: string[]; offering: boolean; searching?: boolean; invitation?:string; meshReady?:boolean; internetOffering?:boolean; pending?: {id:string;code:string}; issue?:string};
 type Preference = {ids:string[];filename:string};
 const storageKey = 'pocketmind.wifi-gpu.preferred.v1';
 const native = Platform.OS === 'ios' ? NativeModules.PocketMindMetalPeer : NativeModules.PocketMindWorker;
@@ -110,7 +110,7 @@ export function WifiGpuPanel(props:Props) {
     if(current.current.session?.wifi || loading.current){await native.stopTabletGpu();current.current.onSession(null);}
     await command(forget?'forget':'stop');await command('browse');setState(await command('status'));
   }
-  async function toggleOffer(mesh=false){
+  async function toggleOffer(route:"lan"|"internet"|"mesh"="lan"){
     if(preparing.current)return;
     if(state.offering){await command('stop');await command('browse');return;}
     const epoch=++offerEpoch.current;
@@ -118,7 +118,7 @@ export function WifiGpuPanel(props:Props) {
     try {
       if(Platform.OS==='ios')await native.startUsbGpuPeer();else await native.prepareWifiPeer();
       if(epoch!==offerEpoch.current || !current.current.visible){await native.stopUsbGpuPeer();return;}
-      await command('offer',{mesh});
+      await command('offer',{mesh:route==='mesh', internet:route==='internet'});
       if(epoch!==offerEpoch.current || !current.current.visible)await command('stop');
     }catch(e){await native.stopUsbGpuPeer();throw e;}
     finally{preparing.current=false;setBusy('');}
@@ -147,13 +147,14 @@ export function WifiGpuPanel(props:Props) {
       <Text style={s.detail}>{'이 기기에 설치한 모델을 주변 GPU와 나눠 실행하거나, 이 기기의 GPU를 제공할 수 있어요. 공유 중에는 앱을 열어 두세요.'}</Text>
       {button(remoteOpen?'원격 연결 안내 접기':'다른 Wi-Fi에서 연결',()=>setRemoteOpen(!remoteOpen))}
       {remoteOpen && <View style={s.group}>
-        <Text style={s.detail}>각 기기에서 Tailscale을 같은 개인 네트워크에 연결하세요. 보조 기기에서 원격 제공을 켜고, 초대를 모델이 있는 기기에 붙여넣으세요.</Text>
-        <Text style={s.detail}>{state.meshReady?'Tailscale 주소 확인됨':'이 기기에서 Tailscale 연결을 기다리는 중'}</Text>
+        <Text style={s.detail}>보조 기기에서 원격 GPU 제공을 켠 후 초대를 복사해 모델이 있는 기기에 붙여넣으세요. 두 기기는 인터넷에 연결되어 있어야 해요.</Text>
+        {state.internetOffering && !state.invitation && <Text style={s.detail}>중계 서버를 연결하고 초대를 준비하고 있어요…</Text>}
         {!state.offering && <>
           <TextInput value={invite} onChangeText={setInvite} maxLength={128} autoCapitalize="none" autoCorrect={false} style={s.label} placeholderTextColor="#ABBAB0" placeholder="보조 기기의 초대 붙여넣기"/>
-          {button('원격 기기 추가',()=>action(async()=>{await command('import',{invite:invite.trim()});setInvite('');}),!invite.trim()||!state.meshReady)}
+          {button('원격 기기 추가',()=>action(async()=>{await command('import',{invite:invite.trim()});setInvite('');}),!invite.trim())}
         </>}
-        {!state.offering && !pref && !props.session && button('원격 GPU 제공 시작',()=>action(()=>toggleOffer(true)),!state.meshReady||!!busy)}
+        {!state.offering && !pref && !props.session && button('원격 GPU 제공 시작',()=>action(()=>toggleOffer('internet')),!!busy)}
+        {state.meshReady && !state.offering && !pref && !props.session && button('기존 VPN으로 제공',()=>action(()=>toggleOffer('mesh')),!!busy)}
       </View>}
       {!!state.invitation && <View style={s.group}><Text selectable style={s.detail}>{state.invitation}</Text>
         {button('원격 초대 복사',()=>Clipboard.setString(state.invitation!))}</View>}
@@ -189,7 +190,7 @@ export function WifiGpuPanel(props:Props) {
         {pref && button('자동 재연결 끄고 연결 해제',()=>action(()=>disconnect(false)))}
       </View>}
       {(!pref && !props.session) && button(state.offering?'Wi-Fi GPU 제공 중지':'이 기기의 Wi-Fi GPU 제공',()=>action(()=>toggleOffer()),!!busy||!!state.pending)}
-      {(state.trusted.length>0 || state.peers.some(p=>p.platform==='Tailscale')) && button('저장한 Wi-Fi 기기 모두 잊기',()=>action(()=>disconnect(true)))}
+      {(state.trusted.length>0 || state.peers.some(p=>p.platform==='Tailscale' || p.platform==='PocketMind')) && button('저장한 Wi-Fi 기기 모두 잊기',()=>action(()=>disconnect(true)))}
       {!!busy && <Text style={s.detail}>{busy}</Text>}
       {!!(error||state.issue) && <Text style={s.error}>{error||state.issue}</Text>}
     </ScrollView></View></View>

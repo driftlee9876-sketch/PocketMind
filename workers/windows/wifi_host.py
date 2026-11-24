@@ -65,7 +65,7 @@ def open_host(root, bundle, executable, model, loaded_model):
         trusted = transport.call("status")["trusted"]
         for i, key in enumerate(peer_keys):
             name, endpoint = peers[key]
-            listing.insert("end",f"{name} · {endpoint['IP']} · " + ("승인됨" if endpoint["ID"] in trusted else "처음 연결"))
+            listing.insert("end",f"{name} · {endpoint.get('IP','인터넷')} · " + ("승인됨" if endpoint["ID"] in trusted else "처음 연결"))
             if key in chosen:
                 listing.selection_set(i)
 
@@ -83,9 +83,11 @@ def open_host(root, bundle, executable, model, loaded_model):
             raise ValueError("기기를 바꾸려면 실행 중인 모델을 먼저 중지하세요.")
         stop_browse()
         peers.clear()
+        for endpoint in transport.call("status")["internetPeers"]:
+            peers[endpoint["ID"]] = (endpoint["name"],endpoint)
         redraw()
         local = routes[choice.get()]
-        if local.get("Mesh"):
+        if local.get("Mesh") or local.get("Internet"):
             status.set("갤탭의 원격 GPU 초대를 붙여넣고 추가하세요.")
             return
         epoch = generation
@@ -113,7 +115,8 @@ def open_host(root, bundle, executable, model, loaded_model):
     def add_remote():
         if active:
             raise ValueError("모델 실행을 먼저 중지하세요.")
-        endpoint = mesh_peer(invite.get(),routes[choice.get()])
+        value = invite.get().strip()
+        endpoint = transport.call("importInternet",Value=value) if value.startswith("pmgpu2|") else mesh_peer(value,routes[choice.get()])
         peers[endpoint["ID"]] = ("원격 GPU",endpoint)
         redraw()
 
