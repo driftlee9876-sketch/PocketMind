@@ -83,6 +83,9 @@ func TestInternetPairAndStream(t *testing.T) {
 		}
 		host.drop(c)
 	}
+	if host.relayBytesTransferred.Load() < uint64(4*len(payload)) {
+		t.Fatal("transfer progress missing")
+	}
 	host.Command(Request{Op: "forget"})
 	if len(host.snapshot()["internetPeers"].([]map[string]any)) != 0 {
 		t.Fatal("forgotten invitation retained")

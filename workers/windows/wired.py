@@ -161,10 +161,11 @@ def remove_mapping(adb, serial, remote_port, host_port):
 
 
 @contextlib.contextmanager
-def loaded_model(executable, model, peers, stopped, allow_remote_only=False):
+def loaded_model(executable, model, peers, stopped, allow_remote_only=False, relay_progress=None):
     with contextlib.ExitStack() as cleanup:
         args = [executable, *rpc_options(peers), "--list-devices"]
-        devices = select_devices(command(args, timeout=25), peers, allow_remote_only)
+        probe_timeout = 25 + (60 * len(peers) if relay_progress else 0)
+        devices = select_devices(command(args, timeout=probe_timeout), peers, allow_remote_only)
         folder = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="pocketmind-wired-")))
         key_file = folder / "session.key"
         token = secrets.token_urlsafe(32)
@@ -192,10 +193,19 @@ def loaded_model(executable, model, peers, stopped, allow_remote_only=False):
                         with allocation_lock:
                             allocated.add(device)
         threading.Thread(target=observe_loading, daemon=True).start()
+        transferred = -1
+        next_progress_check = 0
         deadline = time.monotonic() + 240
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         while not stopped.wait(0.4):
-            if process.poll() is not None or time.monotonic() >= deadline:
+            now = time.monotonic()
+            if relay_progress and now >= next_progress_check:
+                current = relay_progress()
+                if current != transferred:
+                    deadline = now + 240
+                transferred = current
+                next_progress_check = now + 5
+            if process.poll() is not None or now >= deadline:
                 raise RuntimeError("모델을 로드하지 못했어요. GGUF 파일, GPU 드라이버와 여유 메모리를 확인하세요.")
             try:
                 request = urllib.request.Request(f"http://{LOOPBACK}:{port}/v1/models", headers={"Authorization": f"Bearer {token}"})

@@ -15,6 +15,7 @@ import (
 	"pocketmind/wifi/relay"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -80,22 +81,23 @@ type challenge struct {
 	vote chan bool
 }
 type Engine struct {
-	relayURL       string
-	relayCancel    context.CancelFunc
-	invitation     string
-	invites        map[string]string
-	outboundCtx    context.Context
-	cancelOutbound context.CancelFunc
-	mu             sync.Mutex
-	dir, id        string
-	cert           tls.Certificate
-	trusted        map[string]bool
-	pending        *challenge
-	issue          string
-	listener       net.Listener
-	bridges        []net.Listener
-	connections    map[net.Conn]bool
-	epoch          uint64
+	relayBytesTransferred atomic.Uint64
+	relayURL              string
+	relayCancel           context.CancelFunc
+	invitation            string
+	invites               map[string]string
+	outboundCtx           context.Context
+	cancelOutbound        context.CancelFunc
+	mu                    sync.Mutex
+	dir, id               string
+	cert                  tls.Certificate
+	trusted               map[string]bool
+	pending               *challenge
+	issue                 string
+	listener              net.Listener
+	bridges               []net.Listener
+	connections           map[net.Conn]bool
+	epoch                 uint64
 }
 
 func New(dir string) (*Engine, error) {
@@ -120,7 +122,7 @@ func (e *Engine) snapshot() map[string]any {
 			internet = append(internet, internetPeer(id, room))
 		}
 	}
-	return map[string]any{"internetPeers": internet, "relayInvitation": e.invitation, "internetOffering": e.relayCancel != nil, "id": e.id, "trusted": peers, "pending": e.pending, "offering": e.listener != nil || e.relayCancel != nil, "issue": e.issue}
+	return map[string]any{"relayBytes": e.relayBytesTransferred.Load(), "internetPeers": internet, "relayInvitation": e.invitation, "internetOffering": e.relayCancel != nil, "id": e.id, "trusted": peers, "pending": e.pending, "offering": e.listener != nil || e.relayCancel != nil, "issue": e.issue}
 }
 func (e *Engine) setIssue(gen uint64, err error) {
 	e.mu.Lock()
@@ -302,6 +304,9 @@ func (e *Engine) dial(gen uint64, p Endpoint) (*tls.Conn, error) {
 			return nil, denied
 		}
 		raw, err = relay.Connect(ctx, e.relayURL, p.Relay)
+		if err == nil {
+			raw = &meteredRelay{Conn: raw, bytes: &e.relayBytesTransferred}
+		}
 	} else {
 		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(p.Local)}, Timeout: 6 * time.Second}
 		raw, err = d.Dial("tcp4", net.JoinHostPort(p.IP, strconv.Itoa(p.Port)))

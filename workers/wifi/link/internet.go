@@ -9,9 +9,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"pocketmind/wifi/relay"
@@ -127,4 +129,22 @@ func (e *Engine) offerInternet(backend Backend) error {
 		}
 	}()
 	return nil
+}
+
+// Model uploads can take minutes over a WAN. Hosts use forward progress to
+// distinguish a slow transfer from a stalled model loader.
+type meteredRelay struct {
+	net.Conn
+	bytes *atomic.Uint64
+}
+
+func (c *meteredRelay) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	c.bytes.Add(uint64(n))
+	return n, err
+}
+func (c *meteredRelay) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	c.bytes.Add(uint64(n))
+	return n, err
 }

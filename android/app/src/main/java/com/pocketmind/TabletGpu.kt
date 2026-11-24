@@ -122,12 +122,13 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
             }
             val endpoints = bridges.indices.map { "127.0.0.1:${50052 + it}" }
             val rpc = if (endpoints.isEmpty()) emptyList() else listOf("--rpc", endpoints.joinToString(","))
+            val internetPeers = wifi?.count { it.has("Relay") } ?: 0
             val probe = process(cable, binary, bridges, rpc + "--list-devices")
             val listing = StringBuffer()
             val reader = thread { probe.inputStream.bufferedReader().useLines { lines ->
                 lines.forEach { if (listing.length < 32000) listing.append(it).append('\n') }
             } }
-            check(probe.waitFor(30L + 5L * bridges.size, TimeUnit.SECONDS)) { "보조 GPU가 응답하지 않아요. 기기 연결을 확인하세요." }
+            check(probe.waitFor(30L + 5L * bridges.size + 60L * internetPeers, TimeUnit.SECONDS)) { "보조 GPU가 응답하지 않아요. 기기 연결을 확인하세요." }
             reader.join(2000)
             val devices = listing.toString()
             val remote = endpoints.map { endpoint ->
@@ -165,8 +166,18 @@ internal class TabletGpu(private val context: ReactApplicationContext, private v
                     } }
                 } finally { stopIf(cable) }
             }
-            val deadline = android.os.SystemClock.elapsedRealtime() + 240000L + 30000L * (bridges.size - 1).coerceAtLeast(0)
+            val stallTimeout = 240000L + 30000L * (bridges.size - 1).coerceAtLeast(0)
+            var deadline = android.os.SystemClock.elapsedRealtime() + stallTimeout
+            var transferred = -1L
+            var nextProgressCheck = 0L
             while (!cable.closed && android.os.SystemClock.elapsedRealtime() < deadline) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (internetPeers > 0 && now >= nextProgressCheck) {
+                    val bytes = WifiCore.call("status").getLong("relayBytes")
+                    if (bytes != transferred) deadline = now + stallTimeout
+                    transferred = bytes
+                    nextProgressCheck = now + 5000
+                }
                 if (offloaded.get() && allocatedLocal.get() && allocatedRemote.containsAll(endpoints) && ready(token)) break
                 Thread.sleep(400)
             }
