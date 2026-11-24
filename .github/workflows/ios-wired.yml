@@ -1,0 +1,67 @@
+name: Build PocketMind iOS with Metal GPU peer
+on:
+  workflow_dispatch:
+  push:
+    branches: [ feat/pocketmind-foundation ]
+    paths: [ 'ios/**', 'workers/ios-gpu/**', 'workers/wifi/**', '.github/workflows/ios-wired.yml', 'App.tsx', 'src/**' ]
+permissions:
+  contents: read
+jobs:
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - uses: actions/cache@v4
+        id: metal
+        with:
+          path: |
+            ios/WiredGPU/PocketMindMetalPeer.xcframework
+            ios/WiredGPU/LLAMA-LICENSE.txt
+          key: ios-metal-a8f8294c45-${{ hashFiles('workers/ios-gpu/*', '.github/workflows/ios-wired.yml') }}
+      - uses: actions/checkout@v4
+        if: steps.metal.outputs.cache-hit != 'true'
+        with:
+          repository: ggml-org/llama.cpp
+          ref: a8f8294c45076538f4509754e4c79fc51a1a486b
+          path: build/pocketmind-llama-ios
+          persist-credentials: false
+      - name: Build foreground Metal peer
+        if: steps.metal.outputs.cache-hit != 'true'
+        run: bash workers/ios-gpu/build.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache: false
+      - name: Build Wi-Fi pairing and transport
+        run: bash workers/wifi/build-native.sh ios
+      - name: Install application dependencies
+        run: |
+          npm install --legacy-peer-deps
+          cd ios
+          bundle exec pod install
+      - name: Archive unsigned device app
+        run: |
+          xcodebuild -workspace ios/PocketMind.xcworkspace -scheme PocketMind -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/PocketMind.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO archive
+          mkdir -p "$RUNNER_TEMP/package/Payload"
+          app="$RUNNER_TEMP/PocketMind.xcarchive/Products/Applications/PocketMind.app"
+          test -f "$app/Frameworks/PocketMindMetalPeer.framework/PocketMindMetalPeer"
+          ditto "$app" "$RUNNER_TEMP/package/Payload/PocketMind.app"
+          cd "$RUNNER_TEMP/package"
+          ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/PocketMind-iOS-unsigned.ipa"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketMind-iOS-unsigned
+          path: PocketMind-iOS-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

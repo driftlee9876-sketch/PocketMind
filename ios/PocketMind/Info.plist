@@ -73,6 +73,12 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+	<key>NSLocalNetworkUsageDescription</key>
+    <string>같은 Wi-Fi에서 승인한 PocketMind 기기와 GPU 연산을 공유합니다.</string>
+    <key>NSBonjourServices</key>
+    <array><string>_pmgpu._tcp</string></array>
+    <key>UIStatusBarHidden</key>
 	<true/>
 </dict>
 </plist>

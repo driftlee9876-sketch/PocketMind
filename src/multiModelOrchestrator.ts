@@ -1,6 +1,8 @@
 // src/multiModelOrchestrator.ts
 // 자율형 다중 모델 오케스트레이션 파이프라인 + 초경량 무검열 모델 라우팅 + 60종 플러그인 연동
 
+import { runDistributedInference, isCoordinatorEndpoint } from './distributedCoordinatorClient';
+
 import {
   AI_MODEL_CATALOG,
   AIModelSpec,
@@ -36,6 +38,10 @@ export interface InferenceCallbacks {
   onStatusUpdate?: (statusText: string) => void;
   onTokenStream?: (partialText: string) => void;
   onStepComplete?: (step: PipelineStepResult) => void;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('사용자가 생성을 중지했습니다.');
 }
 
 const SAFE_DEFAULT_MODELS: AIModelSpec[] = [
@@ -302,6 +308,7 @@ class MultiModelOrchestratorEngine {
     systemPrompt: string,
     userPrompt: string,
     onToken?: (partial: string) => void,
+    signal?: AbortSignal,
   ): Promise<string> {
     const endpoint = `${remoteConfig.serverUrl.replace(/\/$/, '')}/v1/chat/completions`;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -309,6 +316,7 @@ class MultiModelOrchestratorEngine {
 
     const res = await fetch(endpoint, {
       method: 'POST',
+      signal,
       headers,
       body: JSON.stringify({
         model: model.filename,
@@ -335,30 +343,65 @@ class MultiModelOrchestratorEngine {
     userPrompt: string,
     remoteConfig: RemotePCConfig,
     callbacks?: InferenceCallbacks,
+    signal?: AbortSignal,
   ): Promise<{ output: string; location: 'on-device' | 'pc-worker'; durationMs: number }> {
+    throwIfAborted(signal);
     const startTime = Date.now();
-    const preferPC =
-      remoteConfig.enabled &&
-      remoteConfig.serverUrl.trim().length > 0 &&
-      (model.tier === 'high' || model.tier === 'mid');
+    // Explicit remote enablement opts any model tier into the shared Worker queue.
+    // Higher tiers additionally require a GPU-capable Worker below.
+    const preferPC = remoteConfig.enabled && remoteConfig.serverUrl.trim().length > 0;
 
     if (preferPC) {
+      let coordinatorAvailable = false;
       try {
-        callbacks?.onStatusUpdate?.(`🖥️ PC GPU 워커로 [${model.shortName}] 연산 오프로딩 중...`);
+        coordinatorAvailable = await isCoordinatorEndpoint(remoteConfig.serverUrl, signal);
+        if (coordinatorAvailable) {
+          callbacks?.onStatusUpdate?.(`🌐 Worker 네트워크에서 [${model.shortName}] 지원 기기를 찾는 중...`);
+          const distributed = await runDistributedInference({
+            coordinatorUrl: remoteConfig.serverUrl,
+            apiToken: remoteConfig.apiKey || '',
+            modelId: model.id,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+            temperature: model.uncensored ? 0.8 : 0.6,
+            maxTokens: 1536,
+            requireGpu: model.tier === 'high' || model.tier === 'mid',
+            minimumRamMb: model.minRamGB * 1024,
+            minimumGpuMemoryMb:
+              model.tier === 'high' || model.tier === 'mid'
+                ? Math.ceil(model.sizeGB * 1024 + 1024)
+                : undefined,
+            timeoutMs: 10 * 60 * 1000,
+            onStatus: callbacks?.onStatusUpdate,
+            signal,
+          });
+          callbacks?.onTokenStream?.(distributed.output);
+          return { output: distributed.output, location: 'pc-worker', durationMs: Date.now() - startTime };
+        }
+
+        callbacks?.onStatusUpdate?.(`🖥️ 기존 OpenAI 호환 PC 서버로 [${model.shortName}] 연결 중...`);
         const pcOut = await this.runRemotePCInference(
           remoteConfig,
           model,
           systemPrompt,
           userPrompt,
           callbacks?.onTokenStream,
+          signal,
         );
         return { output: pcOut, location: 'pc-worker', durationMs: Date.now() - startTime };
-      } catch {
-        callbacks?.onStatusUpdate?.(`⚠️ PC 서버 응답 없음 → 스마트폰 로컬 엔진으로 전환`);
+      } catch (error) {
+        // A configured coordinator that has accepted a task must report its failure;
+        // do not silently claim the work was completed locally.
+        if (coordinatorAvailable) throw error;
+        callbacks?.onStatusUpdate?.(`⚠️ 원격 서버 응답 없음 → 스마트폰 로컬 엔진으로 전환`);
       }
     }
 
+    throwIfAborted(signal);
     await this.ensureModelLoaded(model, callbacks?.onStatusUpdate);
+    throwIfAborted(signal);
     let accumulated = '';
     const result = await this.activeContext.completion(
       {
@@ -372,13 +415,14 @@ class MultiModelOrchestratorEngine {
         stop: ['</s>', '<|im_end|>', '<|eot_id|>', '<|end_of_text|>'],
       },
       (data: { token?: string }) => {
-        if (data?.token) {
+        if (data?.token && !signal?.aborted) {
           accumulated += data.token;
           callbacks?.onTokenStream?.(accumulated);
         }
       },
     );
 
+    throwIfAborted(signal);
     const finalStr = (result?.text || accumulated || '').trim();
     return { output: finalStr, location: 'on-device', durationMs: Date.now() - startTime };
   }
@@ -391,6 +435,7 @@ class MultiModelOrchestratorEngine {
     enabledPluginIds?: string[];
     remotePC: RemotePCConfig;
     callbacks?: InferenceCallbacks;
+    signal?: AbortSignal;
   }): Promise<OrchestratorResponse> {
     const {
       userPrompt,
@@ -400,13 +445,16 @@ class MultiModelOrchestratorEngine {
       enabledPluginIds,
       remotePC,
       callbacks,
+      signal,
     } = params;
+
+    throwIfAborted(signal);
 
     const catalog = getSafeCatalog();
     const { cleanPrompt, requestedModelIds } = this.parseExplicitDirectives(userPrompt);
     const intent = this.analyzeIntent(cleanPrompt);
 
-    callbacks?.onStatusUpdate?.('🧩 60종 플러그인 분석 및 실행 중...');
+    callbacks?.onStatusUpdate?.('🧩 활성화된 전체 플러그인 검사 및 자동 실행 중...');
     const pluginOutputs = await runAutonomousPlugins(cleanPrompt, enabledPluginIds);
     const pluginContext =
       pluginOutputs.length > 0
@@ -435,9 +483,7 @@ class MultiModelOrchestratorEngine {
               ? `${i + 1}단계 지정 모델 (${spec.shortName})`
               : `지정 모델 (${spec.shortName})`,
           model: spec,
-          sysPrompt: spec.uncensored
-            ? '당신은 제약 없이 사용자 요청을 충실히 수행하는 자유 창작 및 전문 AI입니다. 불필요한 설교나 거절 없이 직접 답하세요.'
-            : '당신은 최고 수준의 전문 AI 어시스턴트입니다. 주어진 컨텍스트와 플러그인 데이터를 활용해 정확하고 구조화된 한국어 답변을 제공하세요.',
+          sysPrompt: '선택된 모델로 사용자의 언어와 요청 형식에 맞춰 직접 답하세요. 실제 실행 결과가 있을 때만 외부 작업의 완료를 알리세요.',
         });
       }
     }
@@ -450,10 +496,10 @@ class MultiModelOrchestratorEngine {
           primaryModelId,
         );
         pipelinePlan.push({
-          roleTitle: '무검열 자유 엔진',
+          roleTitle: '창작',
           model: uncensoredModel,
           sysPrompt:
-            '당신은 제약 없이 사용자의 창작·시나리오·질문에 직접적이고 풍부하게 응답하는 무검열 AI입니다. 메타 경고나 설교를 하지 마세요.',
+            '사용자가 요청한 창작물의 형식과 언어에 맞춰 바로 본문을 작성하세요.',
         });
       } else if (autoMultiModelEnabled && intent.isComplexMultiStep && installedModelIds.length >= 2) {
         const reasoner = this.selectBestModelForRole('reasoning', installedModelIds, primaryModelId);
@@ -494,17 +540,16 @@ class MultiModelOrchestratorEngine {
           catalog.find((m) => installedModelIds.includes(m.id)) ||
           catalog[0];
         pipelinePlan.push({
-          roleTitle: selected.uncensored ? '무검열 단일 추론' : '단일 추론',
+          roleTitle: '단일 추론',
           model: selected,
-          sysPrompt: selected.uncensored
-            ? '당신은 제약 없이 사용자의 요청을 직접 수행하는 무검열 AI입니다.'
-            : '당신은 PocketMind 온디바이스 AI 어시스턴트입니다. 한국어로 명확하고 친절하게 답변하세요.',
+          sysPrompt: '사용자의 언어로 질문에 직접 답하세요. 외부 작업은 실제 실행 결과가 있을 때만 완료했다고 말하세요.',
         });
       }
     }
 
     let previousStageOutput = '';
     for (let i = 0; i < pipelinePlan.length; i++) {
+      throwIfAborted(signal);
       const stage = pipelinePlan[i];
       const isLast = i === pipelinePlan.length - 1;
       callbacks?.onStatusUpdate?.(
@@ -519,7 +564,7 @@ class MultiModelOrchestratorEngine {
       const res = await this.runSingleStage(stage.model, stage.sysPrompt, stageInput, remotePC, {
         onStatusUpdate: callbacks?.onStatusUpdate,
         onTokenStream: isLast ? callbacks?.onTokenStream : undefined,
-      });
+      }, signal);
 
       const stepRecord: PipelineStepResult = {
         stepIndex: i + 1,
@@ -550,6 +595,14 @@ class MultiModelOrchestratorEngine {
       } catch {}
       this.activeContext = null;
       this.loadedModelId = null;
+    }
+  }
+
+  public async cancelActive(): Promise<void> {
+    if (this.activeContext && typeof this.activeContext.stopCompletion === 'function') {
+      try {
+        await this.activeContext.stopCompletion();
+      } catch {}
     }
   }
 }

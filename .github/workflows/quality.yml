@@ -1,0 +1,95 @@
+name: PocketMind Quality Checks
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  push:
+    branches: [ feat/pocketmind-foundation ]
+
+permissions:
+  contents: read
+
+jobs:
+  typescript:
+    name: TypeScript and Jest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+      - name: TypeScript validation
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test -- --runInBand
+
+  wifi-transport:
+    name: Pair, reconnect and revoke two Wi-Fi endpoints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache: false
+      - name: Exercise the production Android bridge over two private addresses
+        working-directory: workers/wifi
+        run: |
+          sudo ip address add 192.168.246.1/32 dev lo
+          sudo ip address add 192.168.246.2/32 dev lo
+          POCKETMIND_TEST_WIFI_LINK=1 go test -race -count=2 -v ./...
+
+  coordinator:
+    name: Worker coordinator integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check coordinator JavaScript syntax
+        working-directory: worker-server
+        run: node --check server.js
+      - name: Coordinator integration tests
+        working-directory: worker-server
+        run: npm test
+
+  android-native:
+    name: Android native Kotlin compile (no APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install JavaScript dependencies
+        run: npm install --legacy-peer-deps
+      - name: Test the tablet GPU socket transport
+        run: |
+          g++ -std=c++17 -I workers/android-gpu android/app/src/test/cpp/usb_transport_test.cpp -o "$RUNNER_TEMP/test-tablet-sockets"
+          "$RUNNER_TEMP/test-tablet-sockets"
+      - name: Compile Android Kotlin and test response streams
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew :app:testDebugUnitTest --tests com.pocketmind.ChatGPTReplyTest --no-daemon --max-workers=2
+
+  windows-worker:
+    name: Windows Worker Python syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Windows Worker source
+        run: python -m py_compile workers/windows/worker.py

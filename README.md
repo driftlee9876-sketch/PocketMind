@@ -1,3 +1,11 @@
+# PocketMind extensions
+
+PocketMind includes a connected-app hub and an opt-in distributed Worker foundation. Setup, deployment, app-connector configuration, Windows/Android Worker instructions, iOS limits, and current architecture boundaries are documented in [Connected Apps and Workers](docs/CONNECTED_APPS_AND_WORKERS.md).
+
+**Important:** a listed connected app needs a trusted provider adapter/webhook and official provider credentials before it can execute real actions. The current distributed system routes complete inference tasks to one eligible Worker; it does not split a single model's weights across multiple GPUs. No APK is produced by the PR quality workflow.
+
+---
+
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
 
 # Getting Started

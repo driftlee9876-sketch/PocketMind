@@ -1,0 +1,2 @@
+_pm_gpu_available
+_pm_gpu_serve

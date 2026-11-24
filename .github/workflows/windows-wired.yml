@@ -1,0 +1,71 @@
+name: Build PocketMind Wired for Windows
+on:
+  workflow_dispatch:
+  push:
+    branches: [ feat/pocketmind-foundation ]
+    paths: [ 'workers/windows/*.py', 'workers/wifi/**', '.github/workflows/windows-wired.yml' ]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test USB pairing and model split configuration
+        run: python -m unittest discover -s workers/windows
+      - name: Build Windows companion
+        run: |
+          python -m pip install pyinstaller==6.16.0 zeroconf==0.148.0 psutil==7.1.3
+          python -m PyInstaller --collect-all zeroconf --noconfirm --onefile --windowed --name PocketMind-Wired workers/windows/wired.py
+      - name: Bundle matching Vulkan and RPC inference runtime
+        shell: pwsh
+        run: |
+          $tag = "b12651"
+          $filename = "llama-$tag-bin-win-vulkan-x64.zip"
+          $url = "https://github.com/ggml-org/llama.cpp/releases/download/$tag/$filename"
+          $archive = Join-Path $env:RUNNER_TEMP $filename
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          if ((Get-FileHash -Algorithm SHA256 $archive).Hash -ne "E58FA9A137D8046C69334005AD6FB3E904DDC7E56F2A61AD1B844335826EF3F4") { throw "Unexpected llama.cpp artifact" }
+          $expanded = Join-Path $env:RUNNER_TEMP "pocketmind-llama"
+          Expand-Archive -LiteralPath $archive -DestinationPath $expanded
+          $server = @(Get-ChildItem $expanded -Recurse -File -Filter llama-server.exe)
+          if ($server.Count -ne 1) { throw "Expected one inference server" }
+          New-Item -ItemType Directory -Path dist/runtime | Out-Null
+          Get-ChildItem $server[0].DirectoryName | Copy-Item -Destination dist/runtime -Recurse
+          if (!(Test-Path dist/runtime/ggml-rpc.dll) -or !(Test-Path dist/runtime/ggml-vulkan.dll)) { throw "Missing GPU or RPC backend" }
+          $usage = & ./dist/runtime/llama-server.exe --help 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $usage -notmatch '--rpc' -or $usage -notmatch '--tensor-split') { throw "Inference runtime failed its startup check" }
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ggml-org/llama.cpp/f5e6915c28f10330885fcb9243a93ae98d3115ab/LICENSE" -OutFile dist/runtime/llama-LICENSE.txt
+      - name: Verify model sharding and inference on two local CPU-backed RPC peers
+        shell: pwsh
+        run: |
+          $env:POCKETMIND_TEST_LLAMA_RUNTIME = (Resolve-Path dist/runtime).Path
+          $fixture = Join-Path $env:RUNNER_TEMP "stories260K.gguf"
+          Invoke-WebRequest -Uri "https://huggingface.co/ggml-org/models/resolve/499bc8821c6b12b4e53c5bffcb21ec206f212d81/tinyllamas/stories260K.gguf" -OutFile $fixture
+          if ((Get-FileHash -Algorithm SHA256 $fixture).Hash -ne "270CBA1BD5109F42D03350F60406024560464DB173C0E387D91F0426D3BD256D") { throw "Unexpected model fixture" }
+          $env:POCKETMIND_TEST_GGUF = $fixture
+          python -m unittest discover -s workers/windows
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache: false
+      - name: Build and test Wi-Fi GPU transport
+        shell: pwsh
+        run: |
+          cd workers/wifi
+          go test ./...
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:CGO_ENABLED = "1"
+          go build -trimpath -buildmode=c-shared -o ../../dist/runtime/pmwifi.dll ./cmd/native
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Remove-Item ../../dist/runtime/pmwifi.h
+          if (!(Test-Path ../../dist/runtime/ggml-rpc-server.exe)) { throw "Missing Wi-Fi GPU backend" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketMind-Wired-Windows
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

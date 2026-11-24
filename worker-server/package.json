@@ -1,0 +1,14 @@
+{
+  "name": "pocketmind-worker-coordinator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Authenticated task coordinator for PocketMind distributed workers",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.11.0"
+  }
+}

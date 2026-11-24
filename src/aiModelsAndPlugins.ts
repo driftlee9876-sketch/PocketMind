@@ -489,6 +489,12 @@ export interface PluginExecutionOutput {
   result: string;
 }
 
+export interface PluginRouteMatch {
+  plugin: AIPluginSpec;
+  score: number;
+  matchedBy: string[];
+}
+
 function safeEvaluateMathExpression(expr: string): number | null {
   const cleaned = expr.replace(/[^0-9+\-*/().%\s^]/g, '').replace(/\^/g, '**').trim();
   if (!cleaned || !/[0-9]/.test(cleaned) || !/[+\-*/%]/.test(cleaned)) return null;
@@ -1056,12 +1062,23 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
       const m = prompt.match(/(eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)/);
       if (!m) return 'JWT 토큰 미감지';
       const parts = m[1].split('.');
-      const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      let bitBuffer = 0;
+      let bitCount = 0;
+      const bytes: number[] = [];
+      for (const character of b64) {
+        const value = alphabet.indexOf(character);
+        if (value < 0) throw new Error('JWT payload contains invalid Base64 characters.');
+        bitBuffer = (bitBuffer << 6) | value;
+        bitCount += 6;
+        if (bitCount >= 8) {
+          bitCount -= 8;
+          bytes.push((bitBuffer >> bitCount) & 0xff);
+        }
+      }
       const decoded = decodeURIComponent(
-        atob(b64)
-          .split('')
-          .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-          .join(''),
+        bytes.map((byte) => '%' + byte.toString(16).padStart(2, '0')).join(''),
       );
       return `JWT Payload: ${decoded}`;
     },
@@ -1688,43 +1705,124 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
   },
 ];
 
-// 자율 실행 + 슬래시(/plugin-id) 수동 실행 통합 엔진
+// 자동 실행 + 사용자 요청 실행 통합 엔진
+// 수동 호출도 활성화된 플러그인만 실행하며, 카탈로그 순서를 보존한다.
+const MAX_AUTO_PLUGIN_RUNS = 8;
+const MAX_EXPLICIT_PLUGIN_RUNS = 12;
+
+function normalizePluginText(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase().replace(/[^a-z0-9가-힣]+/g, '');
+}
+
+function pluginWords(value: string): string[] {
+  return value.normalize('NFKC').toLocaleLowerCase()
+    .split(/[^a-z0-9가-힣]+/g)
+    .filter((word) => word.length >= 2);
+}
+
+/**
+ * Deterministically scans every enabled plugin before model inference. This is
+ * intentionally independent of the LLM so sub-3B models do not need to infer
+ * tool names or JSON parameters from a large catalog.
+ */
+export function rankPluginsForPrompt(
+  prompt: string,
+  enabledPluginIds?: string[],
+): PluginRouteMatch[] {
+  const enabled = new Set(enabledPluginIds ?? AI_PLUGIN_CATALOG.map((plugin) => plugin.id));
+  const lower = prompt.normalize('NFKC').toLocaleLowerCase();
+  const compact = normalizePluginText(prompt);
+  const promptWords = new Set(pluginWords(prompt));
+
+  return AI_PLUGIN_CATALOG
+    .filter((plugin) => enabled.has(plugin.id))
+    .map((plugin) => {
+      let score = 0;
+      const matchedBy: string[] = [];
+
+      for (const keyword of plugin.triggerKeywords) {
+        const keywordLower = keyword.normalize('NFKC').toLocaleLowerCase();
+        const keywordCompact = normalizePluginText(keyword);
+        if (!keywordCompact) continue;
+        if (compact.includes(keywordCompact)) {
+          score += 100 + Math.min(80, keywordCompact.length * 5);
+          matchedBy.push(`키워드:${keyword}`);
+        } else if (keywordLower.includes(' ') && lower.includes(keywordLower)) {
+          score += 120;
+          matchedBy.push(`구문:${keyword}`);
+        }
+      }
+
+      const nameCompact = normalizePluginText(plugin.name);
+      if (nameCompact.length >= 3 && compact.includes(nameCompact)) {
+        score += 180;
+        matchedBy.push('플러그인명');
+      }
+
+      const descriptionWords = new Set([
+        ...pluginWords(plugin.name),
+        ...pluginWords(plugin.description),
+      ]);
+      const overlap = [...descriptionWords].filter((word) => promptWords.has(word)).slice(0, 4);
+      if (overlap.length >= 2) {
+        score += overlap.length * 18;
+        matchedBy.push(`설명:${overlap.join(',')}`);
+      }
+
+      return { plugin, score, matchedBy };
+    })
+    .filter((match) => match.score >= 65)
+    .sort((a, b) => b.score - a.score || a.plugin.index - b.plugin.index);
+}
+
 export async function runAutonomousPlugins(
   prompt: string,
   enabledPluginIds?: string[],
 ): Promise<PluginExecutionOutput[]> {
-  const lower = prompt.toLowerCase();
-  const explicitIds = new Set<string>();
+  const enabled = new Set(enabledPluginIds ?? AI_PLUGIN_CATALOG.map((plugin) => plugin.id));
+  const commandMatches = [...prompt.matchAll(/(?:^|\s)\/([a-z0-9-]+)(?=\s|$)/gi)];
+  const explicitIds = new Set(commandMatches.map((match) => match[1].toLowerCase()));
+  const cleanPrompt = prompt
+    .replace(/(?:^|\s)\/[a-z0-9-]+(?=\s|$)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || prompt.trim();
 
-  const slashTokens = lower.match(/\/([a-z0-9-]+)/g) || [];
-  for (const st of slashTokens) {
-    explicitIds.add(st.slice(1));
-  }
+  const explicitPlugins = AI_PLUGIN_CATALOG.filter(
+    (plugin) => explicitIds.has(plugin.id) && enabled.has(plugin.id),
+  ).slice(0, MAX_EXPLICIT_PLUGIN_RUNS);
+  const automaticPlugins = rankPluginsForPrompt(prompt, [...enabled])
+    .map((match) => match.plugin)
+    .filter((plugin) => !explicitIds.has(plugin.id))
+    .slice(0, MAX_AUTO_PLUGIN_RUNS)
+    .sort((a, b) => a.index - b.index);
 
-  const matchedPlugins = AI_PLUGIN_CATALOG.filter((p) => {
-    if (explicitIds.has(p.id)) return true;
-    if (enabledPluginIds && !enabledPluginIds.includes(p.id)) return false;
-    if (!p.autoRun) return false;
-    return p.triggerKeywords.some((kw) => lower.includes(kw.toLowerCase()));
-  }).slice(0, 4);
+  const selected = [...explicitPlugins, ...automaticPlugins].filter(
+    (plugin, index, all) => all.findIndex((candidate) => candidate.id === plugin.id) === index,
+  );
 
   const results: PluginExecutionOutput[] = [];
-  await Promise.all(
-    matchedPlugins.map(async (plugin) => {
-      try {
-        const cleanForPlugin = prompt.replace(/\/[a-z0-9-]+/gi, '').trim() || prompt;
-        const out = await plugin.execute(cleanForPlugin);
-        if (out && !out.includes('미감지') && !out.includes('없음')) {
-          results.push({
-            id: plugin.id,
-            title: `#${String(plugin.index).padStart(2, '0')} ${plugin.name}`,
-            category: plugin.category,
-            result: out,
-          });
-        }
-      } catch {}
-    }),
-  );
+  // Run sequentially to avoid bursts against external APIs and preserve output ordering.
+  for (const plugin of selected) {
+    try {
+      const output = await plugin.execute(cleanPrompt);
+      results.push({
+        id: plugin.id,
+        title: `#${String(plugin.index).padStart(2, '0')} ${plugin.name}`,
+        category: plugin.category,
+        result: typeof output === 'string' && output.trim()
+          ? output.trim()
+          : '플러그인이 빈 결과를 반환했습니다.',
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '알 수 없는 실행 오류';
+      results.push({
+        id: plugin.id,
+        title: `#${String(plugin.index).padStart(2, '0')} ${plugin.name} (실패)`,
+        category: plugin.category,
+        result: `플러그인 실행 실패: ${message.slice(0, 300)}`,
+      });
+    }
+  }
 
   return results;
 }

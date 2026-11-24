@@ -1,0 +1,41 @@
+name: Verify remote inference on 20 peers
+on:
+  push:
+    branches: [ feat/pocketmind-foundation ]
+    paths: [ 'workers/wifi/**', 'workers/android-gpu/**', '.github/workflows/gpu-group.yml' ]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: a8f8294c45076538f4509754e4c79fc51a1a486b
+          path: build/vendor
+      - name: Prepare 21 routed interface addresses
+        run: |
+          sudo ip addr add 100.69.0.1/32 dev lo
+          for i in {1..20}; do sudo ip addr add "100.70.$i.2/32" dev lo; done
+          cd workers/wifi && POCKETMIND_TEST_MESH=1 go test -race -v -run TestTwentyMeshPeers ./link
+      - name: Build the same host socket adapter and scheduler with CPU test devices
+        run: |
+          python workers/android-gpu/prepare.py build/vendor
+          cmake -S build/vendor -B build/group -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF -DGGML_CCACHE=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_WEBUI=OFF
+          cmake --build build/group --target ggml-rpc-server llama-server --parallel 4
+      - name: Generate tokens with all 20 selected devices holding model weights
+        run: |
+          curl -fsSL --retry 3 https://huggingface.co/ggml-org/models/resolve/499bc8821c6b12b4e53c5bffcb21ec206f212d81/tinyllamas/stories260K.gguf -o "$RUNNER_TEMP/seed.gguf"
+          echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $RUNNER_TEMP/seed.gguf" | sha256sum -c
+          python -m pip install ./build/vendor/gguf-py
+          python workers/wifi/testdata/expand_model.py "$RUNNER_TEMP/seed.gguf" "$RUNNER_TEMP/group.gguf"
+          export POCKETMIND_TEST_GPU_BIN="$PWD/build/group/bin" POCKETMIND_TEST_MODEL="$RUNNER_TEMP/group.gguf" POCKETMIND_TEST_MESH=1
+          cd workers/wifi && go test -race -timeout 4m -v -run TestTwentyMeshPeers ./link
