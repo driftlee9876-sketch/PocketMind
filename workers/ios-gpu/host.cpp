@@ -11,6 +11,7 @@
 
 // Host calls are serialized on a private queue. Only cancellation and the
 // transport failure flag cross that queue boundary.
+extern "C" bool pm_model_has_weights(const llama_model *, ggml_backend_dev_t);
 extern "C" bool pm_set_route(int, const char *);
 static std::atomic<bool> lost{false};
 extern "C" void pm_host_rpc_failed() { lost = true; }
@@ -51,6 +52,9 @@ extern "C" pm_host *pm_host_load(const char *file, const char **bridges, int cou
     auto host = std::make_unique<pm_host>();
     host->model = llama_model_load_from_file(file,p);
     if (!host->model || llama_model_n_layer(host->model) < count + 1 || !keep_loading(0,cancel)) return nullptr;
+    for (auto device : devices) {
+        if (device && !pm_model_has_weights(host->model,device)) return nullptr;
+    }
     return host.release();
 }
 extern "C" void pm_host_free(pm_host *host) { delete host; }

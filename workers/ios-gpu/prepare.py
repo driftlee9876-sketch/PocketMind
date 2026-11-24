@@ -56,3 +56,14 @@ for file, before, after in [
     if s.count(before) != 1:
         raise RuntimeError("Unexpected device limit in " + file)
     path.write_text(s.replace(before, after))
+
+# Verify the real per-device model buffers before the app reports a session.
+model_source = upstream / "src/llama-model.cpp"
+with model_source.open("a") as f:
+    f.write("""
+extern "C" bool pm_model_has_weights(const llama_model *model, ggml_backend_dev_t device) {
+    auto sizes = model->memory_breakdown();
+    auto it = sizes.find(ggml_backend_dev_buffer_type(device));
+    return it != sizes.end() && it->second > 0;
+}
+""")

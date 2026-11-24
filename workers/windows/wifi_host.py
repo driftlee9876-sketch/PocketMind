@@ -165,7 +165,7 @@ def open_host(root, bundle, executable, model, loaded_model):
             finally:
                 transport.call("stop")
                 notices.put(("ended",None))
-        threading.Thread(target=run,daemon=True).start()
+        threading.Thread(target=run).start()
 
     chat = tk.Text(frame,height=10,width=60,state="disabled",wrap="word")
     prompt = ttk.Entry(frame)
@@ -263,6 +263,14 @@ def open_host(root, bundle, executable, model, loaded_model):
             stopped.set()
             stop_browse()
             transport.call("stop")
+    def close():
+        if active:
+            stopped.set()
+            status.set("모델과 연결을 정리하는 중…")
+            window.after(150,close)
+        else:
+            window.destroy()
+    window.protocol("WM_DELETE_WINDOW",close)
     window.bind("<Destroy>",cleanup)
     guard(browse)()
     poll()
