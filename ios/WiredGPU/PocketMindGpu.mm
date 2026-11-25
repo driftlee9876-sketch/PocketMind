@@ -6,6 +6,7 @@
 #import <React/RCTBridge.h>
 #include <vector>
 #import <Security/Security.h>
+#import <SystemConfiguration/SystemConfiguration.h>
 #import <PocketMindMetalPeer/PocketMindMetalPeer.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -440,6 +441,17 @@ RCT_EXPORT_METHOD(hashMediaFile:(NSString *)path resolver:(RCTPromiseResolveBloc
   });
 }
 
+RCT_EXPORT_METHOD(hasNetworkRoute:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  struct sockaddr_in destination = {};
+  destination.sin_len = sizeof(destination);
+  destination.sin_family = AF_INET;
+  SCNetworkReachabilityRef route = SCNetworkReachabilityCreateWithAddress(NULL, (const struct sockaddr *)&destination);
+  SCNetworkReachabilityFlags flags = 0;
+  BOOL online = route && SCNetworkReachabilityGetFlags(route, &flags) &&
+      (flags & kSCNetworkReachabilityFlagsReachable) && !(flags & kSCNetworkReachabilityFlagsConnectionRequired);
+  if (route) CFRelease(route);
+  resolve(@(online));
+}
 RCT_EXPORT_METHOD(startVoiceRecording:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   [self clearVoice];NSUInteger epoch=_micEpoch;
   AVAudioSession *audio=AVAudioSession.sharedInstance;

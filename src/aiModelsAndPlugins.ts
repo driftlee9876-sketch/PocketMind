@@ -476,6 +476,7 @@ export interface AIPluginSpec {
   index: number;
   name: string;
   category: PluginCategory;
+  requiresInternet?: boolean;
   description: string;
   triggerKeywords: string[];
   autoRun: boolean;
@@ -592,6 +593,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
     index: 1,
     name: 'DuckDuckGo 실시간 즉답 검색',
     category: '웹·검색',
+    requiresInternet: true,
     description: '질문 핵심 키워드로 DuckDuckGo Instant Answer API를 조회합니다.',
     triggerKeywords: ['검색', '찾아줘', '무엇인가요', '누구야', '알려줘', '최신정보'],
     autoRun: true,
@@ -614,6 +616,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
     index: 2,
     name: '한국어 위키백과 백과사전',
     category: '웹·검색',
+    requiresInternet: true,
     description: '한국어 위키백과에서 인물·역사·용어·개념 정의를 실시간으로 가져옵니다.',
     triggerKeywords: ['위키', '백과사전', '정의', '역사', '유래', '뜻이'],
     autoRun: true,
@@ -633,6 +636,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
     index: 3,
     name: '영문 Wikipedia 심층 검색',
     category: '웹·검색',
+    requiresInternet: true,
     description: '영문 Wikipedia REST API를 통해 글로벌 기술·학술 문서를 조회합니다.',
     triggerKeywords: ['wikipedia', 'wiki', '영문위키', '해외자료'],
     autoRun: true,
@@ -651,6 +655,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
     index: 4,
     name: '웹페이지 URL 본문 추출기',
     category: '웹·검색',
+    requiresInternet: true,
     description: '입력된 http/https 링크의 HTML을 내려받아 순수 텍스트 본문으로 정제합니다.',
     triggerKeywords: ['http://', 'https://', '링크요약', '사이트분석', '웹페이지'],
     autoRun: true,
@@ -673,6 +678,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
     index: 5,
     name: 'Hacker News 실시간 IT 트렌드',
     category: '웹·검색',
+    requiresInternet: true,
     description: '글로벌 개발자 커뮤니티 Hacker News 상위 인기 글 5개를 실시간 조회합니다.',
     triggerKeywords: ['해커뉴스', 'hackernews', 'it트렌드', '개발뉴스', '기술뉴스'],
     autoRun: true,
@@ -694,6 +700,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
     index: 6,
     name: 'GitHub 저장소 메타데이터 조회',
     category: '웹·검색',
+    requiresInternet: true,
     description: 'owner/repo 형식의 GitHub 오픈소스 스타 수, 포크, 주 언어를 실시간 조회합니다.',
     triggerKeywords: ['github.com/', '깃허브', '레포지토리', '오픈소스'],
     autoRun: true,
@@ -712,6 +719,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
     index: 7,
     name: 'npm 패키지 최신 버전 조회',
     category: '웹·검색',
+    requiresInternet: true,
     description: 'npm 레지스트리에서 Node/React 패키지의 최신 배포 버전과 설명을 확인합니다.',
     triggerKeywords: ['npm', '패키지버전', '라이브러리버전'],
     autoRun: false,
@@ -729,6 +737,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
     index: 8,
     name: 'Python PyPI 패키지 조회',
     category: '웹·검색',
+    requiresInternet: true,
     description: 'PyPI 공식 API에서 파이썬 패키지의 최신 버전과 요약을 조회합니다.',
     triggerKeywords: ['pypi', 'pip', '파이썬패키지'],
     autoRun: false,
@@ -746,6 +755,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
     index: 9,
     name: '현재 네트워크 IP·지역 진단',
     category: '웹·검색',
+    requiresInternet: true,
     description: '현재 기기가 연결된 외부 공인 IP, 국가, 도시, 통신사 정보를 확인합니다.',
     triggerKeywords: ['내아이피', '공인ip', 'ip주소', '네트워크위치'],
     autoRun: false,
@@ -760,6 +770,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
     index: 10,
     name: '도메인 DNS 레코드 조회',
     category: '웹·검색',
+    requiresInternet: true,
     description: 'Cloudflare DNS-over-HTTPS를 통해 도메인의 A 레코드(IP)를 실시간 질의합니다.',
     triggerKeywords: ['dns', '도메인조회', 'nslookup', '아이피찾기'],
     autoRun: false,
@@ -791,6 +802,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
   },
   {
     id: 'calc-fx-rate',
+    requiresInternet: true,
     index: 12,
     name: '실시간 글로벌 환율 변환기',
     category: '수학·금융',
@@ -814,6 +826,7 @@ export const AI_PLUGIN_CATALOG: AIPluginSpec[] = [
   },
   {
     id: 'calc-crypto-price',
+    requiresInternet: true,
     index: 13,
     name: '암호화폐 실시간 시세 (BTC/ETH/SOL)',
     category: '수학·금융',

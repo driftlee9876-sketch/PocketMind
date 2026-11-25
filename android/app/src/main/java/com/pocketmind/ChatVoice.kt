@@ -68,7 +68,12 @@ internal class ChatVoice(private val context:ReactApplicationContext):LifecycleE
         spoken=p
         fun say(){
             val engine=synth ?: return
-            if(engine.setLanguage(Locale.KOREAN)<0)engine.language=Locale.getDefault()
+            val localVoice = engine.voices.orEmpty().filter {
+                !it.isNetworkConnectionRequired && it.locale.language == Locale.KOREAN.language &&
+                    TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in it.features.orEmpty()
+            }.maxByOrNull { it.quality }
+            if (localVoice != null) engine.voice = localVoice
+            else if(engine.setLanguage(Locale.KOREAN)<0)engine.language=Locale.getDefault()
             speechId=java.util.UUID.randomUUID().toString()
             engine.setOnUtteranceProgressListener(object:UtteranceProgressListener(){
                 override fun onStart(id:String?){}

@@ -1,3 +1,4 @@
+import {NativeModules, Platform} from 'react-native';
 import {recentTurns, type Turn} from './chatContext';
 // src/multiModelOrchestrator.ts
 // 자율형 다중 모델 오케스트레이션 파이프라인 + 초경량 무검열 모델 라우팅 + 60종 플러그인 연동
@@ -6,6 +7,7 @@ import { runDistributedInference, isCoordinatorEndpoint } from './distributedCoo
 
 import {
   AI_MODEL_CATALOG,
+  AI_PLUGIN_CATALOG,
   AIModelSpec,
   ModelSpecialty,
   PluginExecutionOutput,
@@ -464,7 +466,15 @@ class MultiModelOrchestratorEngine {
     const intent = this.analyzeIntent(cleanPrompt);
 
     callbacks?.onStatusUpdate?.('🧩 활성화된 전체 플러그인 검사 및 자동 실행 중...');
-    const pluginOutputs = params.documentAttached ? [] : await runAutonomousPlugins(cleanPrompt, enabledPluginIds);
+    let plugins = enabledPluginIds;
+    if (!params.documentAttached && !remotePC.enabled) {
+      const device = Platform.OS === 'ios' ? NativeModules.PocketMindMetalPeer : NativeModules.PocketMindWorker;
+      const online = await device?.hasNetworkRoute?.().catch(() => false);
+      if (!online) {
+        plugins = AI_PLUGIN_CATALOG.filter(p => !p.requiresInternet && (!enabledPluginIds || enabledPluginIds.includes(p.id))).map(p => p.id);
+      }
+    }
+    const pluginOutputs = params.documentAttached ? [] : await runAutonomousPlugins(cleanPrompt, plugins);
     const pluginContext =
       pluginOutputs.length > 0
         ? `\n\n[실시간 플러그인 실행 데이터]\n${pluginOutputs
@@ -545,7 +555,7 @@ class MultiModelOrchestratorEngine {
         }
       } else {
         const selected =
-          catalog.find((m) => m.id === primaryModelId) ||
+          catalog.find((m) => m.id === primaryModelId && (remotePC.enabled || installedModelIds.includes(m.id))) ||
           catalog.find((m) => installedModelIds.includes(m.id)) ||
           catalog[0];
         pipelinePlan.push({

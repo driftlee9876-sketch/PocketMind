@@ -32,6 +32,11 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
   ReactContextBaseJavaModule(context) {
 
   private val chatVoice=ChatVoice(context)
+  @ReactMethod fun hasNetworkRoute(promise: Promise) {
+    val cm = context.getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+    val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+    promise.resolve(caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true)
+  }
   @ReactMethod fun startVoiceRecording(promise:Promise){chatVoice.start(promise)}
   @ReactMethod fun voiceLevel(promise:Promise){promise.resolve(chatVoice.decibels)}
   @ReactMethod fun finishVoiceRecording(promise:Promise){chatVoice.finish(promise)}

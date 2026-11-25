@@ -604,6 +604,15 @@ function PocketMindChatGPTScreen() {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   }, []);
 
+  function useInstalledModel(id: string) {
+    leaveWifi();
+    setWiredSession(null);
+    setUseChatGPTPlan(false);
+    setRemotePC(previous => ({...previous, enabled: false}));
+    setPrimaryModelId(id);
+    AsyncStorage.setItem('pocketmind.local-model.v1', id).catch(() => {});
+  }
+
   const scanInstalledModels = async () => {
     try {
       const RNFS = getRNFS();
@@ -620,8 +629,9 @@ function PocketMindChatGPTScreen() {
         }
       }
       setInstalledModelIds(found);
-      if (found.length > 0 && !found.includes(primaryModelId)) {
-        setPrimaryModelId(found[0]);
+      if (found.length) {
+        const saved = await AsyncStorage.getItem('pocketmind.local-model.v1');
+        setPrimaryModelId(current => saved && found.includes(saved) ? saved : found.includes(current) ? current : found[0]);
       }
     } catch {}
   };
@@ -908,7 +918,7 @@ function PocketMindChatGPTScreen() {
     try {
       const downloadJob = RNFS.downloadFile({
         fromUrl: spec.downloadUrl,
-        toFile: destPath,
+        toFile: destPath + ".part",
         background: true,
         progressDivider: 4,
         progress: (res: any) => {
@@ -921,15 +931,16 @@ function PocketMindChatGPTScreen() {
 
       const result = await downloadJob.promise;
       if (result.statusCode >= 200 && result.statusCode < 300) {
+        await RNFS.moveFile(destPath + ".part", destPath);
         await scanInstalledModels();
-        setPrimaryModelId(spec.id);
+        useInstalledModel(spec.id);
         Alert.alert('설치 완료', `${spec.name} 모델이 준비되었습니다.`);
       } else {
         throw new Error(`HTTP ${result.statusCode}`);
       }
     } catch (err: any) {
       try {
-        await RNFS.unlink(destPath);
+        await RNFS.unlink(destPath + ".part");
       } catch {}
       Alert.alert('다운로드 실패', err?.message || '네트워크 또는 저장공간을 확인하세요.');
     } finally {
@@ -2004,9 +2015,11 @@ function PocketMindChatGPTScreen() {
                     style={[styles.pickerRow, isSelected && styles.pickerRowSelected]}
                     onPress={() => {
                       if (isInstalled || remotePC.enabled) {
-                        leaveWifi(); setWiredSession(null);
-                        setPrimaryModelId(m.id);
-                        setUseChatGPTPlan(false);
+                        if (isInstalled) useInstalledModel(m.id);
+                        else {
+                          leaveWifi(); setWiredSession(null);
+                          setPrimaryModelId(m.id); setUseChatGPTPlan(false);
+                        }
                         setModelPickerOpen(false);
                       } else {
                         setModelPickerOpen(false);
@@ -2029,7 +2042,7 @@ function PocketMindChatGPTScreen() {
                         )}
                       </View>
                       <Text style={styles.pickerModelMeta}>
-                        {m.params} · {m.sizeGB}GB · {isInstalled ? '설치됨' : '미설치'}
+                        {m.params} · {m.sizeGB}GB · {isInstalled ? '기기에 설치됨 · 오프라인 사용 가능' : '미설치'}
                       </Text>
                     </View>
                     <Text style={styles.pickerCheck}>{isSelected ? '✓' : ''}</Text>
@@ -2563,7 +2576,7 @@ function PocketMindChatGPTScreen() {
                             primaryModelId === m.id && styles.useModelBtnActive,
                           ]}
                           onPress={() => {
-                            setPrimaryModelId(m.id);
+                            useInstalledModel(m.id);
                             setModelStoreOpen(false);
                           }}
                         >
