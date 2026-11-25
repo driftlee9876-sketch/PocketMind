@@ -74,13 +74,13 @@ func TestTwentyMeshPeers(t *testing.T) {
 			t.Fatal(err)
 		}
 		a, b := pending(t, h), pending(t, donor)
-		if a.Code != b.Code {
+		if a.expected != b.Code {
 			t.Fatal("different approval codes")
 		}
-		if err = h.vote(a.ID, true); err != nil {
+		if err = h.enter(a.ID, b.Code); err != nil {
 			t.Fatal(err)
 		}
-		if err = donor.vote(b.ID, true); err != nil {
+		if err = donor.enter(b.ID, a.Code); err != nil {
 			t.Fatal(err)
 		}
 		deadline := time.Now().Add(5 * time.Second)

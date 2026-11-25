@@ -46,6 +46,7 @@ def interfaces():
             if link.ip.is_loopback or not link.ip.is_private or not 1 <= link.network.prefixlen <= 30:
                 continue
             rows[f"{name} · {link.ip}"] = {"Local": str(link.ip), "Prefix": link.network.prefixlen}
+    rows["다른 Wi-Fi · PocketMind 인터넷 연결"] = {"Internet": True}
     return rows
 
 
@@ -94,6 +95,10 @@ def open_wifi(root, bundle):
 
     def announce():
         nonlocal zc, advert, advertised
+        if endpoint.get("Internet"):
+            transport.call("offerInternet",Backend="windows",Value=str(port[0]))
+            advertised = True
+            return
         state = transport.call("offer", Endpoint=endpoint, Backend="windows", Value=str(port[0]))
         if endpoint.get("Mesh"):
             invite.set(f"pmgpu1|{endpoint['Local']}|{state['id']}")
@@ -130,10 +135,16 @@ def open_wifi(root, bundle):
             stop()
             status.set(str(exc))
 
+    otp=tk.StringVar()
+    ttk.Entry(frame,textvariable=otp).pack(fill="x")
     def vote(accept):
         if challenge:
             try:
-                transport.call("vote",Challenge=challenge["id"],Accept=accept)
+                if accept:
+                    transport.call("enter",Challenge=challenge["id"],Value=otp.get())
+                else:
+                    transport.call("vote",Challenge=challenge["id"],Accept=False)
+                otp.set("")
             except ValueError as exc:
                 status.set(str(exc))
     def forget():
@@ -158,8 +169,10 @@ def open_wifi(root, bundle):
                 if advertised:
                     state=transport.call("status")
                     challenge=state.get("pending")
-                    status.set(("태블릿과 같은 코드인지 확인하세요 · "+challenge["code"]) if challenge else
-                               state.get("issue") or "Wi-Fi GPU 제공 중 · 태블릿에서 이 PC를 선택하세요.")
+                    if endpoint.get("Internet"):
+                        invite.set(state["relayInvitation"])
+                    status.set(("내 코드 · "+challenge["code"]) if challenge else
+                               state.get("issue") or ("원격 초대를 복사해 모델이 있는 기기에 붙여넣으세요." if invite.get() else "중계 서버에 연결하는 중…" if endpoint.get("Internet") else "Wi-Fi GPU 제공 중 · 태블릿에서 이 PC를 선택하세요."))
             approve.configure(state="normal" if challenge else "disabled")
             reject.configure(state="normal" if challenge else "disabled")
         except Exception as exc:
@@ -174,7 +187,7 @@ def open_wifi(root, bundle):
             root.clipboard_append(invite.get())
     ttk.Entry(frame,textvariable=invite,state="readonly").pack(fill="x")
     ttk.Button(frame,text="원격 초대 복사",command=copy_invite).pack(fill="x")
-    approve=ttk.Button(frame,text="코드 일치 · 승인",command=lambda:vote(True));approve.pack(fill="x")
+    approve=ttk.Button(frame,text="상대 코드 입력 · 연결",command=lambda:vote(True));approve.pack(fill="x")
     reject=ttk.Button(frame,text="거절",command=lambda:vote(False));reject.pack(fill="x")
     ttk.Button(frame,text="연결 기기 잊기",command=forget).pack(fill="x")
     window.protocol("WM_DELETE_WINDOW",lambda:(stop(),window.destroy()))

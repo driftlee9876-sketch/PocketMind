@@ -31,6 +31,19 @@ import java.util.UUID
 class PocketMindWorkerModule(private val context: ReactApplicationContext) :
   ReactContextBaseJavaModule(context) {
 
+  private val chatVoice=ChatVoice(context)
+  @ReactMethod fun hasNetworkRoute(promise: Promise) {
+    val cm = context.getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+    val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+    promise.resolve(caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true)
+  }
+  @ReactMethod fun startVoiceRecording(promise:Promise){chatVoice.start(promise)}
+  @ReactMethod fun voiceLevel(promise:Promise){promise.resolve(chatVoice.decibels)}
+  @ReactMethod fun finishVoiceRecording(promise:Promise){chatVoice.finish(promise)}
+  @ReactMethod fun speakReply(text:String,promise:Promise){chatVoice.speak(text,promise)}
+  @ReactMethod fun cancelVoice(promise:Promise){chatVoice.cancel();promise.resolve(true)}
+  private val chatDocument = ChatDocument(context)
+  @ReactMethod fun pickChatDocument(promise: Promise) = chatDocument.pick(promise)
   private val keyAlias = "PocketMindWorkerAesKey"
   private val chatGPTPlan by lazy { ChatGPTPlanClient(context, ::encryptSecret, ::decryptSecret) }
   private val usbGpuPeer = UsbGpuPeer(context)
@@ -81,7 +94,7 @@ class PocketMindWorkerModule(private val context: ReactApplicationContext) :
   @ReactMethod fun wiredRequest(id: String, action: String, token: String, body: String, promise: Promise) =
     wiredHttp.request(id, action, token, body, promise)
   @ReactMethod fun cancelWiredRequest(id: String) = wiredHttp.cancel(id)
-  override fun invalidate() { wiredHttp.close(); wifiLan.release(); cableQr.release(); tabletGpu.release(); usbGpuPeer.release(); super.invalidate() }
+  override fun invalidate() { chatVoice.release(); chatDocument.release(); wiredHttp.close(); wifiLan.release(); cableQr.release(); tabletGpu.release(); usbGpuPeer.release(); super.invalidate() }
   @Volatile private var previousCpuSample: Pair<Long, Long>? = null
 
   private fun readCpuUsagePercent(): Double? {

@@ -88,20 +88,24 @@ func TestPairReconnectForget(t *testing.T) {
 	tryData(false)
 	for _, allow := range []bool{false, true} {
 		c := connect(t, a, b, backend)
-		c.Write([]byte("P"))
+		c.Write([]byte("O"))
 		done := make(chan error, 1)
-		go func() { done <- a.consent(a.generation(), c, b.id); c.Close() }()
+		go func() { done <- a.approve(a.generation(), c, b.id, true); c.Close() }()
 		p, q := pending(t, a), pending(t, b)
-		if p.Code != q.Code || p.ID == q.ID {
+		if p.expected != q.Code || p.ID == q.ID {
 			t.Fatal("TLS channel binding mismatch")
 		}
 		if a.vote("stale", true) == nil {
 			t.Fatal("stale approval accepted")
 		}
 		if allow {
-			a.vote(p.ID, true)
+			a.enter(p.ID, q.Code)
 		}
-		b.vote(q.ID, allow)
+		if allow {
+			b.enter(q.ID, p.Code)
+		} else {
+			b.enter(q.ID, "wrong")
+		}
 		var err error
 		select {
 		case err = <-done:
@@ -141,4 +145,73 @@ func TestWifiBoundary(t *testing.T) {
 			t.Fatal(ip)
 		}
 	}
+}
+
+func TestNearbyGroupViaSecondMember(t *testing.T) {
+	a, b, c, d := peer(t, t.TempDir()), peer(t, t.TempDir()), peer(t, t.TempDir()), peer(t, t.TempDir())
+	echo := func() (net.Conn, error) {
+		x, y := net.Pipe()
+		go func() { defer y.Close(); io.Copy(y, y) }()
+		return x, nil
+	}
+	join := func(host, donor *Engine) {
+		conn := connect(t, host, donor, echo)
+		if _, err := conn.Write([]byte("O")); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- host.approve(host.generation(), conn, donor.id, true) }()
+		x, y := pending(t, host), pending(t, donor)
+		if len(x.Code) != 6 || len(y.Code) != 6 || host.vote(x.ID, true) == nil {
+			t.Fatal("invalid OTP flow")
+		}
+		if err := host.enter(x.ID, y.Code); err != nil {
+			t.Fatal(err)
+		}
+		if err := host.enter(x.ID, y.Code); err == nil {
+			t.Fatal("replayed approval")
+		}
+		if err := donor.enter(y.ID, x.Code); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		conn.Close()
+	}
+	join(a, b)
+	join(c, b)
+	c = peer(t, c.dir)
+	if a.group.tag() == "" || a.group != c.group || a.isTrusted(c.id) {
+		t.Fatal("third member/group persistence")
+	}
+	check := func(member *Engine, success bool) {
+		conn := connect(t, member, a, echo)
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+		conn.Write([]byte("G"))
+		key := member.group
+		if key == (groupKey{}) {
+			key[0] = 1
+		}
+		err := groupProof(conn, key, true)
+		if err == nil {
+			err = byteIs(conn, 'K')
+		}
+		if (err == nil) != success {
+			t.Fatalf("group proof: %v", err)
+		}
+		if success {
+			conn.Write([]byte("x"))
+			if err := byteIs(conn, 'x'); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	check(c, true)
+	check(d, false)
+	if _, err := c.Command(Request{Op: "forget"}); err != nil {
+		t.Fatal(err)
+	}
+	check(c, false)
 }

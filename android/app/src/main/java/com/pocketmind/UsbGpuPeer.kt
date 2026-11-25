@@ -52,7 +52,8 @@ internal class UsbGpuPeer(private val context: ReactApplicationContext) : Lifecy
           check(context.lifecycleState == com.facebook.react.common.LifecycleState.RESUMED) { "앱을 화면에 열어 주세요." }
           check(Build.VERSION.SDK_INT >= 28 && conditionsAllow()) { "Android 9 이상, 배터리 20% 이상, 안전한 온도에서 사용할 수 있어요." }
           if (wifi) {
-            check(wifiAddress(context) != null || gpuNetwork(context,true) != null) { "Wi-Fi에 연결해 주세요." }
+            val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            check(manager.activeNetwork != null) { "네트워크에 연결해 주세요." }
           } else if (tablet) {
             check(cableAddresses(context).isNotEmpty()) {
               "USB 테더링 또는 유선 이더넷을 연결한 뒤 다시 눌러 주세요."

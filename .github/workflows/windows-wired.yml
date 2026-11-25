@@ -2,8 +2,8 @@ name: Build PocketMind Wired for Windows
 on:
   workflow_dispatch:
   push:
-    branches: [ feat/pocketmind-foundation, feat/iphone-windows-gpu-host ]
-    paths: [ 'workers/windows/*.py', 'workers/wifi/**', '.github/workflows/windows-wired.yml' ]
+    branches: [ feat/pocketmind-foundation, feat/iphone-windows-gpu-host, feat/pocketmind-internet-gpu ]
+    paths: [ 'workers/windows/**', 'src/media/**', 'workers/wifi/**', '.github/workflows/windows-wired.yml' ]
 permissions:
   contents: read
 jobs:
@@ -18,8 +18,16 @@ jobs:
         run: python -m unittest discover -s workers/windows
       - name: Build Windows companion
         run: |
-          python -m pip install pyinstaller==6.16.0 zeroconf==0.148.0 psutil==7.1.3
-          python -m PyInstaller --collect-all zeroconf --noconfirm --onefile --windowed --name PocketMind-Wired workers/windows/wired.py
+          python -m pip install pyinstaller==6.16.0 zeroconf==0.148.0 psutil==7.1.3 sounddevice==0.5.3
+          python -m PyInstaller --collect-all zeroconf --collect-all _sounddevice_data --noconfirm --onefile --windowed --name PocketMind-Wired workers/windows/wired.py
+      - name: Verify the bundled Windows microphone driver
+        run: |
+          python -c "import sounddevice; assert sounddevice.get_portaudio_version()[0] > 0"
+          $files = pyi-archive_viewer -l dist/PocketMind-Wired.exe | Out-String
+          if ($LASTEXITCODE -or $files -notmatch 'portaudio.*\.dll') { throw "Microphone runtime is missing from the executable" }
+      - name: Bundle image and voice engines
+        shell: pwsh
+        run: ./workers/windows/media/bundle.ps1
       - name: Bundle matching Vulkan and RPC inference runtime
         shell: pwsh
         run: |

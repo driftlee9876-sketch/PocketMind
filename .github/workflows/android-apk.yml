@@ -11,6 +11,7 @@ on:
     branches:
       - feat/pocketmind-foundation
       - feat/pocketmind-chat-upgrade
+      - feat/pocketmind-internet-gpu
 
 jobs:
   build-android:
@@ -65,15 +66,18 @@ jobs:
           ref: fb1379425b16e58dcbdda7be0f8604a7f5cdce78
           path: build/pocketmind-spirv
           persist-credentials: false
+      - name: Install pinned NDK for Android native builds
+        run: |
+          if [ ! -x "$ANDROID_HOME/ndk/27.1.12297006/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang" ]; then
+            sdk_manager=$(find "$ANDROID_HOME" -type f -path '*/bin/sdkmanager' | sort -V | tail -1)
+            "$sdk_manager" "ndk;27.1.12297006"
+          fi
+
       - name: Build Vulkan GPU peer for trusted USB connections
         if: steps.gpu-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y glslc ninja-build
-          if [ ! -d "$ANDROID_HOME/ndk/27.1.12297006" ]; then
-            sdk_manager=$(find "$ANDROID_HOME" -type f -path '*/bin/sdkmanager' | sort -V | tail -1)
-            "$sdk_manager" "ndk;27.1.12297006"
-          fi
           ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.1.12297006" bash workers/android-gpu/build.sh
 
       - uses: actions/setup-go@v5
@@ -193,7 +197,9 @@ jobs:
           import tempfile
           android_libraries = {'libc.so', 'libm.so', 'libdl.so', 'libvulkan.so', 'liblog.so', 'libandroid.so', 'libz.so'}
           with ZipFile('android/app/build/outputs/apk/release/app-release.apk') as apk:
-              assert apk.getinfo('lib/arm64-v8a/libpmwifi.so').file_size > 0
+              for lib in ['libpmwifi.so', 'libonnxruntime.so', 'libonnxruntimejsi.so']:
+                  assert apk.getinfo('lib/arm64-v8a/' + lib).file_size > 0
+              assert any('whisper' in f and f.startswith('lib/arm64-v8a/') for f in apk.namelist())
               for binary in ['libpocketmind_usb_gpu.so', 'libpocketmind_tablet_host.so']:
                   with apk.open('lib/arm64-v8a/' + binary) as peer:
                       contents = peer.read()

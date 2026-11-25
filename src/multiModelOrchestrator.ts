@@ -1,3 +1,5 @@
+import {NativeModules, Platform} from 'react-native';
+import {recentTurns, type Turn} from './chatContext';
 // src/multiModelOrchestrator.ts
 // 자율형 다중 모델 오케스트레이션 파이프라인 + 초경량 무검열 모델 라우팅 + 60종 플러그인 연동
 
@@ -5,6 +7,7 @@ import { runDistributedInference, isCoordinatorEndpoint } from './distributedCoo
 
 import {
   AI_MODEL_CATALOG,
+  AI_PLUGIN_CATALOG,
   AIModelSpec,
   ModelSpecialty,
   PluginExecutionOutput,
@@ -307,6 +310,7 @@ class MultiModelOrchestratorEngine {
     model: AIModelSpec,
     systemPrompt: string,
     userPrompt: string,
+    history: Turn[],
     onToken?: (partial: string) => void,
     signal?: AbortSignal,
   ): Promise<string> {
@@ -322,6 +326,7 @@ class MultiModelOrchestratorEngine {
         model: model.filename,
         messages: [
           { role: 'system', content: systemPrompt },
+          ...history,
           { role: 'user', content: userPrompt },
         ],
         temperature: model.uncensored ? 0.8 : 0.6,
@@ -341,6 +346,7 @@ class MultiModelOrchestratorEngine {
     model: AIModelSpec,
     systemPrompt: string,
     userPrompt: string,
+    history: Turn[],
     remoteConfig: RemotePCConfig,
     callbacks?: InferenceCallbacks,
     signal?: AbortSignal,
@@ -363,7 +369,8 @@ class MultiModelOrchestratorEngine {
             modelId: model.id,
             messages: [
               { role: 'system', content: systemPrompt },
-              { role: 'user', content: userPrompt },
+              ...history,
+          { role: 'user', content: userPrompt },
             ],
             temperature: model.uncensored ? 0.8 : 0.6,
             maxTokens: 1536,
@@ -387,6 +394,7 @@ class MultiModelOrchestratorEngine {
           model,
           systemPrompt,
           userPrompt,
+          history,
           callbacks?.onTokenStream,
           signal,
         );
@@ -407,6 +415,7 @@ class MultiModelOrchestratorEngine {
       {
         messages: [
           { role: 'system', content: systemPrompt },
+          ...history,
           { role: 'user', content: userPrompt },
         ],
         n_predict: 1024,
@@ -429,6 +438,7 @@ class MultiModelOrchestratorEngine {
 
   public async executeAutonomousPipeline(params: {
     documentAttached?: boolean;
+    history?: Turn[];
     userPrompt: string;
     installedModelIds: string[];
     primaryModelId: string;
@@ -456,7 +466,15 @@ class MultiModelOrchestratorEngine {
     const intent = this.analyzeIntent(cleanPrompt);
 
     callbacks?.onStatusUpdate?.('🧩 활성화된 전체 플러그인 검사 및 자동 실행 중...');
-    const pluginOutputs = params.documentAttached ? [] : await runAutonomousPlugins(cleanPrompt, enabledPluginIds);
+    let plugins = enabledPluginIds;
+    if (!params.documentAttached && !remotePC.enabled) {
+      const device = Platform.OS === 'ios' ? NativeModules.PocketMindMetalPeer : NativeModules.PocketMindWorker;
+      const online = await device?.hasNetworkRoute?.().catch(() => false);
+      if (!online) {
+        plugins = AI_PLUGIN_CATALOG.filter(p => !p.requiresInternet && (!enabledPluginIds || enabledPluginIds.includes(p.id))).map(p => p.id);
+      }
+    }
+    const pluginOutputs = params.documentAttached ? [] : await runAutonomousPlugins(cleanPrompt, plugins);
     const pluginContext =
       pluginOutputs.length > 0
         ? `\n\n[실시간 플러그인 실행 데이터]\n${pluginOutputs
@@ -537,7 +555,7 @@ class MultiModelOrchestratorEngine {
         }
       } else {
         const selected =
-          catalog.find((m) => m.id === primaryModelId) ||
+          catalog.find((m) => m.id === primaryModelId && (remotePC.enabled || installedModelIds.includes(m.id))) ||
           catalog.find((m) => installedModelIds.includes(m.id)) ||
           catalog[0];
         pipelinePlan.push({
@@ -562,7 +580,7 @@ class MultiModelOrchestratorEngine {
           ? `${cleanPrompt}${pluginContext}`
           : `[사용자 원래 질문]\n${cleanPrompt}${pluginContext}\n\n[이전 모델 분석 결과]\n${previousStageOutput}\n\n위 결과를 바탕으로 당신의 역할(${stage.roleTitle})을 수행하세요.`;
 
-      const res = await this.runSingleStage(stage.model, stage.sysPrompt, stageInput, remotePC, {
+      const res = await this.runSingleStage(stage.model, stage.sysPrompt, stageInput, recentTurns(params.history || [], Math.max(0,(stage.model.nCtx || 2048)-stageInput.length-stage.sysPrompt.length)), remotePC, {
         onStatusUpdate: callbacks?.onStatusUpdate,
         onTokenStream: isLast ? callbacks?.onTokenStream : undefined,
       }, signal);

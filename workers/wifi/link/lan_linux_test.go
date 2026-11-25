@@ -38,13 +38,13 @@ func TestPairedLANBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	h, d := pending(t, host), pending(t, donor)
-	if h.Code != d.Code {
+	if h.expected != d.Code {
 		t.Fatal("on-screen codes differ")
 	}
-	if err := host.vote(h.ID, true); err != nil {
+	if err := host.enter(h.ID, d.Code); err != nil {
 		t.Fatal(err)
 	}
-	if err := donor.vote(d.ID, true); err != nil {
+	if err := donor.enter(d.ID, h.Code); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(4 * time.Second)

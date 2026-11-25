@@ -161,10 +161,11 @@ def remove_mapping(adb, serial, remote_port, host_port):
 
 
 @contextlib.contextmanager
-def loaded_model(executable, model, peers, stopped, allow_remote_only=False):
+def loaded_model(executable, model, peers, stopped, allow_remote_only=False, relay_progress=None):
     with contextlib.ExitStack() as cleanup:
         args = [executable, *rpc_options(peers), "--list-devices"]
-        devices = select_devices(command(args, timeout=25), peers, allow_remote_only)
+        probe_timeout = 25 + (60 * len(peers) if relay_progress else 0)
+        devices = select_devices(command(args, timeout=probe_timeout), peers, allow_remote_only)
         folder = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="pocketmind-wired-")))
         key_file = folder / "session.key"
         token = secrets.token_urlsafe(32)
@@ -192,10 +193,19 @@ def loaded_model(executable, model, peers, stopped, allow_remote_only=False):
                         with allocation_lock:
                             allocated.add(device)
         threading.Thread(target=observe_loading, daemon=True).start()
+        transferred = -1
+        next_progress_check = 0
         deadline = time.monotonic() + 240
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         while not stopped.wait(0.4):
-            if process.poll() is not None or time.monotonic() >= deadline:
+            now = time.monotonic()
+            if relay_progress and now >= next_progress_check:
+                current = relay_progress()
+                if current != transferred:
+                    deadline = now + 240
+                transferred = current
+                next_progress_check = now + 5
+            if process.poll() is not None or now >= deadline:
                 raise RuntimeError("모델을 로드하지 못했어요. GGUF 파일, GPU 드라이버와 여유 메모리를 확인하세요.")
             try:
                 request = urllib.request.Request(f"http://{LOOPBACK}:{port}/v1/models", headers={"Authorization": f"Bearer {token}"})
@@ -338,10 +348,18 @@ def main():
         if pairing: status.set("PocketMind 모델 선택 → 유선 GPU 연결 → " + pairing.renew())
 
     def poll():
-        nonlocal pairing
+        nonlocal pairing, nearby_pending
         while not events.empty():
             kind, value = events.get()
-            if kind == "ready":
+            if kind=="nearby":
+                pending,count=value
+                if pending!=nearby_pending:
+                    nearby_pending=pending
+
+                    otp.set("")
+                nearby_text.set("내 코드 · "+pending["code"]+"   상대 기기 코드를 입력하세요." if pending else f"주변 PocketMind · {count}대")
+            elif kind=="nearby_error": nearby_text.set(value)
+            elif kind == "ready":
                 pairing = value
                 status.set("PocketMind 모델 선택 → 유선 GPU 연결 → " + pairing.code)
             elif kind == "error": status.set(value)
@@ -372,7 +390,24 @@ def main():
             return
         wifi_window = open_host(root,bundle,for_row[1].get(),for_row[2].get(),loaded_model)
     ttk.Button(form,text="Wi-Fi로 갤탭 GPU 사용 · PC에서 대화", command=host_wifi).grid(row=10,column=0,columnspan=3,sticky="ew")
-    root.protocol("WM_DELETE_WINDOW", lambda: (stopped.set(), root.destroy()))
+    from nearby import presence
+    from wifi_offer import Transport
+    nearby_pending=None
+    nearby_text=tk.StringVar(value="주변 기기 연결 대기 중")
+    otp=tk.StringVar()
+    ttk.Label(form,textvariable=nearby_text).grid(row=11,column=0,columnspan=3)
+    ttk.Entry(form,textvariable=otp,width=10).grid(row=12,column=0)
+    def accept_nearby():
+        if nearby_pending:
+            try:
+                Transport(bundle).call("enter",Challenge=nearby_pending["id"],Value=otp.get())
+                otp.set("")
+            except ValueError as exc:
+                nearby_text.set(str(exc))
+    ttk.Button(form,text="상대 코드 입력 · 연결",command=accept_nearby).grid(row=12,column=1)
+    presence_stop=threading.Event()
+    threading.Thread(target=presence,args=(bundle,events,presence_stop),daemon=True).start()
+    root.protocol("WM_DELETE_WINDOW", lambda: (presence_stop.set(), stopped.set(), root.destroy()))
     poll()
     root.mainloop()
 

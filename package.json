@@ -8,17 +8,22 @@
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node scripts/prepare-mobile-media.cjs"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native-clipboard/clipboard": "^1.16.3",
     "@react-native/new-app-screen": "0.88.1",
+    "base64-js": "1.5.1",
+    "fast-png": "6.2.0",
     "llama.rn": "^0.13.0-rc.12",
+    "onnxruntime-react-native": "1.24.3",
     "react": "19.3.0",
     "react-native": "0.88.1",
     "react-native-fs": "^2.20.0",
-    "react-native-safe-area-context": "^5.5.2"
+    "react-native-safe-area-context": "^5.5.2",
+    "whisper.rn": "0.7.4"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
